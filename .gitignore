@@ -1,0 +1,23 @@
+# macOS Finder metadata. Not anchored: these appear in any directory.
+.DS_Store
+
+# The built CLI (`scripts/fd build` writes it here). Anchored to the repo root
+# so it cannot shadow a future source directory that happens to share the name.
+/fitdash
+
+# Real recorded activities, kept locally and NEVER committed. A FIT file from a
+# watch is personal data -- a minute-by-minute record of where someone was and
+# what their heart was doing. The project's sample activities live here and go
+# no further: not into commits, not into fixtures, not into README output, and
+# not into an issue or a pasted log. Tests that need an activity generate a
+# synthetic one with fitactivity/fittest instead.
+/example_files/
+*.fit
+
+# Rendered dashboards. These are a video of the user's location history, so
+# they are private for the same reason the FIT files are.
+/.scratch/
+*.mp4
+
+# Local agent definitions.
+/.claude/agents/

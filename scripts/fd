@@ -1,0 +1,162 @@
+#!/bin/sh
+# fd -- the repeated jobs in this repo, each spelled exactly one way.
+#
+# Every subcommand prints one "fd <command>: ok|FAILED (exit N)" line and exits
+# with the underlying status, so a caller never needs to append its own
+# `echo "$?"`. The point of the script is that a job is ONE command string: a
+# pipeline typed fresh each time -- a different grep, a different redirect --
+# is a new string every time, and under a permission allowlist each variant
+# costs a fresh approval for work that was already approved in another dress.
+#
+# Anything a session produces (renders, captured diffs, probe output) belongs
+# in the gitignored .scratch/ at the repo root, never a per-session temp
+# directory: it is the same path in every session, so it can be allowlisted
+# once and cleaned out in one step.
+set -u
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root" || exit 1
+mkdir -p .scratch
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+
+report() {
+	if [ "$2" -eq 0 ]; then
+		echo "fd $1: ok"
+	else
+		echo "fd $1: FAILED (exit $2)"
+	fi
+	exit "$2"
+}
+
+case "$cmd" in
+build)
+	go build -o fitdash . 
+	report build $?
+	;;
+
+test)
+	pkg=${1:-./...}
+	[ $# -gt 0 ] && shift
+	if [ $# -gt 0 ]; then
+		go test "$pkg" -run "$1"
+	else
+		go test "$pkg"
+	fi
+	report test $?
+	;;
+
+gates)
+	status=0
+	unformatted=$(gofmt -l . 2>/dev/null)
+	if [ -n "$unformatted" ]; then
+		echo "gofmt: these files need formatting:"
+		echo "$unformatted"
+		status=1
+	else
+		echo "gofmt: clean"
+	fi
+	if go vet ./... >.scratch/vet.log 2>&1; then
+		echo "vet: clean"
+	else
+		echo "vet: FAILED"
+		cat .scratch/vet.log
+		status=1
+	fi
+	if go test ./... >.scratch/test.log 2>&1; then
+		echo "test: all packages ok"
+	else
+		echo "test: FAILED"
+		grep -E '^(---|FAIL|ok|\s+[a-z_]+\.go)' .scratch/test.log | head -60
+		status=1
+	fi
+	report gates $status
+	;;
+
+diff)
+	# Tracked changes plus untracked files, which `git diff` alone omits --
+	# and an untracked file is exactly what a new _test.go is, i.e. the file
+	# a reviewer must not miss.
+	{
+		git diff HEAD 2>/dev/null
+		git ls-files --others --exclude-standard | while IFS= read -r f; do
+			git diff --no-index /dev/null "$f" 2>/dev/null
+		done
+	} >.scratch/review.diff
+	echo "wrote .scratch/review.diff ($(wc -l <.scratch/review.diff | tr -d ' ') lines)"
+	report diff 0
+	;;
+
+render)
+	# End-to-end: render a dashboard from a FIT activity into .scratch/.
+	# The activity is an ARGUMENT (or FD_FIT from .scratch/env) and never
+	# hardcoded: this script ships in the public repo and must not name a
+	# path to somebody's real recording.
+	[ -f .scratch/env ] && . ./.scratch/env
+	fit=${1:-${FD_FIT:-}}
+	[ $# -gt 0 ] && shift
+	if [ -z "$fit" ]; then
+		echo "usage: fd render ACTIVITY.fit [flags]   (or set FD_FIT in .scratch/env)" >&2
+		report render 2
+	fi
+	go run . "$fit" --output-dir .scratch "$@"
+	report render $?
+	;;
+
+frames)
+	# Render single frames to PNG for visual inspection, without encoding a
+	# whole video. The fast loop for a panel change.
+	[ -f .scratch/env ] && . ./.scratch/env
+	fit=${1:-${FD_FIT:-}}
+	[ $# -gt 0 ] && shift
+	if [ -z "$fit" ]; then
+		echo "usage: fd frames ACTIVITY.fit [flags]   (or set FD_FIT in .scratch/env)" >&2
+		report frames 2
+	fi
+	go run . "$fit" --frames --output-dir .scratch "$@"
+	report frames $?
+	;;
+
+clean)
+	# Empty .scratch/ but keep .scratch/env, which holds local defaults such
+	# as FD_FIT -- those point at private recordings and must not reach the
+	# repo, so they live here and survive a clean.
+	find .scratch -mindepth 1 ! -name env -exec rm -rf {} + 2>/dev/null
+	echo "cleaned .scratch/ (kept env)"
+	report clean 0
+	;;
+
+check-deps)
+	status=0
+	if command -v ffmpeg >/dev/null 2>&1; then
+		echo "ffmpeg: $(ffmpeg -version 2>/dev/null | head -1)"
+	else
+		echo "ffmpeg: NOT FOUND on PATH"
+		status=1
+	fi
+	if [ -d ../fitactivity ]; then
+		echo "fitactivity: ../fitactivity (replace directive in go.mod)"
+	else
+		echo "fitactivity: ../fitactivity MISSING -- go.mod replaces the module with it"
+		status=1
+	fi
+	report check-deps $status
+	;;
+
+*)
+	cat >&2 <<'USAGE'
+usage: fd <command> [args]
+
+  gates                    gofmt + vet + test, one status line each
+  build                    -> ./fitdash
+  test [PKG] [PATTERN]     one package, optional -run pattern
+  diff                     working diff incl. untracked -> .scratch/review.diff
+  render FIT [flags]       end-to-end dashboard render -> .scratch/
+  frames FIT [flags]       single frames as PNG -> .scratch/ (fast visual loop)
+  check-deps               verify ffmpeg and the fitactivity checkout
+  clean                    empty .scratch/ (keeps .scratch/env)
+USAGE
+	exit 2
+	;;
+esac
