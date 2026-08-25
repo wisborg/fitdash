@@ -50,8 +50,10 @@ than hardcoding anything under `example_files/`.
 ## FIT parsing is NOT in this repo
 
 Reading a FIT file, interpolating a track, and the elevation / splits / timer models
-all live in **`github.com/wisborg/fitactivity`**, checked out at `../fitactivity`
-and wired in by a `replace` directive in `go.mod` until it is published.
+all live in **`github.com/wisborg/fitactivity`**, an ordinary tagged dependency. To work
+on it and this project at the same time, add a temporary
+`replace github.com/wisborg/fitactivity => ../fitactivity` and take it out before
+committing — a `replace` on `main` makes the build depend on a checkout nobody else has.
 
 That module is **shared with videofx**. So:
 
