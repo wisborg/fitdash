@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/spf13/cobra v1.8.1
-	github.com/wisborg/fitactivity v0.2.0
+	github.com/wisborg/fitactivity v0.3.0
 	github.com/wisborg/output v0.2.0
 )
 
