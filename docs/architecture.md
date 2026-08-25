@@ -422,17 +422,23 @@ past its first proof.
 
 ## Open items
 
-- **`NOTICE` needs a FreeType section.** The drawing stack pulls in
-  `github.com/golang/freetype`, which is dual-licensed FTL or GPLv2. Electing the FTL makes
-  the FreeType credit mandatory, and this is a public Apache-2.0 repository. videofx's
-  `NOTICE` has the section this needs. It must land in step 4, with the dependency.
-- **One upstream change: `TimerModel.Paused(at) bool` in fitactivity.** `Frame.Paused` needs
-  it, the model already has the pause list built and merged, and it is purely additive.
-  It belongs on a branch in that repository, with a test, tagged, and verified against both
-  consumers. **Do not derive it locally** — the available hack is testing whether the moving
-  clock's derivative is zero, which works and is a second definition of "paused" free to
-  drift from the one `Active` uses. No step here blocks on it: `Frame.Paused` stays a zero
-  value until the first panel wants to draw "PAUSED".
+Both items below are **closed**; they are kept here because the reasoning is worth
+having when the code they concern is read.
+
+- **`NOTICE` carries a FreeType section.** The drawing stack pulls in
+  `github.com/golang/freetype` — not by an import here, but through `github.com/fogleman/gg`,
+  which uses its rasterizer and TrueType packages. It is dual-licensed FTL or GPLv2; this
+  project elects the FTL, whose advertising clause makes the credit mandatory rather than
+  courteous, and this is a public Apache-2.0 repository. Added ahead of the dependency
+  because `NOTICE` already listed `gg` and `golang.org/x/image` in anticipation, so
+  FreeType's absence was a gap in that list rather than a premature entry.
+- **`TimerModel.Paused(at) bool` exists upstream in fitactivity.** `Frame.Paused` reads it.
+  **Do not derive it locally** — the available hack is testing whether the moving clock's
+  derivative is zero, `Active(at+1s) == Active(at)`. It is not merely drift-prone, it is
+  wrong twice: it reports "paused" for every instant outside the activity's window, where
+  `Active` clamps and so cannot advance, and it ends a pause a second early for any
+  sub-second offset, which at 30 fps is very nearly every frame. Both failures are pinned
+  by tests in that repository.
 
 ## Not designed here
 

@@ -7,6 +7,21 @@ in satisfaction of those licenses' attribution requirements.
 
 
 -------------------------------------------------------------------------------
+FreeType  (github.com/golang/freetype)
+-------------------------------------------------------------------------------
+
+Portions of this software are copyright (C) 2010 The FreeType Project
+(www.freetype.org).  All rights reserved.
+
+The freetype-go package is used under the FreeType License (FTL), one of the
+two licenses that package offers; this project does not exercise the GNU
+General Public License option.  It is reached indirectly, through
+github.com/fogleman/gg, which imports its rasterizer and TrueType packages --
+so it is a dependency of this program whether or not it appears in an import
+statement here, and the FTL's advertising clause makes the credit above
+mandatory rather than courteous.
+
+-------------------------------------------------------------------------------
 Apache License 2.0 components
 -------------------------------------------------------------------------------
 
@@ -53,7 +68,10 @@ prior written permission.
 MIT components
 -------------------------------------------------------------------------------
 
-  github.com/fogleman/gg     Copyright (C) 2016 Michael Fogleman
+  github.com/fogleman/gg     Copyright (C) 2016 Michael Fogleman.  Note that gg
+                             pulls in github.com/golang/freetype, whose own
+                             license is not MIT -- see the FreeType section
+                             above.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
