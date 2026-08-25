@@ -93,17 +93,32 @@ A panel that silently draws nothing when its data is missing is the third option
 and is a bug: it leaves an unexplained hole and looks identical to a panel that
 crashed.
 
+Which of the two a panel gets is decided by *when* the absence is knowable, and the
+mechanism is in `docs/architecture.md`: an activity that never carried the metric is
+knowable before the layout is resolved, so the panel declines and its siblings grow;
+a dropout mid-activity is only knowable per frame, by which point the box is already
+assigned, so it must be a placeholder.
+
 ## Layout
 
-- `cmd/` — the CLI.
-- `internal/panel/` — the `Panel` interface and the layout model. One panel per
-  file, placed by a fractional-offset `Placement` in a `Layout` so a layout scales
-  across output resolutions rather than pinning pixels.
+**`docs/architecture.md` is the design this is being built to.** Read it before planning
+or implementing anything in the render path — it carries the reasoning behind the panel
+contract, the layout model, the absent-data policy and the timeline choice, including the
+alternatives that were rejected and why. The summary below is only the map.
+
+- `cmd/` — the CLI. The render is the ROOT command (`fitdash ACTIVITY.fit`); `inspect`
+  is a subcommand.
+- `internal/panel/` — the `Panel` contract and the layout model. One panel per file.
+  Panels are placed by weight in a tree of nested rows and columns, so a layout scales
+  across resolutions and closes up around a panel that declines to draw.
 - `internal/render/` — the frame loop: activity timeline → per-frame state → RGBA.
-- `internal/encode/` — the ffmpeg rawvideo pipe that turns frames into a video.
+- `internal/encode/` — the ffmpeg rawvideo pipe. Knows nothing about panels or activities.
 - `internal/route/` — GPS projection and route drawing. The map-service integration
   (Mapbox / Google / OSM tiles, and later a 3D view) lands here, behind an interface,
   and is **opt-in**: see the note on third-party map services below.
+- `internal/inspect/` — the coverage report, and the single source of truth for whether
+  an activity carries a given metric at all. Panels ask it rather than walking the
+  samples themselves, so a panel cannot disagree with what `fitdash inspect` just printed.
 
 ## Renders are personal data
 
