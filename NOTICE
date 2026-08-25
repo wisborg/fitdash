@@ -50,6 +50,9 @@ BSD 3-Clause components
                              this program.  The Go fonts are copyright Bigelow
                              & Holmes Inc.  An additional patent grant applies;
                              see the PATENTS file in that module.
+  golang.org/x/text          Copyright 2009 The Go Authors.  Reached through
+                             golang.org/x/image/font/sfnt.  The same additional
+                             patent grant applies.
   github.com/muktihari/fit   Copyright (c) 2023, Hikmatulloh Hari Mukti.
                              Reached through fitactivity.
   github.com/spf13/pflag     Copyright (c) 2012 Alex Ogier;
