@@ -5,10 +5,20 @@ import (
 	"testing"
 )
 
-// testPanel is a Panel that is only a name, which is all the layout can see.
+// testPanel is a Panel that draws nothing and accepts everything. The layout
+// tests exercise placement only, and which panels are placed is decided by the
+// keep predicate Resolve is given rather than by Accepts -- which is exactly
+// what let the layout be built and tested before a render context existed.
 type testPanel string
 
-func (p testPanel) Name() string { return string(p) }
+func (p testPanel) Name() string          { return string(p) }
+func (p testPanel) Accepts(*Context) bool { return true }
+
+func (p testPanel) Prepare(*Context, Box) Painter { return nopPainter{} }
+
+type nopPainter struct{ NoStatic }
+
+func (nopPainter) Dynamic(*Canvas, Frame) {}
 
 func leaf(name string, weight float64) Slot {
 	return Slot{Panel: testPanel(name), Weight: weight}

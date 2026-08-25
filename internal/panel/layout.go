@@ -5,23 +5,6 @@ import (
 	"math"
 )
 
-// Panel is one dashboard element.
-//
-// This is the LAYOUT's view of a panel, and it is deliberately narrow: placing
-// a panel requires only being able to name it. The drawing contract --
-// Accepts, Prepare, and the Painter they produce -- is added in the step that
-// introduces the render context, and an implementation that already has those
-// methods satisfies both views without changing.
-//
-// Whether a panel is placed at all is decided by the `keep` predicate Resolve
-// is given rather than by a method here, which is what lets the layout be
-// built and tested before anything a panel could be asked about exists.
-type Panel interface {
-	// Name identifies the panel in diagnostics and in the render summary that
-	// reports which panels drew and which declined.
-	Name() string
-}
-
 // Box is a resolved rectangle in frame pixels. A panel draws inside its box
 // and never outside it.
 //
