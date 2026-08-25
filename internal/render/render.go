@@ -53,9 +53,8 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 	if ctx.Timeline.Frames() <= 0 {
 		return nil, fmt.Errorf("render: timeline has no frames")
 	}
-	faces, err := panel.NewFaceCache()
-	if err != nil {
-		return nil, err
+	if ctx.Fonts == nil {
+		return nil, fmt.Errorf("render: context has no font cache")
 	}
 
 	var declined []string
@@ -77,7 +76,7 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 	}
 
 	r := &Renderer{
-		ctx: ctx, theme: theme, faces: faces,
+		ctx: ctx, theme: theme, faces: ctx.Fonts,
 		basePx: ctx.BasePx(), placed: placed, declined: declined,
 	}
 	for _, p := range placed {
@@ -115,6 +114,8 @@ func (r *Renderer) Frame(i int) panel.Frame {
 		Elapsed: r.ctx.Timer.Elapsed(at),
 		Active:  r.ctx.Timer.Active(at),
 		Paused:  r.ctx.Timer.Paused(at),
+
+		HasTimerEvents: r.ctx.Timer.HasTimerEvents(),
 	}
 	if s, ok := r.ctx.Track.AtWithGap(at, maxGap); ok {
 		f.Sample, f.HasSample = s, true

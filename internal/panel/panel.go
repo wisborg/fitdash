@@ -114,6 +114,16 @@ type Context struct {
 	// smaller dimension, carried here so a Painter can resolve its own sizes
 	// during Prepare rather than during drawing.
 	FontScale float64
+
+	// Fonts measures text. It is here because a panel must resolve its text
+	// sizes in Prepare, which has no Canvas -- see FaceCache.FitSize for why
+	// sizing during drawing is wrong rather than merely inconvenient.
+	//
+	// Whoever builds the Context builds this, and the renderer requires it
+	// rather than quietly creating one: a second cache would rebuild every
+	// face the first already holds, and at 45,000 frames that is not a
+	// rounding error.
+	Fonts *FaceCache
 }
 
 // BasePx is the layout's base text size in pixels for this frame size.
@@ -164,6 +174,18 @@ type Frame struct {
 	// from a live reading.
 	Sample    fitactivity.Sample
 	HasSample bool
+
+	// HasTimerEvents reports whether the file carried any `timer` event at
+	// all, and therefore whether Active is a measurement or merely equal to
+	// Elapsed for want of anything to subtract.
+	//
+	// It is a per-frame field despite being constant across the render, and
+	// that is deliberate. A panel cannot reach Context from Dynamic -- there
+	// is no pointer back, on purpose -- so a fact the dynamic pass needs must
+	// arrive on the Frame. Copying one bool per frame is the price of the
+	// direction of that dependency, and the direction is what keeps per-render
+	// state out of the dynamic pass.
+	HasTimerEvents bool
 
 	// Paused reports whether At falls inside one of the activity's paused
 	// intervals. What a panel does with it -- dim a readout, freeze a pace,

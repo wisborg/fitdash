@@ -39,7 +39,7 @@ func buildContext(t *testing.T, opts fittest.Options, w, h int, fps float64) *pa
 	}
 	return &panel.Context{
 		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
-		Width: w, Height: h, FontScale: 0.05,
+		Width: w, Height: h, FontScale: 0.05, Fonts: mustFaces(t),
 	}
 }
 

@@ -235,36 +235,48 @@ func (c *Canvas) Text(s string, x, y, ax, ay, px float64, col color.Color) error
 	return nil
 }
 
-// MeasureText returns the pixel extent s would occupy at px.
-func (c *Canvas) MeasureText(s string, px float64) (w, h float64, err error) {
-	face, err := c.faces.face(px)
+// Measure returns the pixel extent s occupies at px.
+//
+// It lives on the cache rather than on the Canvas because a panel resolves its
+// text sizes in Prepare, which has no Canvas -- and it must, for two reasons.
+// A size recomputed per frame changes as the digits do, so the readout jitters
+// horizontally. And a size resolved during drawing is per-frame state
+// influencing what is drawn, which is exactly the kind of thing the static
+// layer cannot see: chrome laid out against one size while the value drawn
+// over it used another.
+func (c *FaceCache) Measure(s string, px float64) (w, h float64, err error) {
+	face, err := c.face(px)
 	if err != nil {
 		return 0, 0, err
 	}
-	c.dc.SetFontFace(face)
-	w, h = c.dc.MeasureString(s)
-	return w, h, nil
+	adv := font.MeasureString(face, s)
+	m := face.Metrics()
+	return float64(adv) / 64, float64(m.Ascent+m.Descent) / 64, nil
 }
 
-// FitTextSize returns the largest size no greater than px at which s fits
-// within maxW.
+// FitSize returns the largest size no greater than px at which s fits within
+// maxW.
 //
 // Panels need this because a Box is a rectangle they must fit rather than an
-// anchor they can grow away from: a readout that is comfortable at 1080p can
-// overflow the same box in a portrait frame, where the width collapses. The
-// result is never below 1 pixel -- a caller with a box too small for even that
-// has a layout problem, not a typography one, and Resolve already refuses a
-// frame too small for its arrangement.
+// anchor they can grow away from: a readout comfortable at 1080p can overflow
+// the same box in a portrait frame, where the width collapses.
 //
-// Scaling by the measured ratio rather than searching: text width is very
-// nearly linear in size for a monospace face, so one measurement and one
-// correction land within a pixel, where a binary search would cost a dozen
-// measurements per frame for no visible difference.
-func (c *Canvas) FitTextSize(s string, maxW, px float64) (float64, error) {
+// A panel should call this in Prepare with a TEMPLATE string -- the widest the
+// readout can get, "88:88:88" rather than the current value -- so the size is
+// fixed for the render. Sizing to the actual value would shrink and grow the
+// text as the activity ran.
+//
+// Scaling by the measured ratio rather than searching: width is very nearly
+// linear in size for a monospace face, so one measurement and one correction
+// land within a pixel, where a binary search would cost a dozen measurements.
+// The result never goes below one pixel -- a box too small for that is a
+// layout problem, and Resolve already refuses a frame too small for its
+// arrangement.
+func (c *FaceCache) FitSize(s string, maxW, px float64) (float64, error) {
 	if s == "" || maxW <= 0 || px <= 0 {
 		return px, nil
 	}
-	w, _, err := c.MeasureText(s, px)
+	w, _, err := c.Measure(s, px)
 	if err != nil {
 		return 0, err
 	}
@@ -275,11 +287,10 @@ func (c *Canvas) FitTextSize(s string, maxW, px float64) (float64, error) {
 	if scaled < 1 {
 		scaled = 1
 	}
-	// One correction pass: rounding to a whole-pixel face size can push the
-	// result back over the limit, and a readout one pixel wider than its box
-	// is a readout with a clipped digit.
+	// Rounding to a whole-pixel face can push the result back over the limit,
+	// and a readout one pixel wider than its box has a clipped digit.
 	for scaled > 1 {
-		w, _, err := c.MeasureText(s, scaled)
+		w, _, err := c.Measure(s, scaled)
 		if err != nil {
 			return 0, err
 		}
@@ -289,4 +300,17 @@ func (c *Canvas) FitTextSize(s string, maxW, px float64) (float64, error) {
 		scaled--
 	}
 	return scaled, nil
+}
+
+// Fonts exposes the face cache, for a panel measuring inside Prepare.
+func (c *Canvas) Fonts() *FaceCache { return c.faces }
+
+// MeasureText is Fonts().Measure, for a panel already holding a Canvas.
+func (c *Canvas) MeasureText(s string, px float64) (w, h float64, err error) {
+	return c.faces.Measure(s, px)
+}
+
+// FitTextSize is Fonts().FitSize, for a panel already holding a Canvas.
+func (c *Canvas) FitTextSize(s string, maxW, px float64) (float64, error) {
+	return c.faces.FitSize(s, maxW, px)
 }
