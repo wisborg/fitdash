@@ -135,15 +135,6 @@ check-deps)
 		echo "ffmpeg: NOT FOUND on PATH"
 		status=1
 	fi
-	# ../output is a replace target in go.mod, so the build genuinely cannot
-	# proceed without it. fitactivity is an ordinary tagged dependency and
-	# needs no checkout, so it is not checked here.
-	if [ -d ../output ]; then
-		echo "output: ../output (replace directive in go.mod)"
-	else
-		echo "output: ../output MISSING -- go.mod replaces the module with it"
-		status=1
-	fi
 	report check-deps $status
 	;;
 
