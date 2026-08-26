@@ -28,6 +28,34 @@ type renderOptions struct {
 	frames    bool
 	frameAt   []time.Duration
 	quiet     bool
+	power     string
+}
+
+// powerSources maps the --power-source flag values to their enum.
+//
+// The vocabulary -- the flag name, the three values, and what each means -- is
+// deliberately identical to videofx's. The two programs read the same files
+// through the same library, and a user who has learned "--power-source stryd"
+// in one should not have to learn a different spelling of the same idea in the
+// other.
+var powerSources = map[string]fitactivity.PowerSource{
+	"auto":   fitactivity.PowerAuto,
+	"stryd":  fitactivity.PowerStryd,
+	"native": fitactivity.PowerNative,
+}
+
+// parsePowerSource maps a --power-source value to its enum, rejecting an
+// unknown one where the user typed it rather than falling back to a default.
+//
+// Falling back would be the worse failure: a typo would silently render the
+// activity against a different sensor, and the two disagree by enough to be
+// mistaken for a bad workout rather than a bad flag.
+func parsePowerSource(mode string) (fitactivity.PowerSource, error) {
+	src, ok := powerSources[mode]
+	if !ok {
+		return 0, fmt.Errorf("render: --power-source %q is invalid; use auto, stryd, or native", mode)
+	}
+	return src, nil
 }
 
 var renderOpts renderOptions
@@ -43,11 +71,21 @@ func bindRenderFlags(c *cobra.Command) {
 	f.BoolVar(&renderOpts.frames, "frames", false, "write landmark frames as PNG instead of encoding a video")
 	f.DurationSliceVar(&renderOpts.frameAt, "frame-at", nil, "with --frames, also write the frame at this offset into the activity (repeatable, e.g. 12m30s)")
 	f.BoolVar(&renderOpts.quiet, "quiet", false, "suppress the progress line and the summary")
+	f.StringVar(&renderOpts.power, "power-source", "auto",
+		"which power reading to show when the activity carries both a footpod (Stryd) developer field and the standard FIT power field -- "+
+			"\"auto\" (default: prefer Stryd, fall back to native), \"stryd\" (force the footpod's developer field), or "+
+			"\"native\" (force the standard FIT power field). The two can disagree since they are different sensors, and a forced "+
+			"source that is absent shows a placeholder rather than the other sensor's number")
 }
 
 // runRender is the root command: fitdash ACTIVITY.fit.
 func runRender(cmd *cobra.Command, args []string) error {
 	w, h, err := parseSize(renderOpts.size)
+	if err != nil {
+		return err
+	}
+
+	powerSrc, err := parsePowerSource(renderOpts.power)
 	if err != nil {
 		return err
 	}
@@ -70,14 +108,15 @@ func runRender(cmd *cobra.Command, args []string) error {
 
 	layout := panel.SelectLayout(w, h)
 	rctx := &panel.Context{
-		Track:     track,
-		Report:    inspect.Build(track),
-		Timer:     timer,
-		Timeline:  timeline,
-		Width:     w,
-		Height:    h,
-		FontScale: layout.FontScale,
-		Fonts:     fonts,
+		Track:       track,
+		Report:      inspect.Build(track),
+		Timer:       timer,
+		Timeline:    timeline,
+		Width:       w,
+		Height:      h,
+		FontScale:   layout.FontScale,
+		Fonts:       fonts,
+		PowerSource: powerSrc,
 	}
 	r, err := render.New(rctx, layout, panel.DefaultTheme())
 	if err != nil {

@@ -22,6 +22,15 @@ type Readout struct {
 	metric string
 	value  func(fitactivity.Sample) (float64, bool)
 	format func(float64) string
+
+	// carries overrides the default coverage test for panels whose "does this
+	// activity have it" question the report cannot answer. See Power.
+	carries func(*Context) bool
+
+	// bind, when set, rebuilds the value accessor from the render context.
+	// Power needs it: which sensor to read is a render-wide choice, and a
+	// closure fixed at construction could not know it.
+	bind func(*Context, Readout) Readout
 }
 
 // HeartRate reads the standard FIT heart rate field.
@@ -35,19 +44,39 @@ func HeartRate() Readout {
 	}
 }
 
-// Power reads the standard FIT power field.
+// Power reads whichever power sensor Context.PowerSource selects.
 //
-// Not the Stryd developer field, which a footpod registers under its own name
-// and which can disagree with this one -- they are different sensors' readings.
-// Choosing between them is a decision with a flag behind it in the sibling
-// project, and it is not made here yet.
+// A FIT file can carry two: the standard Record.power field, and a developer
+// field a footpod such as a Stryd registers under its own name. They are
+// different sensors and they disagree -- on the recording this was built
+// against, native peaks at 568 W and Stryd at 374 -- so this is a choice about
+// which instrument to believe, not about formatting.
+//
+// The resolution rule is fitactivity's ResolvedPower, shared with videofx
+// rather than reimplemented, including its strictness: asking for one source
+// specifically and not getting it yields a PLACEHOLDER, never the other
+// sensor's number quietly substituted.
 func Power() Readout {
 	return Readout{
 		name: "power", label: "POWER", unit: "W", metric: inspect.MetricPower,
-		value: func(s fitactivity.Sample) (float64, bool) {
-			return float64(s.Power), s.HasPower
-		},
 		format: func(v float64) string { return fmt.Sprintf("%.0f", v) },
+
+		// Whether this activity has power AT ALL cannot be answered from the
+		// coverage report, which is why this panel is the one exception to
+		// panels asking the report. The report counts metrics by NAME, and
+		// both sources are called "Power" -- so a lookup finds the native row
+		// and reports on a sensor the user may not have selected. HasPower
+		// applies ResolvedPower to every sample, which is the same rule the
+		// readout itself uses, so the decision to place the panel and the
+		// decision to draw a number cannot disagree.
+		carries: func(ctx *Context) bool {
+			return ctx.Track != nil && ctx.Track.HasPower(ctx.PowerSource)
+		},
+		bind: func(ctx *Context, r Readout) Readout {
+			src := ctx.PowerSource
+			r.value = func(s fitactivity.Sample) (float64, bool) { return s.ResolvedPower(src) }
+			return r
+		},
 	}
 }
 
@@ -88,11 +117,19 @@ func (r Readout) Name() string { return r.name }
 // out for ninety seconds -- cannot be answered here at all, because the box is
 // already assigned by then; that is a placeholder. Which of the two a panel
 // gets is decided by when the absence is knowable, not by preference.
-func (r Readout) Accepts(ctx *Context) bool { return ctx.Report.Carries(r.metric) }
+func (r Readout) Accepts(ctx *Context) bool {
+	if r.carries != nil {
+		return r.carries(ctx)
+	}
+	return ctx.Report.Carries(r.metric)
+}
 
 // Prepare resolves sizes and positions once. See ElapsedPanel.Prepare for why
 // this cannot wait until drawing.
 func (r Readout) Prepare(ctx *Context, box Box) Painter {
+	if r.bind != nil {
+		r = r.bind(ctx, r)
+	}
 	p := &readoutPainter{Readout: r, box: box}
 
 	unit := box.H

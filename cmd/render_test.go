@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wisborg/fitactivity"
+
 	"github.com/wisborg/fitdash/internal/panel"
 )
 
@@ -175,5 +177,48 @@ func TestNewReporter_UsesInlineOnlyForATerminal(t *testing.T) {
 	rep.Update(5)
 	if strings.Contains(buf.String(), "\r") {
 		t.Error("progress to a non-terminal used a carriage return")
+	}
+}
+
+// TestParsePowerSource_MatchesVideofxsVocabulary pins the three spellings.
+//
+// They are pinned as literals on purpose. The point of this flag is that it
+// reads the same as videofx's -- same name, same values, same meanings -- for
+// a user moving between two programs that read the same files through the same
+// library. A rename here would break that quietly, since both would still
+// work; only the consistency would be gone.
+func TestParsePowerSource_MatchesVideofxsVocabulary(t *testing.T) {
+	cases := []struct {
+		in   string
+		want fitactivity.PowerSource
+	}{
+		{"auto", fitactivity.PowerAuto},
+		{"stryd", fitactivity.PowerStryd},
+		{"native", fitactivity.PowerNative},
+	}
+	for _, c := range cases {
+		got, err := parsePowerSource(c.in)
+		if err != nil {
+			t.Errorf("parsePowerSource(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("parsePowerSource(%q) = %v, want %v", c.in, got, c.want)
+		}
+		// And the enum spells itself the same way back, which is what lets a
+		// diagnostic name the source the user asked for.
+		if got.String() != c.in {
+			t.Errorf("%v.String() = %q, want %q", got, got.String(), c.in)
+		}
+	}
+
+	// An unknown value is refused where it was typed rather than falling back.
+	// A silent fallback would render the activity against a different sensor
+	// after a typo, and the two disagree by enough to be mistaken for a bad
+	// workout rather than a bad flag.
+	for _, bad := range []string{"", "Stryd", "garmin", "footpod", "none"} {
+		if _, err := parsePowerSource(bad); err == nil {
+			t.Errorf("parsePowerSource(%q) was accepted", bad)
+		}
 	}
 }

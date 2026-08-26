@@ -3,27 +3,60 @@ package panel
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/wisborg/fitactivity"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 )
 
-// reportWith builds a report in which exactly the named metrics have coverage.
-func reportWith(present ...string) inspect.Report {
-	r := inspect.Report{Samples: 100}
-	for _, name := range []string{
-		inspect.MetricHeartRate, inspect.MetricPower, inspect.MetricCadence,
-	} {
-		m := inspect.Metric{Name: name}
-		for _, p := range present {
-			if p == name {
-				m.Present = 100
-			}
-		}
-		r.Metrics = append(r.Metrics, m)
+// trackWith builds a track whose samples carry exactly the named metrics.
+//
+// A real Track rather than a hand-built Report, because the power panel cannot
+// answer "does this activity have power" from a report at all -- both sources
+// are named "Power" -- and asks fitactivity.Track.HasPower instead. Deriving
+// the report FROM the track also means the two cannot disagree in a fixture,
+// which is the property the production code is built around.
+func trackWith(present ...string) *fitactivity.Track {
+	has := map[string]bool{}
+	for _, p := range present {
+		has[p] = true
 	}
-	return r
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 100)
+	for i := range samples {
+		s := fitactivity.Sample{Time: base.Add(time.Duration(i) * time.Second)}
+		if has[inspect.MetricHeartRate] {
+			s.HasHeartRate, s.HeartRate = true, uint8(140+i%10)
+		}
+		if has[inspect.MetricPower] {
+			s.HasPower, s.Power = true, uint16(200+i%40)
+		}
+		if has[strydPower] {
+			s.DevFields = map[string]float64{fitactivity.StrydPowerField: float64(180 + i%30)}
+		}
+		if has[inspect.MetricCadence] {
+			s.HasCadence, s.Cadence = true, uint8(80+i%6)
+		}
+		samples[i] = s
+	}
+	return &fitactivity.Track{Samples: samples}
+}
+
+// strydPower names the footpod's developer field in these fixtures. It is not
+// an inspect metric constant: the developer field's name comes from the FIT
+// file itself, and fitactivity exposes the one Stryd uses.
+const strydPower = "stryd-power"
+
+// ctxWith builds a render context over a track carrying the named metrics.
+func ctxWith(present ...string) *Context {
+	track := trackWith(present...)
+	return &Context{Track: track, Report: inspect.Build(track)}
+}
+
+// reportWith is kept for the tests that genuinely only exercise the report.
+func reportWith(present ...string) inspect.Report {
+	return inspect.Build(trackWith(present...))
 }
 
 // TestReadout_MetricNamesResolveInARealReport is the guard for the stringly-
@@ -83,8 +116,8 @@ func TestReadoutPlaceholder_IsNotANumber(t *testing.T) {
 // TestReadout_AcceptsFollowsCoverage pins the uniform rule: any coverage at
 // all keeps the panel, none declines it.
 func TestReadout_AcceptsFollowsCoverage(t *testing.T) {
-	withPower := &Context{Report: reportWith(inspect.MetricHeartRate, inspect.MetricPower)}
-	withoutPower := &Context{Report: reportWith(inspect.MetricHeartRate)}
+	withPower := ctxWith(inspect.MetricHeartRate, inspect.MetricPower)
+	withoutPower := ctxWith(inspect.MetricHeartRate)
 
 	if !Power().Accepts(withPower) {
 		t.Error("Power declined an activity that carries power")
@@ -99,10 +132,11 @@ func TestReadout_AcceptsFollowsCoverage(t *testing.T) {
 	// A metric present only part of the time is KEPT: that is a dropout, and
 	// the placeholder path handles it honestly. A percentage threshold would
 	// need a defensible number and there is not one.
-	partial := inspect.Report{Samples: 100, Metrics: []inspect.Metric{
-		{Name: inspect.MetricPower, Present: 4},
-	}}
-	if !Power().Accepts(&Context{Report: partial}) {
+	partial := trackWith(inspect.MetricPower)
+	for i := 4; i < len(partial.Samples); i++ {
+		partial.Samples[i].HasPower = false
+	}
+	if !Power().Accepts(&Context{Track: partial, Report: inspect.Build(partial)}) {
 		t.Error("Power declined at 4% coverage; partial data is a dropout, not an absence")
 	}
 }
@@ -212,14 +246,10 @@ func TestReadout_StaysInsideEveryBoxShape(t *testing.T) {
 func TestLayouts_CloseUpWhenAPanelDeclines(t *testing.T) {
 	const w, h = 1920, 1080
 
-	withPower := &Context{
-		Report: reportWith(inspect.MetricHeartRate, inspect.MetricPower),
-		Width:  w, Height: h,
-	}
-	withoutPower := &Context{
-		Report: reportWith(inspect.MetricHeartRate),
-		Width:  w, Height: h,
-	}
+	withPower := ctxWith(inspect.MetricHeartRate, inspect.MetricPower)
+	withPower.Width, withPower.Height = w, h
+	withoutPower := ctxWith(inspect.MetricHeartRate)
+	withoutPower.Width, withoutPower.Height = w, h
 
 	l := SelectLayout(w, h)
 	keep := func(ctx *Context) func(Panel) bool {
@@ -280,7 +310,7 @@ func TestSelectLayout_PicksATreePerOrientation(t *testing.T) {
 		t.Errorf("a square frame selected %q, want landscape", got)
 	}
 
-	ctx := &Context{Report: reportWith(inspect.MetricHeartRate, inspect.MetricPower)}
+	ctx := ctxWith(inspect.MetricHeartRate, inspect.MetricPower)
 	keep := func(p Panel) bool { return p.Accepts(ctx) }
 	for _, s := range []struct {
 		name string
@@ -407,5 +437,114 @@ func TestPanelNames_AreConsistentAndDistinct(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// TestPower_FollowsTheSelectedSource pins that the flag actually selects a
+// sensor, on a fixture carrying BOTH -- which is the only case where the
+// choice is observable, and the case the real recording presents.
+//
+// The two sources disagree by design: on the activity this was built against,
+// native peaks at 568 W and the footpod's field at 374. Showing one when the
+// user asked for the other is not a formatting slip; it is displaying a
+// different instrument's measurement under the label they chose.
+func TestPower_FollowsTheSelectedSource(t *testing.T) {
+	both := trackWith(inspect.MetricPower, strydPower)
+	sample := both.Samples[0]
+
+	native, ok := sample.ResolvedPower(fitactivity.PowerNative)
+	if !ok {
+		t.Fatal("fixture has no native power")
+	}
+	stryd, ok := sample.ResolvedPower(fitactivity.PowerStryd)
+	if !ok {
+		t.Fatal("fixture has no footpod power")
+	}
+	if native == stryd {
+		t.Fatalf("the fixture's two sources both read %v; it cannot distinguish them", native)
+	}
+
+	cases := []struct {
+		src  fitactivity.PowerSource
+		want float64
+	}{
+		{fitactivity.PowerNative, native},
+		{fitactivity.PowerStryd, stryd},
+		// Auto prefers the footpod when it is there.
+		{fitactivity.PowerAuto, stryd},
+	}
+	for _, c := range cases {
+		t.Run(c.src.String(), func(t *testing.T) {
+			ctx := &Context{Track: both, Report: inspect.Build(both), PowerSource: c.src}
+			p := Power().Prepare(ctx, Box{W: 200, H: 200}).(*readoutPainter)
+			got, ok := p.value(sample)
+			if !ok {
+				t.Fatal("no reading resolved")
+			}
+			if got != c.want {
+				t.Errorf("source %v read %v, want %v", c.src, got, c.want)
+			}
+		})
+	}
+}
+
+// TestPower_AutoFallsBackToNative covers the other half of auto: an activity
+// with a power meter but no footpod still shows power.
+func TestPower_AutoFallsBackToNative(t *testing.T) {
+	nativeOnly := ctxWith(inspect.MetricPower)
+	nativeOnly.PowerSource = fitactivity.PowerAuto
+	if !Power().Accepts(nativeOnly) {
+		t.Fatal("auto declined an activity carrying native power")
+	}
+	p := Power().Prepare(nativeOnly, Box{W: 200, H: 200}).(*readoutPainter)
+	if _, ok := p.value(nativeOnly.Track.Samples[0]); !ok {
+		t.Error("auto resolved no reading from native power")
+	}
+}
+
+// TestPower_AForcedSourceDeclinesRatherThanSubstituting is the strictness that
+// makes the flag mean anything.
+//
+// Asking for the footpod on an activity that has only a power meter must
+// DECLINE -- so the layout closes up and the summary says power was declined --
+// rather than quietly showing the other sensor's number under the same label.
+// A silent substitution would make the flag look like it worked while
+// displaying the thing it was used to avoid.
+func TestPower_AForcedSourceDeclinesRatherThanSubstituting(t *testing.T) {
+	nativeOnly := ctxWith(inspect.MetricPower)
+	nativeOnly.PowerSource = fitactivity.PowerStryd
+	if Power().Accepts(nativeOnly) {
+		t.Error("--power-source stryd accepted an activity with only native power")
+	}
+
+	strydOnly := ctxWith(strydPower)
+	strydOnly.PowerSource = fitactivity.PowerNative
+	if Power().Accepts(strydOnly) {
+		t.Error("--power-source native accepted an activity with only footpod power")
+	}
+	// ...and auto takes it.
+	strydOnly.PowerSource = fitactivity.PowerAuto
+	if !Power().Accepts(strydOnly) {
+		t.Error("auto declined an activity carrying footpod power")
+	}
+}
+
+// TestPower_AcceptsCannotBeAnsweredByTheReport documents why this panel is the
+// one exception to panels asking the coverage report.
+//
+// Both sources are called "Power", so a report lookup by name finds the native
+// row and answers about a sensor the user may not have selected. Here is a
+// fixture where the report says power is present while the SELECTED source has
+// none -- and the panel must decline.
+func TestPower_AcceptsCannotBeAnsweredByTheReport(t *testing.T) {
+	nativeOnly := trackWith(inspect.MetricPower)
+	rep := inspect.Build(nativeOnly)
+
+	if !rep.Carries(inspect.MetricPower) {
+		t.Fatal("precondition: the report should say this activity carries power")
+	}
+	ctx := &Context{Track: nativeOnly, Report: rep, PowerSource: fitactivity.PowerStryd}
+	if Power().Accepts(ctx) {
+		t.Error("the panel agreed with the report rather than with the selected source")
 	}
 }

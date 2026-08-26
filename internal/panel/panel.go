@@ -115,6 +115,17 @@ type Context struct {
 	// during Prepare rather than during drawing.
 	FontScale float64
 
+	// PowerSource selects which power reading the power panel shows when the
+	// activity carries both a footpod's developer field and the standard FIT
+	// power field. The zero value is fitactivity.PowerAuto: prefer the
+	// footpod, fall back to native.
+	//
+	// The two are different sensors and routinely disagree -- on the
+	// recording this was built against, native peaks at 568 W and the Stryd
+	// field at 374 -- so which one is shown is a real choice rather than a
+	// formatting preference.
+	PowerSource fitactivity.PowerSource
+
 	// Fonts measures text. It is here because a panel must resolve its text
 	// sizes in Prepare, which has no Canvas -- see FaceCache.FitSize for why
 	// sizing during drawing is wrong rather than merely inconvenient.
