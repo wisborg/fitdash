@@ -320,8 +320,13 @@ optimisation available by far was simply not to draw a frame whose content had n
 
 The playhead is placed from an *interpolated* distance, so it moves a fraction of a pixel
 every frame — and it should. A playhead that jumped once a second would look broken beside
-a clock that ticks. The route dot snaps to route points and so inherits the data's 1 Hz;
-the playhead does not, deliberately.
+a clock that ticks. The route dot snaps to recorded fixes and so inherits the data's own
+rate — 1 Hz for the files this targets; the playhead does not, deliberately.
+
+(An earlier version of this paragraph said the dot inherits 1 Hz full stop. It did not:
+the position was looked up in the *downsampled* outline, so on a four-hour ride it froze
+for 29 seconds at a time. Every test used a fixture below the downsampling cap, where the
+two lists are identical and the bug cannot appear. Found by review, not by a test.)
 
 So smooth motion and frame redundancy are in direct tension, and a whole-frame cache is
 worth nothing as soon as one panel animates continuously. Anything that recovers the win

@@ -66,7 +66,7 @@ func TestVideo_EndToEndProducesAPlayableFile(t *testing.T) {
 	// keyframe and a run of "nothing changed" -- which would still produce a
 	// file, and would make a frame count prove less than it appears to.
 	for i := 0; i < frames; i++ {
-		if err := sink.WriteFrame(solidFrame(w, h, uint8(i*20), uint8(255-i*20), 128)); err != nil {
+		if err := sink.WriteFrame(i, solidFrame(w, h, uint8(i*20), uint8(255-i*20), 128)); err != nil {
 			t.Fatalf("WriteFrame(%d): %v", i, err)
 		}
 	}
@@ -116,14 +116,14 @@ func TestVideo_WrongSizedFrameIsRejectedBeforeItReachesFFmpeg(t *testing.T) {
 	}
 	defer sink.Close()
 
-	if err := sink.WriteFrame(solidFrame(32, 48, 0, 0, 0)); err == nil {
+	if err := sink.WriteFrame(0, solidFrame(32, 48, 0, 0, 0)); err == nil {
 		t.Error("WriteFrame accepted a frame of the wrong width")
 	}
 	// The first error must stick: a caller looping over 45,000 frames should
 	// get one actionable error, not one per frame, and must not be told that
 	// a later correctly-sized frame succeeded after the stream was already
 	// corrupted.
-	if err := sink.WriteFrame(solidFrame(64, 48, 0, 0, 0)); err == nil {
+	if err := sink.WriteFrame(0, solidFrame(64, 48, 0, 0, 0)); err == nil {
 		t.Error("WriteFrame succeeded after a previous write had failed; the first error must stick")
 	}
 	if err := sink.Close(); err == nil {
@@ -146,7 +146,7 @@ func TestVideo_CloseIsIdempotent(t *testing.T) {
 		t.Fatalf("OpenVideo: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		if err := sink.WriteFrame(solidFrame(32, 32, 10, 20, 30)); err != nil {
+		if err := sink.WriteFrame(i, solidFrame(32, 32, 10, 20, 30)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -194,7 +194,7 @@ func TestOpenVideo_FailingFFmpegReportsItsOwnDiagnostic(t *testing.T) {
 	}
 	// ffmpeg exits asynchronously, so the failure may surface at either the
 	// write or the close. Both must carry the diagnostic.
-	_ = sink.WriteFrame(solidFrame(32, 32, 0, 0, 0))
+	_ = sink.WriteFrame(0, solidFrame(32, 32, 0, 0, 0))
 	closeErr := sink.Close()
 	if closeErr == nil {
 		t.Fatal("Close reported success for an unknown codec")

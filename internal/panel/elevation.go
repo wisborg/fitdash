@@ -27,15 +27,54 @@ type ElevationPanel struct{}
 // Name identifies the panel.
 func (ElevationPanel) Name() string { return "elevation" }
 
-// Accepts requires BOTH elevation and distance.
+// Accepts requires BOTH elevation and distance, and requires them on the same
+// samples.
 //
 // Distance is not incidental: it is the profile's x axis. An activity with
 // barometric elevation but no distance -- a treadmill session, a rowing
 // machine -- has readings with nothing to plot them against, and a profile
 // drawn against sample index would be a different graph wearing this one's
 // labels.
+//
+// Asking the coverage report about each independently is NOT enough, and the
+// gap was real. The report counts them per metric, so a file whose elevation
+// and distance land on disjoint samples satisfies both questions while
+// BuildElevationModel -- which keeps only samples carrying both -- comes back
+// empty. The panel was then placed, took the full-width strip at the bottom of
+// the landscape layout, and drew nothing: an unexplained band of background,
+// indistinguishable from a panel that crashed, and absent from the "declined"
+// summary because it had not declined. That is precisely the third option
+// CLAUDE.md calls a bug.
+//
+// So the model itself is the test. Building it twice -- here and again in
+// Prepare -- costs one extra pass over the samples once per render, which is
+// nothing beside rendering a strip of background for the whole video.
 func (ElevationPanel) Accepts(ctx *Context) bool {
-	return ctx.Report.Carries(inspect.MetricElevation) && ctx.Report.Carries(inspect.MetricDistance)
+	if ctx.Track == nil {
+		return false
+	}
+	if !ctx.Report.Carries(inspect.MetricElevation) || !ctx.Report.Carries(inspect.MetricDistance) {
+		return false
+	}
+	m := fitactivity.BuildElevationModel(ctx.Track, elevationOptions(ctx))
+	return m != nil && !m.Empty()
+}
+
+// elevationOptions tunes the smoothing against the device's own ascent and
+// descent totals where the file reported them.
+//
+// Barometric elevation is noisy enough that a raw per-sample sum wildly
+// overcounts climbing, and matching a figure the watch already published is
+// more trustworthy than any constant chosen here. It is a function rather than
+// inline so Accepts and Prepare build the SAME model -- one deciding to place
+// the panel on a model the other did not build would be the disagreement this
+// change exists to remove.
+func elevationOptions(ctx *Context) fitactivity.ElevationOptions {
+	var opts fitactivity.ElevationOptions
+	if ctx.Track != nil && ctx.Track.HasElevationTotals {
+		opts.TargetGain, opts.TargetLoss = ctx.Track.TotalAscent, ctx.Track.TotalDescent
+	}
+	return opts
 }
 
 // profileSampleStep is how many pixels apart the profile is sampled.
@@ -49,17 +88,15 @@ const profileSampleStep = 2.0
 func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 	p := &elevationPainter{box: box}
 
-	// Tune the smoothing against the device's own ascent and descent totals
-	// where the file reported them. Barometric elevation is noisy enough that
-	// a raw per-sample sum wildly overcounts climbing, and matching a figure
-	// the watch already published is more trustworthy than any constant
-	// chosen here.
-	var opts fitactivity.ElevationOptions
-	if ctx.Track != nil && ctx.Track.HasElevationTotals {
-		opts.TargetGain, opts.TargetLoss = ctx.Track.TotalAscent, ctx.Track.TotalDescent
+	if ctx.Track == nil {
+		return p
 	}
-	m := fitactivity.BuildElevationModel(ctx.Track, opts)
+	m := fitactivity.BuildElevationModel(ctx.Track, elevationOptions(ctx))
 	if m == nil || m.Empty() {
+		// Accepts builds the same model and declines on this, so reaching here
+		// means a caller placed the panel without asking. Drawing nothing is
+		// then the least-wrong option available, but it is not one this panel
+		// chooses for itself.
 		return p
 	}
 

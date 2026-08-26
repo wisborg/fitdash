@@ -53,6 +53,16 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 	if ctx.Timeline.Frames() <= 0 {
 		return nil, fmt.Errorf("render: timeline has no frames")
 	}
+	// Track and Timer are dereferenced on every frame, so a nil one panics
+	// deep inside the loop rather than failing here beside the two checks that
+	// were already made. panel.Context is an exported struct with exported
+	// fields; a caller can omit either.
+	if ctx.Track == nil {
+		return nil, fmt.Errorf("render: context has no track")
+	}
+	if ctx.Timer == nil {
+		return nil, fmt.Errorf("render: context has no timer model")
+	}
 	if ctx.Fonts == nil {
 		return nil, fmt.Errorf("render: context has no font cache")
 	}
@@ -198,9 +208,24 @@ func Run(ctx context.Context, r *Renderer, sink encode.Sink, progress func(i, n 
 	// over 45,000 frames is not a leak but is an enormous amount of garbage.
 	buf := image.NewRGBA(image.Rect(0, 0, r.ctx.Width, r.ctx.Height))
 
+	// A sink that only needs some frames says so, and the ones it does not
+	// need are never drawn. That is what makes --frames a preview rather than
+	// a full render with almost all of its output discarded: it took 36
+	// seconds to produce five PNGs before this.
+	selector, selective := sink.(encode.Selector)
+
 	for i := 0; i < n; i++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("render: cancelled after %d of %d frames: %w", i, n, err)
+		}
+		if selective && !selector.Wants(i) {
+			// Offered to the sink anyway, so it can tell how long the render
+			// was -- and reported to progress, so the bar tracks position in
+			// the activity rather than how many frames happened to be wanted.
+			if progress != nil {
+				progress(i+1, n)
+			}
+			continue
 		}
 		// Restore the static base rather than redrawing it: copying pixels is
 		// the entire reason the static layer exists, and at 45,000 frames the
@@ -212,7 +237,7 @@ func Run(ctx context.Context, r *Renderer, sink encode.Sink, progress func(i, n 
 		if err := r.RenderDynamic(buf, f); err != nil {
 			return fmt.Errorf("render: drawing frame %d of %d: %w", i, n, err)
 		}
-		if err := sink.WriteFrame(buf); err != nil {
+		if err := sink.WriteFrame(i, buf); err != nil {
 			return fmt.Errorf("render: writing frame %d of %d: %w", i, n, err)
 		}
 		if progress != nil {

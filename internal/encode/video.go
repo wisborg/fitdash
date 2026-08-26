@@ -182,7 +182,7 @@ func OpenVideo(ctx context.Context, cfg Config) (*Video, error) {
 // argument) makes every subsequent write fail with EPIPE, and without this a
 // caller looping over 45,000 frames gets 45,000 near-identical errors, only
 // the first of which says anything about the cause.
-func (v *Video) WriteFrame(img *image.RGBA) error {
+func (v *Video) WriteFrame(_ int, img *image.RGBA) error {
 	if v.writeErr != nil {
 		return v.writeErr
 	}
@@ -190,6 +190,8 @@ func (v *Video) WriteFrame(img *image.RGBA) error {
 		v.writeErr = err
 		return err
 	}
+	// The index is ignored: a video needs every frame in order, and Video
+	// deliberately does not implement Selector, so it always gets them.
 	if _, err := v.stdin.Write(img.Pix); err != nil {
 		// A write error here is nearly always ffmpeg having exited, in which
 		// case its stderr says why and the EPIPE does not. Close collects

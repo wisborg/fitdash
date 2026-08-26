@@ -37,14 +37,34 @@ import (
 //
 // Close is idempotent, which is what makes that pair safe.
 type Sink interface {
-	// WriteFrame consumes one frame. The image must match the sink's
-	// configured dimensions; it is NOT retained, so a caller may reuse one
-	// buffer across the whole render.
-	WriteFrame(img *image.RGBA) error
+	// WriteFrame consumes frame i. The image must match the sink's configured
+	// dimensions; it is NOT retained, so a caller may reuse one buffer across
+	// the whole render.
+	//
+	// The index is passed rather than counted internally because a sink that
+	// implements Selector does not see every frame, so its own call count
+	// would no longer identify which frame it was handed -- and a PNG named
+	// for the wrong frame is worse than no PNG.
+	WriteFrame(i int, img *image.RGBA) error
 
 	// Close finishes the output and reports whether it succeeded. Calling it
 	// more than once is safe and returns the same result.
 	Close() error
+}
+
+// Selector is an optional capability a Sink may implement: it only needs some
+// of the frames.
+//
+// A renderer that knows this can skip DRAWING the frames the sink will discard,
+// which is the difference between --frames being a preview and being a full
+// render that throws almost everything away. It lives here rather than in the
+// renderer because only the sink knows what it wants.
+//
+// A sink that does not implement it receives every frame, which is what a video
+// encoder needs: skipping one there would shorten the output.
+type Selector interface {
+	// Wants reports whether frame i will be used.
+	Wants(i int) bool
 }
 
 // Config describes the video a Sink produces.

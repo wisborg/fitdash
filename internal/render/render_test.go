@@ -120,7 +120,7 @@ type recordingSink struct {
 	closed int
 }
 
-func (s *recordingSink) WriteFrame(img *image.RGBA) error {
+func (s *recordingSink) WriteFrame(_ int, img *image.RGBA) error {
 	cp := image.NewRGBA(img.Bounds())
 	copy(cp.Pix, img.Pix)
 	s.frames = append(s.frames, cp)
@@ -496,10 +496,119 @@ type failingSink struct {
 
 func (s *failingSink) Close() error { return nil }
 
-func (s *failingSink) WriteFrame(*image.RGBA) error {
+func (s *failingSink) WriteFrame(int, *image.RGBA) error {
 	if s.n >= s.after {
 		return fmt.Errorf("sink is full")
 	}
 	s.n++
 	return nil
+}
+
+// selectiveSink is a recording sink that only wants some frames.
+type selectiveSink struct {
+	recordingSink
+	want    map[int]bool
+	asked   []int
+	written []int
+}
+
+func (s *selectiveSink) Wants(i int) bool {
+	s.asked = append(s.asked, i)
+	return s.want[i]
+}
+
+func (s *selectiveSink) WriteFrame(i int, img *image.RGBA) error {
+	s.written = append(s.written, i)
+	return s.recordingSink.WriteFrame(i, img)
+}
+
+// TestRun_SkipsDrawingFramesTheSinkDoesNotWant pins the optimisation that makes
+// --frames a preview rather than a full render.
+//
+// Before it, writing five PNGs from a 25-minute activity drew and discarded
+// 46,600 frames -- 36 seconds to produce five images, while the README called
+// it the fast visual loop. Nothing failed; it was simply doing all the work and
+// throwing it away.
+//
+// The assertion is that WriteFrame is called ONLY for wanted frames, which is
+// the observable consequence of not drawing the rest. Asserting on elapsed time
+// would be flaky; asserting on the call pattern is exact.
+func TestRun_SkipsDrawingFramesTheSinkDoesNotWant(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 120, 80, 10)
+	r, err := New(ctx, oneMarkerLayout(markerPanel{name: "a", accept: true}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[int]bool{0: true, 5: true, r.Frames() - 1: true}
+	sink := &selectiveSink{want: want}
+	if err := Run(context.Background(), r, sink, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(sink.asked) != r.Frames() {
+		t.Errorf("the sink was asked about %d frames, want all %d -- it cannot otherwise tell how long the render was",
+			len(sink.asked), r.Frames())
+	}
+	if got := len(sink.written); got != len(want) {
+		t.Fatalf("WriteFrame was called %d times, want %d -- unwanted frames are still being drawn and written",
+			got, len(want))
+	}
+	for _, i := range sink.written {
+		if !want[i] {
+			t.Errorf("frame %d was written but not wanted", i)
+		}
+	}
+	// And the frames that WERE written must be the real ones, identical to a
+	// standalone render. Skipping must change what is drawn for nobody.
+	for n, i := range sink.written {
+		expect := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.Render(expect, r.Frame(i)); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(sink.frames[n].Pix, expect.Pix) {
+			t.Errorf("frame %d differs from the same frame rendered on its own", i)
+		}
+	}
+}
+
+// TestRun_WithoutSelectorWritesEveryFrame is the other half: a sink that does
+// not implement Selector -- the video encoder -- must still receive everything.
+// Skipping a frame there would shorten the output.
+func TestRun_WithoutSelectorWritesEveryFrame(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 120, 80, 10)
+	r, err := New(ctx, oneMarkerLayout(markerPanel{name: "a", accept: true}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &recordingSink{}
+	if _, isSelector := any(sink).(interface{ Wants(int) bool }); isSelector {
+		t.Fatal("the plain recording sink must not implement Selector, or this proves nothing")
+	}
+	if err := Run(context.Background(), r, sink, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(sink.frames); got != r.Frames() {
+		t.Errorf("wrote %d frames, want all %d", got, r.Frames())
+	}
+}
+
+// TestNew_RequiresTrackAndTimer covers the two Context fields dereferenced on
+// every frame. A nil one panicked inside the loop rather than failing in the
+// constructor beside the two checks that were already there.
+func TestNew_RequiresTrackAndTimer(t *testing.T) {
+	full := buildContext(t, shortOptions(), 80, 60, 10)
+	layout := oneMarkerLayout(markerPanel{name: "a", accept: true})
+
+	noTrack := *full
+	noTrack.Track = nil
+	if _, err := New(&noTrack, layout, panel.DefaultTheme()); err == nil {
+		t.Error("New accepted a context with no track; it would panic in the frame loop")
+	}
+
+	noTimer := *full
+	noTimer.Timer = nil
+	if _, err := New(&noTimer, layout, panel.DefaultTheme()); err == nil {
+		t.Error("New accepted a context with no timer model")
+	}
 }

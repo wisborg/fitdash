@@ -108,7 +108,10 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 	}
 	n := tl.Frames() // 3000
 
-	got := frameIndices(tl, nil)
+	got, err := frameIndices(tl, nil)
+	if err != nil {
+		t.Fatalf("frameIndices: %v", err)
+	}
 	want := []int{0, n / 4, n / 2, 3 * n / 4, n - 1}
 	if len(got) != len(want) {
 		t.Fatalf("frameIndices = %v, want %v", got, want)
@@ -127,9 +130,52 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 
 	// --frame-at resolves through the timeline, so it is the same arithmetic
 	// the render itself uses. 50 seconds at 30 fps is frame 1500.
-	got = frameIndices(tl, []time.Duration{50 * time.Second})
+	got, err = frameIndices(tl, []time.Duration{50 * time.Second})
+	if err != nil {
+		t.Fatalf("frameIndices: %v", err)
+	}
 	if last := got[len(got)-1]; last != 1500 {
 		t.Errorf("--frame-at 50s resolved to frame %d, want 1500", last)
+	}
+}
+
+// TestFrameIndices_RejectsAnOffsetPastTheActivity pins a failure that used to
+// be a silent wrong answer.
+//
+// Timeline.IndexAt clamps, which is right for its own callers and wrong here:
+// clamping made --frame-at 40m on a 25-minute activity write the FINAL frame
+// and exit 0, handing the user a picture of 25:53 while they believed they
+// were looking at 40:00. The sink's unreached-frame error could never fire,
+// because clamping had made the index reachable.
+func TestFrameIndices_RejectsAnOffsetPastTheActivity(t *testing.T) {
+	tl, err := panel.NewTimeline(time.Now(), 25*time.Minute, 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := frameIndices(tl, []time.Duration{40 * time.Minute}); err == nil {
+		t.Fatal("frameIndices accepted an offset past the end of the activity")
+	} else if !strings.Contains(err.Error(), "0:25:00") {
+		t.Errorf("the error should say how long the activity runs; got: %v", err)
+	}
+	if _, err := frameIndices(tl, []time.Duration{-time.Minute}); err == nil {
+		t.Error("frameIndices accepted a negative offset")
+	}
+
+	// The boundary is inclusive: the very last instant of the activity is a
+	// legitimate thing to ask for.
+	if _, err := frameIndices(tl, []time.Duration{25 * time.Minute}); err != nil {
+		t.Errorf("frameIndices rejected the activity's final instant: %v", err)
+	}
+
+	// And the offset is ACTIVITY time, so a sped-up render accepts offsets far
+	// beyond the video's own length.
+	fast, err := panel.NewTimeline(time.Now(), 25*time.Minute, 30, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := frameIndices(fast, []time.Duration{20 * time.Minute}); err != nil {
+		t.Errorf("a 20m offset was rejected on a 25m activity rendered as a 1m video: %v", err)
 	}
 }
 
@@ -230,11 +276,13 @@ func TestParsePowerSource_MatchesVideofxsVocabulary(t *testing.T) {
 // mutually exclusive rather than one overriding the other. Silently preferring
 // whichever the code happens to check first would give a user who passed both
 // a video of a length they did not ask for, with nothing saying which flag won.
+//
+// The flags are driven through a real cobra command and Set, rather than by
+// assigning the option struct directly, because "was this flag given" is a
+// question only cobra can answer. An earlier version compared against the
+// default value instead, and `--speedup 1 --video-duration 3m` slipped through
+// the exclusivity check -- a legal spelling of exactly the thing it forbids.
 func TestResolveSpeedup_TakesEitherFlagButNotBoth(t *testing.T) {
-	defer func(s float64, d time.Duration) {
-		renderOpts.speedup, renderOpts.videoDur = s, d
-	}(renderOpts.speedup, renderOpts.videoDur)
-
 	// A one-hour activity.
 	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	track := &fitactivity.Track{Samples: []fitactivity.Sample{
@@ -244,23 +292,36 @@ func TestResolveSpeedup_TakesEitherFlagButNotBoth(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		speedup float64
-		dur     time.Duration
+		set     map[string]string
 		want    float64
 		wantErr string
 	}{
-		{"neither: real time", 1, 0, 1, ""},
-		{"a factor", 12, 0, 12, ""},
-		{"a target duration", 1, time.Minute, 60, ""},
-		{"a target longer than the activity", 1, 2 * time.Hour, 0.5, ""},
-		{"both", 10, time.Minute, 0, "both set"},
-		{"a negative factor", -3, 0, 0, "must be positive"},
-		{"a negative duration", 1, -time.Minute, 0, "must be positive"},
+		{"neither: real time", nil, 1, ""},
+		{"a factor", map[string]string{"speedup": "12"}, 12, ""},
+		{"a target duration", map[string]string{"video-duration": "1m"}, 60, ""},
+		{"a target longer than the activity", map[string]string{"video-duration": "2h"}, 0.5, ""},
+		{"both", map[string]string{"speedup": "10", "video-duration": "1m"}, 0, "both set"},
+		// The spelling that used to slip through: a speedup EQUAL to the
+		// default is still a speedup the user typed.
+		{"both, with the factor at its default", map[string]string{"speedup": "1", "video-duration": "3m"}, 0, "both set"},
+		{"a negative factor", map[string]string{"speedup": "-3"}, 0, "must be positive"},
+		{"a negative duration", map[string]string{"video-duration": "-1m"}, 0, "must be positive"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			renderOpts.speedup, renderOpts.videoDur = c.speedup, c.dur
-			got, err := resolveSpeedup(timer)
+			defer func(s float64, d time.Duration) {
+				renderOpts.speedup, renderOpts.videoDur = s, d
+			}(renderOpts.speedup, renderOpts.videoDur)
+
+			cmd := &cobra.Command{Use: "test"}
+			bindRenderFlags(cmd)
+			for k, v := range c.set {
+				if err := cmd.Flags().Set(k, v); err != nil {
+					t.Fatalf("setting --%s=%s: %v", k, v, err)
+				}
+			}
+
+			got, err := resolveSpeedup(cmd, timer)
 			if c.wantErr != "" {
 				if err == nil {
 					t.Fatalf("resolveSpeedup = %v, want an error mentioning %q", got, c.wantErr)
@@ -302,5 +363,67 @@ func TestSpeedupNote_IsSilentAtRealTime(t *testing.T) {
 		if got := speedupNote(c.in); got != c.want {
 			t.Errorf("speedupNote(%v) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay covers two
+// review findings, both cases of a flag quietly doing something other than
+// what its help text promised.
+func TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+
+	cases := []struct {
+		name    string
+		set     func()
+		wantErr string
+	}{
+		{
+			// -o was reinterpreted as a directory under --frames, so
+			// `-o preview.png --frames` created a DIRECTORY named preview.png
+			// with frame-000000.png inside it.
+			name:    "-o with --frames",
+			set:     func() { renderOpts.frames, renderOpts.output, renderOpts.crf = true, "preview.png", 20 },
+			wantErr: "single file",
+		},
+		{
+			// 0 is x264's lossless and this program's "unset"; it cannot be
+			// both, and it silently became the default quality.
+			name:    "--crf 0",
+			set:     func() { renderOpts.frames, renderOpts.output, renderOpts.crf = false, "", 0 },
+			wantErr: "lossless",
+		},
+		{
+			name: "-o without --frames is fine",
+			set:  func() { renderOpts.frames, renderOpts.output, renderOpts.crf = false, "out.mp4", 20 },
+		},
+		{
+			name: "--frames without -o is fine",
+			set:  func() { renderOpts.frames, renderOpts.output, renderOpts.crf = true, "", 20 },
+		},
+		{
+			// 1 is the near-lossless the error message points at, and must be
+			// accepted or the advice is wrong.
+			name: "--crf 1 is accepted",
+			set:  func() { renderOpts.frames, renderOpts.output, renderOpts.crf = false, "", 1 },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			renderOpts = renderOptions{}
+			c.set()
+			err := validateRenderOptions()
+			if c.wantErr == "" {
+				if err != nil {
+					t.Errorf("validateRenderOptions = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateRenderOptions accepted it; want an error mentioning %q", c.wantErr)
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("error %v does not mention %q", err, c.wantErr)
+			}
+		})
 	}
 }

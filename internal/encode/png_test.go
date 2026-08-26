@@ -1,6 +1,7 @@
 package encode
 
 import (
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ func TestPNGFrames_WritesOnlyTheRequestedIndices(t *testing.T) {
 		t.Fatalf("OpenPNGFrames: %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		if err := sink.WriteFrame(solidFrame(4, 4, uint8(i), 0, 0)); err != nil {
+		if err := sink.WriteFrame(i, solidFrame(4, 4, uint8(i), 0, 0)); err != nil {
 			t.Fatalf("WriteFrame(%d): %v", i, err)
 		}
 	}
@@ -58,7 +59,7 @@ func TestPNGFrames_WritesTheFrameItWasGiven(t *testing.T) {
 		t.Fatalf("OpenPNGFrames: %v", err)
 	}
 	for i := 0; i < 8; i++ {
-		if err := sink.WriteFrame(solidFrame(4, 4, uint8(100+i), 0, 0)); err != nil {
+		if err := sink.WriteFrame(i, solidFrame(4, 4, uint8(100+i), 0, 0)); err != nil {
 			t.Fatalf("WriteFrame(%d): %v", i, err)
 		}
 	}
@@ -95,7 +96,7 @@ func TestPNGFrames_UnreachedIndexIsAnError(t *testing.T) {
 		t.Fatalf("OpenPNGFrames: %v", err)
 	}
 	for i := 0; i < 5; i++ {
-		if err := sink.WriteFrame(solidFrame(4, 4, 0, 0, 0)); err != nil {
+		if err := sink.WriteFrame(i, solidFrame(4, 4, 0, 0, 0)); err != nil {
 			t.Fatalf("WriteFrame(%d): %v", i, err)
 		}
 	}
@@ -122,7 +123,7 @@ func TestPNGFrames_CloseIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPNGFrames: %v", err)
 	}
-	if err := sink.WriteFrame(solidFrame(2, 2, 0, 0, 0)); err != nil {
+	if err := sink.WriteFrame(0, solidFrame(2, 2, 0, 0, 0)); err != nil {
 		t.Fatal(err)
 	}
 	first := sink.Close()
@@ -172,7 +173,7 @@ func TestPNGFrames_DuplicateIndicesCollapse(t *testing.T) {
 		t.Fatalf("OpenPNGFrames: %v", err)
 	}
 	for i := 0; i < 4; i++ {
-		if err := sink.WriteFrame(solidFrame(2, 2, 0, 0, 0)); err != nil {
+		if err := sink.WriteFrame(i, solidFrame(2, 2, 0, 0, 0)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -190,3 +191,71 @@ var (
 	_ Sink = (*PNGFrames)(nil)
 	_ Sink = (*Video)(nil)
 )
+
+// TestPNGFrames_WantsSelectsAndStillTracksTheRendersLength covers the sink's
+// half of the fast preview path.
+//
+// A renderer that honours Selector never calls WriteFrame for an unwanted
+// frame, so the sink's only evidence of how long the render was is what it was
+// ASKED about. Without that, a request for frame 99 of a 5-frame render could
+// still be detected as unreached, but the error could not say what the render's
+// length actually was -- which is the number the user needs to pick a valid one.
+func TestPNGFrames_WantsSelectsAndStillTracksTheRendersLength(t *testing.T) {
+	dir := t.TempDir()
+	sink, err := OpenPNGFrames(dir, []int{2, 99})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive it the way a selective renderer does: ask about every frame, write
+	// only the wanted ones.
+	for i := 0; i < 5; i++ {
+		if !sink.Wants(i) {
+			continue
+		}
+		if err := sink.WriteFrame(i, solidFrame(2, 2, 0, 0, 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(sink.Written()); got != 1 {
+		t.Errorf("wrote %d files, want 1 -- only frame 2 was requested and reachable", got)
+	}
+
+	err = sink.Close()
+	if err == nil {
+		t.Fatal("Close accepted a request for a frame beyond the render")
+	}
+	if !strings.Contains(err.Error(), "99") {
+		t.Errorf("the error must name the unreached index; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "5 frames") {
+		t.Errorf("the error must report the render's length, which only Wants saw; got: %v", err)
+	}
+}
+
+// TestPNGFrames_WantsAgreesWithWhatIsWritten keeps the predicate and the writer
+// from disagreeing -- a Wants that said no to a frame WriteFrame would have
+// kept means a renderer skips a frame the user asked for, and the only symptom
+// is a missing file.
+func TestPNGFrames_WantsAgreesWithWhatIsWritten(t *testing.T) {
+	dir := t.TempDir()
+	requested := []int{0, 3, 7}
+	sink, err := OpenPNGFrames(dir, requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		want := sink.Wants(i)
+		if err := sink.WriteFrame(i, solidFrame(2, 2, 0, 0, 0)); err != nil {
+			t.Fatal(err)
+		}
+		wrote := len(sink.Written()) > 0 && sink.Written()[len(sink.Written())-1] ==
+			filepath.Join(dir, fmt.Sprintf("frame-%06d.png", i))
+		if want != wrote {
+			t.Errorf("frame %d: Wants said %v but writing it produced %v", i, want, wrote)
+		}
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}

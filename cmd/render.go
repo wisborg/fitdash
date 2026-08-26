@@ -34,6 +34,29 @@ type renderOptions struct {
 	videoDur  time.Duration
 }
 
+// validateRenderOptions rejects flag combinations that cannot mean what they
+// appear to, before any work is done.
+//
+// Separate from runRender so it can be tested without an activity file. Both
+// checks here were review findings: each was a flag doing something other than
+// what its own help text said, silently.
+func validateRenderOptions() error {
+	// -o names a FILE, and --frames writes several. Reinterpreting it as a
+	// directory made `-o preview.png --frames` create a DIRECTORY called
+	// preview.png with frame-000000.png inside it, which is not a reading of
+	// the flag anyone intended.
+	if renderOpts.frames && renderOpts.output != "" {
+		return fmt.Errorf("render: -o names a single file and --frames writes several; use --output-dir")
+	}
+	// 0 is x264's spelling of lossless and this program's spelling of "unset",
+	// and it cannot be both. Passing it through silently produced the default
+	// quality instead, with nothing reported.
+	if renderOpts.crf == 0 {
+		return fmt.Errorf("render: --crf 0 is x264's lossless, which this program's zero value already means \"unset\"; use 1 for near-lossless")
+	}
+	return nil
+}
+
 // powerSources maps the --power-source flag values to their enum.
 //
 // The vocabulary -- the flag name, the three values, and what each means -- is
@@ -70,7 +93,9 @@ func bindRenderFlags(c *cobra.Command) {
 	f.StringVarP(&renderOpts.output, "output", "o", "", "write to this exact path instead of deriving one")
 	f.StringVar(&renderOpts.size, "size", "1920x1080", "output resolution; width and height must both be even")
 	f.Float64Var(&renderOpts.fps, "fps", 30, "frames per second")
-	f.IntVar(&renderOpts.crf, "crf", 20, "H.264 quality; lower is better (18-28 is the useful range)")
+	f.IntVar(&renderOpts.crf, "crf", encode.DefaultCRF,
+		"H.264 quality; lower is better (18-28 is the useful range). 0 is x264's lossless and is not offered: "+
+			"0 is this program's \"unset\" value internally, so it would silently mean the default. Use 1 for near-lossless")
 	f.BoolVar(&renderOpts.frames, "frames", false, "write landmark frames as PNG instead of encoding a video")
 	f.DurationSliceVar(&renderOpts.frameAt, "frame-at", nil, "with --frames, also write the frame at this offset into the activity (repeatable, e.g. 12m30s)")
 	f.BoolVar(&renderOpts.quiet, "quiet", false, "suppress the progress line and the summary")
@@ -89,6 +114,9 @@ func bindRenderFlags(c *cobra.Command) {
 
 // runRender is the root command: fitdash ACTIVITY.fit.
 func runRender(cmd *cobra.Command, args []string) error {
+	if err := validateRenderOptions(); err != nil {
+		return err
+	}
 	w, h, err := parseSize(renderOpts.size)
 	if err != nil {
 		return err
@@ -106,7 +134,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 
 	timer := fitactivity.BuildTimerModel(track)
-	speedup, err := resolveSpeedup(timer)
+	speedup, err := resolveSpeedup(cmd, timer)
 	if err != nil {
 		return err
 	}
@@ -184,9 +212,14 @@ func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activit
 // express the same intention in opposite directions, and silently preferring
 // whichever the code checks first would let a user pass both and get a video
 // of a length they did not ask for, with nothing saying which flag won.
-func resolveSpeedup(timer *fitactivity.TimerModel) (float64, error) {
-	explicitSpeedup := renderOpts.speedup != 1
-	explicitDuration := renderOpts.videoDur != 0
+func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel) (float64, error) {
+	// Ask cobra whether the flag was TYPED, rather than comparing against its
+	// default. Comparing meant `--speedup 1 --video-duration 3m` slipped past
+	// the exclusivity check and silently took the duration branch -- exactly
+	// the "pass both and get a length you did not ask for, with nothing saying
+	// which won" failure this function exists to prevent.
+	explicitSpeedup := cmd.Flags().Changed("speedup")
+	explicitDuration := cmd.Flags().Changed("video-duration")
 
 	switch {
 	case explicitSpeedup && explicitDuration:
@@ -279,11 +312,11 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timelin
 // makes the fast visual loop a trustworthy proxy for the real render rather
 // than a second implementation free to disagree with it.
 func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity string) error {
-	dir := renderOpts.outputDir
-	if renderOpts.output != "" {
-		dir = renderOpts.output
+	indices, err := frameIndices(tl, renderOpts.frameAt)
+	if err != nil {
+		return err
 	}
-	indices := frameIndices(tl, renderOpts.frameAt)
+	dir := renderOpts.outputDir
 
 	sink, err := encode.OpenPNGFrames(dir, indices)
 	if err != nil {
@@ -325,13 +358,26 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activi
 // route, a splits list -- are wrong at the boundaries far more often than in
 // the middle, and frame 0 in particular hits every "nothing has happened yet"
 // branch at once.
-func frameIndices(tl panel.Timeline, at []time.Duration) []int {
+func frameIndices(tl panel.Timeline, at []time.Duration) ([]int, error) {
 	n := tl.Frames()
 	out := []int{0, n / 4, n / 2, (3 * n) / 4, n - 1}
 	for _, d := range at {
+		// Timeline.IndexAt CLAMPS, which is right for its own callers and
+		// wrong here. Clamping made `--frame-at 40m` on a 25-minute activity
+		// write the final frame and exit 0, handing the user a picture of
+		// 25:53 while they believed they were looking at 40:00. The sink's
+		// unreached-frame error could never fire, because clamping had made
+		// the index reachable.
+		if d < 0 {
+			return nil, fmt.Errorf("render: --frame-at %v is negative", d)
+		}
+		if d > tl.ActivityDuration() {
+			return nil, fmt.Errorf("render: --frame-at %v is past the end of the activity, which runs %s",
+				d, panel.FormatClock(tl.ActivityDuration()))
+		}
 		out = append(out, tl.IndexAt(d))
 	}
-	return out
+	return out, nil
 }
 
 // parseSize reads a WxH resolution.

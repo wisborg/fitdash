@@ -274,14 +274,22 @@ func TestElevationPanel_AcceptsNeedsDistanceToo(t *testing.T) {
 		{Time: base.Add(time.Second), HasDistance: true, Distance: 3},
 	}}
 
-	if (ElevationPanel{}).Accepts(&Context{Report: inspect.Build(elevOnly)}) {
+	// Track as well as Report: Accepts builds the elevation model to check it
+	// is not empty, which a report alone cannot tell it. See its doc comment.
+	if (ElevationPanel{}).Accepts(&Context{Track: elevOnly, Report: inspect.Build(elevOnly)}) {
 		t.Error("accepted elevation with no distance; there is no axis to plot against")
 	}
-	if (ElevationPanel{}).Accepts(&Context{Report: inspect.Build(distOnly)}) {
+	if (ElevationPanel{}).Accepts(&Context{Track: distOnly, Report: inspect.Build(distOnly)}) {
 		t.Error("accepted distance with no elevation")
 	}
-	if !(ElevationPanel{}).Accepts(&Context{Report: inspect.Build(hillTrack(0, 1000, 50))}) {
+	both := hillTrack(0, 1000, 50)
+	if !(ElevationPanel{}).Accepts(&Context{Track: both, Report: inspect.Build(both)}) {
 		t.Error("declined an activity carrying both")
+	}
+	// And a context with no track at all declines rather than panicking in
+	// BuildElevationModel, which ranges over the samples without a nil check.
+	if (ElevationPanel{}).Accepts(&Context{Report: inspect.Build(both)}) {
+		t.Error("accepted a context with no track")
 	}
 }
 
@@ -359,5 +367,82 @@ func TestElevationPanel_DistanceLabelsDoNotCollide(t *testing.T) {
 			t.Errorf("in a %gpx box the labels %q and %q overlap by %g pixels",
 				box.W, p.startLabel, p.endLabel, startRight-endLeft)
 		}
+	}
+}
+
+// TestElevationPanel_DeclinesWhenTheModelWouldBeEmpty covers the gap between
+// "the report says both metrics are present" and "the model can be built".
+//
+// BuildElevationModel keeps only samples carrying elevation AND distance. A
+// file whose two metrics land on disjoint samples satisfies the report's
+// questions independently while producing an empty model -- and the panel was
+// then placed, given the full-width strip at the bottom of the landscape
+// layout, and drew nothing. An unexplained band of background, absent from the
+// declined summary because it had not declined.
+func TestElevationPanel_DeclinesWhenTheModelWouldBeEmpty(t *testing.T) {
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	// Elevation on the even samples, distance on the odd ones: never both.
+	samples := make([]fitactivity.Sample, 200)
+	for i := range samples {
+		s := fitactivity.Sample{Time: base.Add(time.Duration(i) * time.Second)}
+		if i%2 == 0 {
+			s.HasElevation, s.Elevation = true, 50+float64(i)*0.1
+		} else {
+			s.HasDistance, s.Distance = true, float64(i)*3
+		}
+		samples[i] = s
+	}
+	track := &fitactivity.Track{Samples: samples}
+	rep := inspect.Build(track)
+
+	// The precondition: independently, the report says both are there.
+	if !rep.Carries(inspect.MetricElevation) || !rep.Carries(inspect.MetricDistance) {
+		t.Fatal("precondition: the report should report both metrics present")
+	}
+
+	ctx := &Context{Track: track, Report: rep}
+	if (ElevationPanel{}).Accepts(ctx) {
+		t.Error("the panel accepted an activity whose model cannot be built; " +
+			"it would take a box and draw nothing in it")
+	}
+}
+
+// TestElevationPanel_AcceptsAgreesWithWhatPrepareCanDraw is the general form:
+// wherever Accepts says yes, Prepare must produce a painter that actually
+// draws. Otherwise the panel occupies space silently.
+func TestElevationPanel_AcceptsAgreesWithWhatPrepareCanDraw(t *testing.T) {
+	cases := []struct {
+		name  string
+		track *fitactivity.Track
+	}{
+		{"an ordinary hilly route", hillTrack(0, 5000, 300)},
+		{"a route starting part way in", hillTrack(10200, 12400, 300)},
+		{"a very short one", hillTrack(0, 200, 5)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := &Context{Track: c.track, Report: inspect.Build(c.track)}
+			if !(ElevationPanel{}).Accepts(ctx) {
+				t.Skip("declined, which is a decision this test does not second-guess")
+			}
+
+			faces, err := NewFaceCache()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx.Fonts, ctx.Width, ctx.Height, ctx.FontScale = faces, 1280, 720, 0.05
+			box := Box{X: 20, Y: 560, W: 1240, H: 140}
+
+			img := image.NewRGBA(image.Rect(0, 0, 1280, 720))
+			cv, _ := NewCanvas(img, 20, DefaultTheme(), faces)
+			p := ElevationPanel{}.Prepare(ctx, box)
+
+			cv.Fill(cv.Theme.Background)
+			p.Static(cv)
+			if inkCount(img, box, cv.Theme) == 0 {
+				t.Error("Accepts said yes but Static drew nothing; the panel would hold an empty box")
+			}
+		})
 	}
 }

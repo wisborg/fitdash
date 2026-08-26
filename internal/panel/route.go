@@ -39,6 +39,12 @@ func (RoutePanel) Accepts(ctx *Context) bool {
 func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 	p := &routePainter{box: box}
 
+	// Two lists, deliberately. The outline is drawn from a thinned copy,
+	// because a route a few hundred pixels wide cannot show more; the position
+	// is looked up in ALL the fixes, because thinning them quantises the dot --
+	// a four-hour ride reduced to 500 points freezes it for 29 seconds at a
+	// time and then jumps it several hundred metres.
+	all := route.FromTrack(ctx.Track, len(ctx.Track.Samples)+1)
 	pts := route.FromTrack(ctx.Track, route.DefaultMaxPoints)
 	proj, ok := route.Fit(pts)
 	if !ok {
@@ -53,17 +59,27 @@ func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 	if box.H*0.06 < inset {
 		inset = box.H * 0.06
 	}
-	xs, ys := proj.Place(pts, box.W-2*inset, box.H-2*inset)
-	for i := range xs {
-		xs[i] += box.X + inset
-		ys[i] += box.Y + inset
+	place, ok := proj.Placer(box.W-2*inset, box.H-2*inset)
+	if !ok {
+		return p
+	}
+	// One placement function for the outline and the dot, so the dot cannot
+	// drift off the line it is meant to be travelling along.
+	p.place = func(pt route.Point) (float64, float64) {
+		x, y := place(pt)
+		return x + box.X + inset, y + box.Y + inset
+	}
+	xs := make([]float64, len(pts))
+	ys := make([]float64, len(pts))
+	for i, pt := range pts {
+		xs[i], ys[i] = p.place(pt)
 	}
 
 	unit := box.H
 	if box.W < unit {
 		unit = box.W
 	}
-	p.pts, p.xs, p.ys = pts, xs, ys
+	p.pts, p.all, p.xs, p.ys = pts, all, xs, ys
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*0.022)
@@ -79,7 +95,9 @@ func maxf(a, b float64) float64 {
 
 type routePainter struct {
 	box      Box
-	pts      []route.Point
+	pts      []route.Point // thinned, for the outline
+	all      []route.Point // every fix, for the position lookup
+	place    func(route.Point) (float64, float64)
 	xs, ys   []float64
 	outlineW float64
 	coveredW float64
@@ -105,12 +123,19 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	if len(p.xs) < 2 {
 		return
 	}
-	cur := route.IndexAt(p.pts, f.At)
+	// The dot comes from the full fix list and is placed directly, so it moves
+	// at the rate the device recorded rather than at the rate the outline was
+	// thinned to.
+	cur := route.IndexAt(p.all, f.At)
 	if cur < 0 {
 		return
 	}
-	if cur >= 1 {
-		c.Polyline(p.xs[:cur+1], p.ys[:cur+1], p.coveredW, c.Theme.Foreground)
+	// The covered portion is a prefix of the DRAWN points, so it is looked up
+	// in those -- a prefix of the outline has to end on one of the outline's
+	// own vertices or the bright line would not lie on the dim one.
+	if drawn := route.IndexAt(p.pts, f.At); drawn >= 1 {
+		c.Polyline(p.xs[:drawn+1], p.ys[:drawn+1], p.coveredW, c.Theme.Foreground)
 	}
-	c.Circle(p.xs[cur], p.ys[cur], p.dotR, c.Theme.Accent)
+	x, y := p.place(p.all[cur])
+	c.Circle(x, y, p.dotR, c.Theme.Accent)
 }

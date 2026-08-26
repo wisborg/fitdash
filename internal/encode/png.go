@@ -19,15 +19,22 @@ import (
 // separate "preview" code path would be free to diverge from the real one, and
 // would diverge exactly when someone was relying on it to debug a panel.
 //
-// Frames not selected are consumed and discarded, so a caller renders the same
-// sequence either way. That is deliberate rather than wasteful at this layer:
-// skipping the render of unselected frames is the caller's optimisation to
-// make, and doing it here would mean the frames that ARE written had been
-// produced by a different traversal than a full render performs.
+// It implements Selector, so a renderer that asks can skip drawing the frames
+// this sink would discard. Without that, --frames rendered every frame of the
+// activity to write five images: a 25-minute run at 30 fps drew and threw away
+// 46,600 frames, taking 36 seconds to produce 5 PNGs, while both the README
+// and scripts/fd advertised it as the fast visual loop. It was no faster than a
+// full render minus the ffmpeg pipe.
+//
+// Selecting frames does not change what a written frame CONTAINS. Every frame
+// is drawn the same way from the same per-frame state, and the static layer is
+// rasterized once regardless, so a frame written here is identical to the one
+// the video would have held -- which is what makes the preview trustworthy.
 type PNGFrames struct {
 	dir      string
 	want     map[int]bool
-	index    int
+	highest  int
+	seen     map[int]bool
 	written  []string
 	writeErr error
 
@@ -58,18 +65,43 @@ func OpenPNGFrames(dir string, at []int) (*PNGFrames, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("encode: creating %s: %w", dir, err)
 	}
-	return &PNGFrames{dir: dir, want: want}, nil
+	return &PNGFrames{dir: dir, want: want, seen: map[int]bool{}, highest: -1}, nil
+}
+
+// Wants reports whether frame i was requested, so a renderer can skip drawing
+// the rest.
+//
+// It also RECORDS that frame i exists, which is why it takes a pointer
+// receiver and is not the pure predicate it looks like. Once a renderer starts
+// skipping frames, WriteFrame no longer sees them, so the only remaining
+// evidence of how long the render was is what the sink was asked about --
+// and without it Close could not tell a user that their requested frame 99
+// was beyond a render of 5.
+func (p *PNGFrames) Wants(i int) bool {
+	p.note(i)
+	return p.want[i]
+}
+
+// note records that frame i was reached, from either path.
+func (p *PNGFrames) note(i int) {
+	if i > p.highest {
+		p.highest = i
+	}
+	p.seen[i] = true
 }
 
 // WriteFrame writes img when its index was requested, and otherwise discards
 // it. As with Video, the first error is remembered and returned by every later
 // call rather than repeated once per frame.
-func (p *PNGFrames) WriteFrame(img *image.RGBA) error {
+//
+// It still discards an unwanted frame rather than rejecting it, because a
+// renderer that ignores Selector is not wrong -- only slower -- and a sink that
+// refused frames it had not asked for would break it.
+func (p *PNGFrames) WriteFrame(i int, img *image.RGBA) error {
 	if p.writeErr != nil {
 		return p.writeErr
 	}
-	i := p.index
-	p.index++
+	p.note(i)
 	if !p.want[i] {
 		return nil
 	}
@@ -114,13 +146,13 @@ func (p *PNGFrames) Close() error {
 		}
 		var missing []int
 		for i := range p.want {
-			if i >= p.index {
+			if !p.seen[i] {
 				missing = append(missing, i)
 			}
 		}
 		if len(missing) > 0 {
 			sort.Ints(missing)
-			p.closeErr = fmt.Errorf("encode: requested frame(s) %v were never reached; the render produced %d frames", missing, p.index)
+			p.closeErr = fmt.Errorf("encode: requested frame(s) %v were never reached; the render produced %d frames", missing, p.highest+1)
 		}
 	})
 	return p.closeErr

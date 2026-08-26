@@ -231,3 +231,62 @@ func TestRoutePanel_StaysInsideItsBox(t *testing.T) {
 		})
 	}
 }
+
+// TestRoutePanel_DotFollowsEveryFixNotTheThinnedOutline pins the fix for a bug
+// no existing test could see.
+//
+// The outline is drawn from a downsampled copy, capped at DefaultMaxPoints. The
+// position was once looked up in that same copy, which quantised it: a
+// four-hour ride's 14,400 fixes reduced to 500 froze the dot for 29 seconds and
+// then jumped it several hundred metres, and even a 25-minute run moved it in
+// 3-second steps. Every test used a fixture UNDER the cap, where the two lists
+// are identical and the bug cannot appear.
+//
+// This fixture is deliberately well over it.
+func TestRoutePanel_DotFollowsEveryFixNotTheThinnedOutline(t *testing.T) {
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	const fixes = 3000 // six times DefaultMaxPoints
+	track := squareTrack(base, fixes)
+	ctx := routeContext(t, track, 800, 800)
+
+	img := image.NewRGBA(image.Rect(0, 0, 800, 800))
+	faces, _ := NewFaceCache()
+	c, _ := NewCanvas(img, 20, DefaultTheme(), faces)
+	p := RoutePanel{}.Prepare(ctx, Box{W: 800, H: 800})
+
+	// The centroid of the accent-coloured dot.
+	dotAt := func(offset time.Duration) (float64, float64) {
+		c.Fill(c.Theme.Background)
+		p.Dynamic(c, Frame{At: base.Add(offset)})
+		ar, ag, ab, _ := c.Theme.Accent.RGBA()
+		var sx, sy, n float64
+		for y := 0; y < 800; y++ {
+			for x := 0; x < 800; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				if r == ar && g == ag && b == ab {
+					sx, sy, n = sx+float64(x), sy+float64(y), n+1
+				}
+			}
+		}
+		if n == 0 {
+			t.Fatalf("no dot at offset %v", offset)
+		}
+		return sx / n, sy / n
+	}
+
+	// Consecutive SECONDS must move the dot. With the position taken from the
+	// thinned list it would sit still for six of them at this fixture size.
+	moved := 0
+	px, py := dotAt(1000 * time.Second)
+	for i := 1; i <= 6; i++ {
+		x, y := dotAt(time.Duration(1000+i) * time.Second)
+		if x != px || y != py {
+			moved++
+		}
+		px, py = x, y
+	}
+	if moved < 5 {
+		t.Errorf("the dot moved on %d of 6 consecutive seconds; it is quantised to the drawn outline "+
+			"rather than following the fixes", moved)
+	}
+}

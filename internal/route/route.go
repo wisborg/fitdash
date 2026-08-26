@@ -25,13 +25,20 @@ type Point struct {
 	Time     time.Time
 }
 
-// DefaultMaxPoints caps how many points a drawn route keeps.
+// DefaultMaxPoints caps how many points are DRAWN.
 //
 // A route is drawn a few hundred pixels across at most, so beyond roughly this
 // many points consecutive samples land on the same pixel and the extra
 // segments are invisible work -- repeated on every frame of the render, which
 // is where it stops being free. An hour at 1 Hz is 3,600 samples; keeping 500
 // of them changes nothing anyone can see.
+//
+// It applies to the OUTLINE only, and that distinction was a bug before it was
+// a comment. Looking the current position up in the downsampled list quantises
+// it: a four-hour ride's 14,400 fixes reduced to 500 leaves the dot frozen for
+// 29 seconds and then jumping several hundred metres, and even a 25-minute run
+// moves it in 3-second steps. The fixes and the drawn points are now separate
+// things, and only the drawing is thinned.
 const DefaultMaxPoints = 500
 
 // FromTrack extracts the route, keeping at most maxPoints of it.
@@ -124,8 +131,28 @@ func Fit(pts []Point) (Projection, bool) {
 // The y axis is flipped so north is up, which is the only orientation anyone
 // reads a map in.
 func (p Projection) Place(pts []Point, w, h float64) (xs, ys []float64) {
-	if len(pts) == 0 || w <= 0 || h <= 0 {
+	at, ok := p.Placer(w, h)
+	if !ok || len(pts) == 0 {
 		return nil, nil
+	}
+	xs = make([]float64, len(pts))
+	ys = make([]float64, len(pts))
+	for i, pt := range pts {
+		xs[i], ys[i] = at(pt)
+	}
+	return xs, ys
+}
+
+// Placer returns the function Place applies to each point, so a caller can
+// place ONE point without building a slice for it.
+//
+// The route panel needs exactly that: the position dot belongs at the current
+// fix, which is not one of the downsampled points the outline is drawn from.
+// Sharing the closure rather than reimplementing the arithmetic is what keeps
+// the dot on the line it is supposed to be travelling along.
+func (p Projection) Placer(w, h float64) (func(Point) (x, y float64), bool) {
+	if w <= 0 || h <= 0 {
+		return nil, false
 	}
 
 	scale := math.Inf(1)
@@ -136,7 +163,7 @@ func (p Projection) Place(pts []Point, w, h float64) (xs, ys []float64) {
 		scale = math.Min(scale, h/p.spanY)
 	}
 	if math.IsInf(scale, 1) {
-		return nil, nil
+		return nil, false
 	}
 
 	// Centre what is left over, so a route that is wide and flat sits in the
@@ -144,13 +171,10 @@ func (p Projection) Place(pts []Point, w, h float64) (xs, ys []float64) {
 	offX := (w - p.spanX*scale) / 2
 	offY := (h - p.spanY*scale) / 2
 
-	xs = make([]float64, len(pts))
-	ys = make([]float64, len(pts))
-	for i, pt := range pts {
-		xs[i] = offX + (pt.Lon*p.cosLat-p.minX)*scale
-		ys[i] = offY + (p.minY+p.spanY-pt.Lat)*scale // flipped: north up
-	}
-	return xs, ys
+	return func(pt Point) (float64, float64) {
+		return offX + (pt.Lon*p.cosLat-p.minX)*scale,
+			offY + (p.minY+p.spanY-pt.Lat)*scale // flipped: north up
+	}, true
 }
 
 // IndexAt returns the last point recorded at or before at, or -1 when the
