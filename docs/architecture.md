@@ -285,37 +285,56 @@ chrome is `Static`, called once; the projection is a Painter field. One static b
 and one frame buffer are allocated and reused — a fresh 4K RGBA per frame would allocate
 about 33 MB per frame.
 
-**Measured, once the route panel existed** (`internal/render`'s benchmarks, on the
-reference machine):
+**Measured** (`internal/render`'s benchmarks, on the reference machine, with all five
+panels):
 
 | | per frame |
 |---|---|
-| full landscape layout, 1080p | 7.2 ms |
-| full landscape layout, 4K | 27.6 ms |
-| route panel alone, 1080p | 0.17 ms |
+| full landscape layout, 1080p | 5.5 ms |
+| full landscape layout, 4K | 22.2 ms |
+| route panel alone, 1080p | 0.29 ms |
 | the static-base copy alone, 1080p / 4K | 0.15 ms / 0.95 ms |
 
-Two things came out of that, and neither was what the design expected.
-
 **Text dominates, and it scales with size rather than with panel count.** Removing the
-route panel made a frame *slower* — 19.1 ms against 7.2 — because its column-mate then grew
-and the clock was drawn two and a half times larger. Glyph rasterization scales with area.
-Any future comparison that changes the layout is mostly measuring the layout.
+route panel makes a frame *slower* — 19.8 ms against 5.5 — because its column-mate then
+grows and the clock is drawn two and a half times larger. Glyph rasterization scales with
+area. Any comparison that changes the layout is mostly measuring the layout, and the route,
+which looks like the expensive panel, is the cheapest thing on the frame.
 
-**97% of consecutive frames are pixel-identical.** The data arrives at 1 Hz and the clock
-advances once a second, so at 30 fps about thirty frames in a row show exactly the same
-thing; a measured render changed on 9 of 299. The renderer is therefore doing roughly
-thirty times more drawing than the output requires, and the largest available optimisation
-by far is not to draw a frame whose content has not changed.
+### The frame-caching idea, and why it died
 
-That is not free to build. Every frame's bytes must still reach ffmpeg, so nothing can be
-skipped at the sink — only the *drawing* can be. And the renderer cannot tell that content
-is unchanged without help: `Frame.At` differs every frame, so frames are never equal as
-values, while what a panel actually *shows* changes far more slowly. Knowing that requires
-each Painter to declare what it depends on, and a panel that got its declaration wrong
-would freeze silently, which is the worst failure mode this project has. It needs its own
-design and its own step; guessing that "content changes at 1 Hz" inside the renderer would
-break the first panel that animates smoothly, with no error.
+Measured after the route panel landed: **97% of consecutive frames were pixel-identical** —
+9 of 299 changed. The data arrives at 1 Hz and the clock advances once a second, so at 30
+fps about thirty frames in a row showed exactly the same thing. That suggested the largest
+optimisation available by far was simply not to draw a frame whose content had not changed.
+
+**Adding the elevation profile took it to 100%.** Measured per layout, over ten seconds at
+30 fps:
+
+| layout | consecutive frames that differ |
+|---|---|
+| text only | 3% |
+| route only | 3% |
+| elevation only | **100%** |
+| all five panels | **100%** |
+
+The playhead is placed from an *interpolated* distance, so it moves a fraction of a pixel
+every frame — and it should. A playhead that jumped once a second would look broken beside
+a clock that ticks. The route dot snaps to route points and so inherits the data's 1 Hz;
+the playhead does not, deliberately.
+
+So smooth motion and frame redundancy are in direct tension, and a whole-frame cache is
+worth nothing as soon as one panel animates continuously. Anything that recovers the win
+would have to work per panel — dirty regions, or a per-Painter cache key — which is a much
+larger change than "skip the frame", and it buys back at most the 3% of the frame the text
+panels occupy while the elevation strip redraws regardless.
+
+The conclusion is recorded rather than the first measurement, because the first measurement
+was taken before the panel that invalidated it, and it would otherwise read as a standing
+invitation to build the wrong thing. The measurement is also no longer asserted in a test:
+`TestRender_FrameRedundancy` reports the figures per layout and pins none of them, since
+which side of that tension a panel picks is a panel's decision and pinning the ratio would
+make the next smoothly-animating panel look like a regression.
 
 Parallel frame rendering is not built. The door is held open by one rule, that `Dynamic`
 must not mutate the Painter, and nothing more.

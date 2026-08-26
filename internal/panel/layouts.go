@@ -26,15 +26,22 @@ func LandscapeLayout() Layout {
 		Name:      "landscape",
 		Margin:    0.03,
 		FontScale: 0.05,
-		Root: Slot{Dir: Row, Children: []Slot{
-			{Dir: Col, Weight: 3, Children: []Slot{
-				{Panel: RoutePanel{}, Weight: 3, Pad: 0.01},
-				{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+		// The elevation profile gets a full-width strip along the bottom
+		// rather than a share of the readout column. It is a wide graph by
+		// nature -- a distance axis with two labels at its ends -- and in a
+		// narrow box those labels grow toward each other until they collide.
+		Root: Slot{Dir: Col, Children: []Slot{
+			{Dir: Row, Weight: 4, Children: []Slot{
+				{Dir: Col, Weight: 3, Children: []Slot{
+					{Panel: RoutePanel{}, Weight: 3, Pad: 0.01},
+					{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+				}},
+				{Dir: Col, Weight: 1, Children: []Slot{
+					{Panel: HeartRate(), Pad: 0.01},
+					{Panel: Power(), Pad: 0.01},
+				}},
 			}},
-			{Dir: Col, Weight: 1, Children: []Slot{
-				{Panel: HeartRate(), Pad: 0.01},
-				{Panel: Power(), Pad: 0.01},
-			}},
+			{Panel: ElevationPanel{}, Weight: 1, Pad: 0.01},
 		}},
 	}
 }
@@ -57,6 +64,7 @@ func PortraitLayout() Layout {
 				{Panel: HeartRate(), Pad: 0.01},
 				{Panel: Power(), Pad: 0.01},
 			}},
+			{Panel: ElevationPanel{}, Weight: 2, Pad: 0.01},
 		}},
 	}
 }

@@ -104,51 +104,73 @@ func benchCopy(b *testing.B, w, h int) {
 	}
 }
 
-// TestRender_ConsecutiveFramesAreMostlyIdentical measures the redundancy in
-// the render, which is the number that decides whether caching frames is worth
-// building.
+// TestRender_FrameRedundancy REPORTS how many consecutive frames differ, per
+// layout. It asserts nothing about the figure, deliberately.
 //
-// The activity's data arrives at 1 Hz and the clock advances once a second, so
-// at 30 fps roughly thirty consecutive frames show exactly the same thing. It
-// is reported rather than asserted tightly: the point is to know the figure,
-// and pinning it would turn any future panel that animates continuously into a
-// test failure rather than a design decision.
-func TestRender_ConsecutiveFramesAreMostlyIdentical(t *testing.T) {
+// The number is an input to a design decision -- whether caching unchanged
+// frames is worth building -- and not a contract. An earlier version did
+// assert that redundancy existed, on the strength of a measurement taken when
+// every panel drew text or snapped to 1 Hz data: 9 of 299 frames changed, 3%.
+// Adding the elevation profile took it to 100%, and the assertion failed
+// against a panel working exactly as intended.
+//
+// That is the finding, not a problem with the test. The playhead is placed
+// from an INTERPOLATED distance, so it moves a fraction of a pixel every
+// frame, and it should: a playhead that jumped once a second would look broken
+// beside a clock that ticks. Smooth motion and frame redundancy are in direct
+// tension, and which one a panel chooses is a panel's business. Pinning the
+// ratio here would make the next smoothly-animating panel look like a
+// regression.
+func TestRender_FrameRedundancy(t *testing.T) {
 	opts := fittest.DefaultOptions()
 	opts.Count = 60
 	opts.PowerWatts = 240
 
-	ctx := benchContext(t, opts, 640, 360)
-	r, err := New(ctx, panel.LandscapeLayout(), panel.DefaultTheme())
-	if err != nil {
-		t.Fatal(err)
+	layouts := []struct {
+		name string
+		l    panel.Layout
+	}{
+		{"full landscape", panel.LandscapeLayout()},
+		{"text only", textOnly()},
+		{"route only", routeOnly()},
+		{"elevation only", elevationOnly()},
 	}
+	for _, lay := range layouts {
+		ctx := benchContext(t, opts, 640, 360)
+		r, err := New(ctx, lay.l, panel.DefaultTheme())
+		if err != nil {
+			t.Fatalf("%s: %v", lay.name, err)
+		}
 
-	const n = 300 // ten seconds at 30 fps
-	base := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
-	if err := r.RenderStatic(base); err != nil {
-		t.Fatal(err)
-	}
-	cur := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
-	prev := make([]byte, len(cur.Pix))
-
-	changed := 0
-	for i := 0; i < n; i++ {
-		copy(cur.Pix, base.Pix)
-		if err := r.RenderDynamic(cur, r.Frame(i)); err != nil {
+		const n = 300 // ten seconds at 30 fps
+		base := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.RenderStatic(base); err != nil {
 			t.Fatal(err)
 		}
-		if i > 0 && !bytesEqual(prev, cur.Pix) {
-			changed++
-		}
-		copy(prev, cur.Pix)
-	}
+		cur := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		prev := make([]byte, len(cur.Pix))
 
-	t.Logf("%d of %d consecutive frames differ (%.0f%%) at 30 fps over 1 Hz data",
-		changed, n-1, float64(changed)/float64(n-1)*100)
-	if changed >= n-1 {
-		t.Error("every frame differs from the last; there is no redundancy to exploit and the figure above is wrong")
+		changed := 0
+		for i := 0; i < n; i++ {
+			copy(cur.Pix, base.Pix)
+			if err := r.RenderDynamic(cur, r.Frame(i)); err != nil {
+				t.Fatal(err)
+			}
+			if i > 0 && !bytesEqual(prev, cur.Pix) {
+				changed++
+			}
+			copy(prev, cur.Pix)
+		}
+		t.Logf("%-16s %3d of %d consecutive frames differ (%.0f%%)",
+			lay.name, changed, n-1, float64(changed)/float64(n-1)*100)
 	}
+}
+
+func elevationOnly() panel.Layout {
+	l := panel.LandscapeLayout()
+	l.Name = "elevation-only"
+	l.Root = panel.Slot{Panel: panel.ElevationPanel{}, Pad: 0.01}
+	return l
 }
 
 func bytesEqual(a, b []byte) bool {
