@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"strings"
 	"sync"
 
 	"github.com/fogleman/gg"
@@ -21,6 +22,9 @@ import (
 // chrome, this is missing -- it says by choosing the role, and the theme
 // decides what the role looks like.
 type Theme struct {
+	// Name identifies the theme for --theme and for the render summary.
+	Name string
+
 	// Background fills the frame. There is no source video beneath it: in
 	// fitdash the background IS the product, which is also what lets a
 	// declining panel leave clean background rather than a hole.
@@ -50,15 +54,60 @@ type Theme struct {
 	Absent color.Color
 }
 
-// DefaultTheme is the shipped palette: a dark dashboard with a warm accent.
-func DefaultTheme() Theme {
+// DefaultTheme is the palette used when none is chosen.
+func DefaultTheme() Theme { return DarkTheme() }
+
+// DarkTheme is a dark dashboard with a warm accent.
+func DarkTheme() Theme {
 	return Theme{
+		Name:       "dark",
 		Background: color.RGBA{0x0E, 0x0E, 0x10, 0xFF},
 		Foreground: color.RGBA{0xF2, 0xF2, 0xF4, 0xFF},
 		Dim:        color.RGBA{0x6E, 0x6E, 0x78, 0xFF},
 		Accent:     color.RGBA{0xFF, 0x5A, 0x36, 0xFF},
 		Absent:     color.RGBA{0x4A, 0x4A, 0x54, 0xFF},
 	}
+}
+
+// LightTheme is the same dashboard on paper.
+//
+// Not the dark palette inverted. Inverting it would give a light grey chrome
+// on white, which vanishes, and the dark theme's accent -- a bright
+// orange chosen to glow against near-black -- reads as washed out on white
+// rather than as the one thing the eye should find. Each role is picked again
+// for its background, and ThemesAreLegible checks the result rather than
+// trusting that it was done carefully.
+func LightTheme() Theme {
+	return Theme{
+		Name:       "light",
+		Background: color.RGBA{0xF5, 0xF4, 0xF1, 0xFF},
+		Foreground: color.RGBA{0x16, 0x16, 0x1A, 0xFF},
+		Dim:        color.RGBA{0x7A, 0x7A, 0x84, 0xFF},
+		Accent:     color.RGBA{0xC4, 0x37, 0x14, 0xFF},
+		Absent:     color.RGBA{0xBE, 0xBE, 0xC6, 0xFF},
+	}
+}
+
+// Themes are the palettes --theme can choose, in the order they are offered.
+func Themes() []Theme { return []Theme{DarkTheme(), LightTheme()} }
+
+// SelectTheme returns the named palette.
+//
+// An unknown name is refused where the user typed it rather than falling back
+// to the default: a typo would otherwise render an entire video in a palette
+// nobody asked for, and a render takes long enough that discovering it at the
+// end is a real cost.
+func SelectTheme(name string) (Theme, error) {
+	for _, t := range Themes() {
+		if t.Name == name {
+			return t, nil
+		}
+	}
+	var names []string
+	for _, t := range Themes() {
+		names = append(names, t.Name)
+	}
+	return Theme{}, fmt.Errorf("panel: unknown theme %q; use %s", name, strings.Join(names, " or "))
 }
 
 // FaceCache holds rasterized font faces, keyed by pixel size.

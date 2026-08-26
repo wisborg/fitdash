@@ -162,16 +162,21 @@ func TestCanvas_PolylineDrawsAndIgnoresDegenerateInput(t *testing.T) {
 	}
 }
 
-// TestTheme_AbsentIsDistinguishableFromEverything pins the property the whole
-// absent-data policy rests on visually.
+// TestThemesAreLegible pins the property the whole absent-data policy rests on
+// visually, for EVERY shipped palette rather than only the default.
 //
-// A placeholder has to be tellable from a live reading AND from the
+// A placeholder has to be tellable from a live reading and from the
 // background, by a viewer who does not know in advance which is which. If
 // Absent were merely Dim reused, a missing heart rate would look like an axis
 // label; if it were near the background it would look like nothing at all,
 // which is the unexplained hole the policy exists to prevent.
-func TestTheme_AbsentIsDistinguishableFromEverything(t *testing.T) {
-	th := DefaultTheme()
+//
+// Running it over Themes() rather than over one palette is what makes adding a
+// theme safe. A light palette is not the dark one inverted -- inverting gives
+// light grey chrome on white, which disappears -- so every role has to be
+// picked again for its background, and this is what says whether it was done
+// carefully.
+func TestThemesAreLegible(t *testing.T) {
 	dist := func(a, b color.Color) float64 {
 		ar, ag, ab, _ := a.RGBA()
 		br, bg, bb, _ := b.RGBA()
@@ -180,18 +185,58 @@ func TestTheme_AbsentIsDistinguishableFromEverything(t *testing.T) {
 	}
 	// A generous floor: these are palette roles, not a contrast standard.
 	const minSeparation = 0.02
-	for _, c := range []struct {
-		name string
-		a, b color.Color
-	}{
-		{"absent vs foreground", th.Absent, th.Foreground},
-		{"absent vs background", th.Absent, th.Background},
-		{"foreground vs background", th.Foreground, th.Background},
-		{"accent vs background", th.Accent, th.Background},
-	} {
-		if d := dist(c.a, c.b); d < minSeparation {
-			t.Errorf("%s: separation %.4f is below %v; the two would read as the same thing", c.name, d, minSeparation)
+
+	themes := Themes()
+	if len(themes) < 2 {
+		t.Fatal("Themes() offers fewer than two palettes; this test would only be checking the default")
+	}
+	for _, th := range themes {
+		t.Run(th.Name, func(t *testing.T) {
+			if th.Name == "" {
+				t.Error("a theme with no name cannot be selected by --theme")
+			}
+			for _, c := range []struct {
+				name string
+				a, b color.Color
+			}{
+				{"absent vs foreground", th.Absent, th.Foreground},
+				{"absent vs background", th.Absent, th.Background},
+				{"absent vs dim", th.Absent, th.Dim},
+				{"foreground vs background", th.Foreground, th.Background},
+				{"dim vs background", th.Dim, th.Background},
+				{"accent vs background", th.Accent, th.Background},
+				{"accent vs foreground", th.Accent, th.Foreground},
+			} {
+				if d := dist(c.a, c.b); d < minSeparation {
+					t.Errorf("%s: separation %.4f is below %v; the two would read as the same thing",
+						c.name, d, minSeparation)
+				}
+			}
+		})
+	}
+}
+
+// TestSelectTheme_RefusesAnUnknownName pins that a typo costs a message rather
+// than a whole render in a palette nobody asked for.
+func TestSelectTheme_RefusesAnUnknownName(t *testing.T) {
+	for _, th := range Themes() {
+		got, err := SelectTheme(th.Name)
+		if err != nil {
+			t.Errorf("SelectTheme(%q): %v", th.Name, err)
+			continue
 		}
+		if got.Name != th.Name {
+			t.Errorf("SelectTheme(%q) returned %q", th.Name, got.Name)
+		}
+	}
+	for _, bad := range []string{"", "Dark", "solarized", "none"} {
+		if _, err := SelectTheme(bad); err == nil {
+			t.Errorf("SelectTheme(%q) was accepted", bad)
+		}
+	}
+	// The default must be one of the offered names, or --theme cannot spell it.
+	if _, err := SelectTheme(DefaultTheme().Name); err != nil {
+		t.Errorf("the default theme is not selectable by name: %v", err)
 	}
 }
 

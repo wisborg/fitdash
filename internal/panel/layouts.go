@@ -1,17 +1,44 @@
 package panel
 
-// SelectLayout picks the arrangement for a frame of this shape.
+import (
+	"fmt"
+	"strings"
+)
+
+// LayoutAuto names the arrangement chosen from the frame's own shape.
+const LayoutAuto = "auto"
+
+// Layouts are the arrangements --layout can choose, besides auto.
+func Layouts() []Layout { return []Layout{LandscapeLayout(), PortraitLayout()} }
+
+// SelectLayout picks an arrangement by name, or from the frame's shape when
+// the name is LayoutAuto.
 //
-// Orientation is chosen from the frame rather than from a flag, because it is
-// not a preference: a landscape tree squeezed into a portrait frame gives every
-// panel an absurd aspect ratio, and there is no reason a user would want that.
-// A --layout flag selecting between whole arrangements can come later, when
-// there is more than one arrangement per orientation to choose between.
-func SelectLayout(w, h int) Layout {
-	if h > w {
-		return PortraitLayout()
+// Auto remains the default and is right almost always: a landscape tree
+// squeezed into a portrait frame gives every panel an absurd aspect ratio.
+// Naming one explicitly is for the cases automation cannot know about -- a
+// square frame, or a wide render meant to sit beside something else -- and
+// forcing a mismatch is the user's to make, not this function's to prevent.
+//
+// An unknown name is refused rather than falling back, for the same reason
+// --theme refuses one: a typo should not cost a whole render.
+func SelectLayout(name string, w, h int) (Layout, error) {
+	if name == LayoutAuto || name == "" {
+		if h > w {
+			return PortraitLayout(), nil
+		}
+		return LandscapeLayout(), nil
 	}
-	return LandscapeLayout()
+	for _, l := range Layouts() {
+		if l.Name == name {
+			return l, nil
+		}
+	}
+	names := []string{LayoutAuto}
+	for _, l := range Layouts() {
+		names = append(names, l.Name)
+	}
+	return Layout{}, fmt.Errorf("panel: unknown layout %q; use %s", name, strings.Join(names, ", "))
 }
 
 // LandscapeLayout is the wide arrangement: the clock on the left at twice the

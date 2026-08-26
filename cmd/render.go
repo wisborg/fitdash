@@ -30,6 +30,8 @@ type renderOptions struct {
 	frameAt   []time.Duration
 	quiet     bool
 	power     string
+	layout    string
+	theme     string
 	speedup   float64
 	videoDur  time.Duration
 }
@@ -99,6 +101,12 @@ func bindRenderFlags(c *cobra.Command) {
 	f.BoolVar(&renderOpts.frames, "frames", false, "write landmark frames as PNG instead of encoding a video")
 	f.DurationSliceVar(&renderOpts.frameAt, "frame-at", nil, "with --frames, also write the frame at this offset into the activity (repeatable, e.g. 12m30s)")
 	f.BoolVar(&renderOpts.quiet, "quiet", false, "suppress the progress line and the summary")
+	f.StringVar(&renderOpts.layout, "layout", panel.LayoutAuto,
+		"panel arrangement -- \"auto\" (default: a column for a portrait frame, a row-based one otherwise), "+
+			"\"landscape\", or \"portrait\". Naming one overrides the frame's shape, which is occasionally what you want "+
+			"and usually not")
+	f.StringVar(&renderOpts.theme, "theme", panel.DefaultTheme().Name,
+		"colour palette -- \"dark\" (default) or \"light\"")
 	f.Float64Var(&renderOpts.speedup, "speedup", 1,
 		"compress the activity into a shorter video: 60 turns an hour of activity into a minute of video. "+
 			"The dashboard still reads ACTIVITY time, so its clock advances that much faster. Mutually exclusive with --video-duration")
@@ -147,7 +155,14 @@ func runRender(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	layout := panel.SelectLayout(w, h)
+	layout, err := panel.SelectLayout(renderOpts.layout, w, h)
+	if err != nil {
+		return err
+	}
+	theme, err := panel.SelectTheme(renderOpts.theme)
+	if err != nil {
+		return err
+	}
 	rctx := &panel.Context{
 		Track:       track,
 		Report:      inspect.Build(track),
@@ -159,19 +174,19 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Fonts:       fonts,
 		PowerSource: powerSrc,
 	}
-	r, err := render.New(rctx, layout, panel.DefaultTheme())
+	r, err := render.New(rctx, layout, theme)
 	if err != nil {
 		return err
 	}
 
 	if renderOpts.frames {
-		return runFrames(cmd, r, timeline, activity)
+		return runFrames(cmd, r, timeline, activity, layout.Name, theme.Name)
 	}
-	return runVideo(cmd, r, timeline, activity, w, h)
+	return runVideo(cmd, r, timeline, activity, w, h, layout.Name, theme.Name)
 }
 
 // runVideo encodes the whole render to a video file.
-func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity string, w, h int) error {
+func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity string, w, h int, layoutName, themeName string) error {
 	out, err := outputPath(activity, renderOpts.output, renderOpts.outputDir, ".mp4")
 	if err != nil {
 		return err
@@ -201,7 +216,7 @@ func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activit
 	// The path goes to stdout so it can be piped; everything else is
 	// commentary and goes to stderr.
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
-	writeRenderSummary(cmd, r, tl, w, h)
+	writeRenderSummary(cmd, r, tl, w, h, layoutName, themeName)
 	return nil
 }
 
@@ -284,7 +299,7 @@ func speedupNote(s float64) string {
 // the pixels and false in the user's understanding of them: they see a
 // dashboard with no power reading and have no way to tell whether their file
 // lacks power, or fitdash does.
-func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, w, h int) {
+func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, w, h int, layoutName, themeName string) {
 	if renderOpts.quiet {
 		return
 	}
@@ -296,10 +311,26 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timelin
 		tl.Frames(), panel.FormatClock(tl.ActivityDuration()), panel.FormatClock(tl.Duration()),
 		speedupNote(tl.Speedup()), strconv.FormatFloat(tl.FPS(), 'f', -1, 64), w, h)
 
+	writePanelSummary(cmd, r, layoutName, themeName)
+}
+
+// writePanelSummary reports the arrangement and, crucially, which panels were
+// left out and why.
+//
+// Shared by the video and --frames paths rather than written twice. It was
+// written twice, and the copies drifted immediately: --frames reported the
+// panels but not the layout or theme, so the one command whose whole purpose
+// is checking how a render looks said least about how it had been configured.
+func writePanelSummary(cmd *cobra.Command, r *render.Renderer, layoutName, themeName string) {
+	if renderOpts.quiet {
+		return
+	}
+	out := cmd.ErrOrStderr()
 	drew := make([]string, 0, len(r.Placed()))
 	for _, p := range r.Placed() {
 		drew = append(drew, p.Panel.Name())
 	}
+	fmt.Fprintf(out, "layout %s, theme %s\n", layoutName, themeName)
 	fmt.Fprintf(out, "panels: %s\n", strings.Join(drew, ", "))
 	if declined := r.Declined(); len(declined) > 0 {
 		fmt.Fprintf(out, "declined (this activity carries no such data): %s\n", strings.Join(declined, ", "))
@@ -311,7 +342,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timelin
 // It runs the IDENTICAL render path -- only the sink differs -- which is what
 // makes the fast visual loop a trustworthy proxy for the real render rather
 // than a second implementation free to disagree with it.
-func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity string) error {
+func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity, layoutName, themeName string) error {
 	indices, err := frameIndices(tl, renderOpts.frameAt)
 	if err != nil {
 		return err
@@ -336,17 +367,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activi
 	for _, p := range sink.Written() {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
-	if !renderOpts.quiet {
-		drew := make([]string, 0, len(r.Placed()))
-		for _, p := range r.Placed() {
-			drew = append(drew, p.Panel.Name())
-		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "panels: %s\n", strings.Join(drew, ", "))
-		if declined := r.Declined(); len(declined) > 0 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "declined (this activity carries no such data): %s\n",
-				strings.Join(declined, ", "))
-		}
-	}
+	writePanelSummary(cmd, r, layoutName, themeName)
 	return nil
 }
 

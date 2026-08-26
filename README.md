@@ -9,10 +9,13 @@ splits.
 fitdash activity.fit --video-duration 3m
 ```
 
-Five panels ship today: the route, an elapsed/active clock, heart rate, power, and an
-elevation profile. Panels that have no data in a given activity decline, and the layout
-closes up around them — an indoor ride simply has no route panel, and the summary says so
-by name rather than leaving an unexplained gap.
+Eight panels ship today: the route, an elapsed/active clock, distance, heart rate, pace,
+power, cadence, and an elevation profile. Panels that have no data in a given activity
+decline, and the layout closes up around them — an indoor ride simply has no route panel,
+and the summary says so by name rather than leaving an unexplained gap.
+
+`--layout` picks the arrangement (`auto`, which follows the frame's shape, or `landscape`
+or `portrait` forced) and `--theme` the palette (`dark` or `light`).
 
 ## What it is
 
@@ -54,6 +57,17 @@ so the clock advances that much faster, which is what a time-lapse should look l
 it costs is that each frame samples the activity further on, so at high compression a
 short spike can fall between frames; nothing is averaged over the gap, because averaging
 would invent a reading nobody recorded.
+
+**Cadence means different things to different sports.** FIT records it as revolutions per
+minute — crank revolutions on a bike, which is what a cyclist reads, but revolutions *per
+leg* on a run, so the figure a runner recognises is twice it. A run shows `spm`, a ride
+shows `rpm`, and a sport fitdash does not recognise keeps the recorded number under its
+recorded unit rather than being guessed at.
+
+**Pace has no value when you stop.** A speed of zero is a real reading whose reciprocal
+does not exist — standing still is not infinitely slow — so a stopped runner sees `--:--`
+rather than a `0:00` that would claim the opposite, or the confident multi-hour figure a
+near-zero speed divides out to.
 
 **Some activities record power twice.** A footpod such as a Stryd registers its own
 reading alongside the standard FIT power field, and the two disagree — on the recording

@@ -427,3 +427,34 @@ func TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay(t *testing.
 		})
 	}
 }
+
+// TestRenderFlags_LayoutAndThemeDefaultsAreSelectable pins that the values the
+// flags default to are values the flags accept.
+//
+// A default that is not in the offered set is a program that cannot run without
+// arguments, and it fails at the first render rather than at build time.
+func TestRenderFlags_LayoutAndThemeDefaultsAreSelectable(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	bindRenderFlags(cmd)
+
+	layoutDefault := cmd.Flags().Lookup("layout").DefValue
+	if _, err := panel.SelectLayout(layoutDefault, 1920, 1080); err != nil {
+		t.Errorf("--layout's default %q is not selectable: %v", layoutDefault, err)
+	}
+	themeDefault := cmd.Flags().Lookup("theme").DefValue
+	if _, err := panel.SelectTheme(themeDefault); err != nil {
+		t.Errorf("--theme's default %q is not selectable: %v", themeDefault, err)
+	}
+
+	// And every name the help text offers must work, or the help lies.
+	for _, name := range []string{panel.LayoutAuto, "landscape", "portrait"} {
+		if _, err := panel.SelectLayout(name, 1920, 1080); err != nil {
+			t.Errorf("--layout %s is offered but rejected: %v", name, err)
+		}
+	}
+	for _, th := range panel.Themes() {
+		if _, err := panel.SelectTheme(th.Name); err != nil {
+			t.Errorf("--theme %s is offered but rejected: %v", th.Name, err)
+		}
+	}
+}

@@ -251,7 +251,10 @@ func TestLayouts_CloseUpWhenAPanelDeclines(t *testing.T) {
 	withoutPower := ctxWith(inspect.MetricHeartRate)
 	withoutPower.Width, withoutPower.Height = w, h
 
-	l := SelectLayout(w, h)
+	l, err := SelectLayout(LayoutAuto, w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
 	keep := func(ctx *Context) func(Panel) bool {
 		return func(p Panel) bool { return p.Accepts(ctx) }
 	}
@@ -299,15 +302,35 @@ func TestLayouts_CloseUpWhenAPanelDeclines(t *testing.T) {
 // TestSelectLayout_PicksATreePerOrientation pins that portrait is a different
 // arrangement rather than the landscape one rescaled.
 func TestSelectLayout_PicksATreePerOrientation(t *testing.T) {
-	if got := SelectLayout(1920, 1080).Name; got != "landscape" {
+	pick := func(w, h int) string {
+		l, err := SelectLayout(LayoutAuto, w, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l.Name
+	}
+	if got := pick(1920, 1080); got != "landscape" {
 		t.Errorf("1920x1080 selected %q", got)
 	}
-	if got := SelectLayout(1080, 1920).Name; got != "portrait" {
+	if got := pick(1080, 1920); got != "portrait" {
 		t.Errorf("1080x1920 selected %q", got)
 	}
 	// Square is not portrait: nothing about it forces a column.
-	if got := SelectLayout(1000, 1000).Name; got != "landscape" {
+	if got := pick(1000, 1000); got != "landscape" {
 		t.Errorf("a square frame selected %q, want landscape", got)
+	}
+
+	// A named layout overrides the frame's shape, which is the whole point of
+	// being able to name one.
+	forced, err := SelectLayout("landscape", 1080, 1920)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forced.Name != "landscape" {
+		t.Errorf("--layout landscape on a portrait frame selected %q", forced.Name)
+	}
+	if _, err := SelectLayout("sideways", 1920, 1080); err == nil {
+		t.Error("an unknown layout name was accepted")
 	}
 
 	ctx := ctxWith(inspect.MetricHeartRate, inspect.MetricPower)
@@ -316,7 +339,11 @@ func TestSelectLayout_PicksATreePerOrientation(t *testing.T) {
 		name string
 		w, h int
 	}{{"landscape", 1920, 1080}, {"portrait", 1080, 1920}, {"4K", 3840, 2160}} {
-		placed, err := SelectLayout(s.w, s.h).Resolve(s.w, s.h, keep)
+		layout, err := SelectLayout(LayoutAuto, s.w, s.h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		placed, err := layout.Resolve(s.w, s.h, keep)
 		if err != nil {
 			t.Fatalf("%s: %v", s.name, err)
 		}
