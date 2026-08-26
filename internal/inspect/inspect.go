@@ -60,11 +60,17 @@ type Report struct {
 	// Samples is the record count -- the denominator for every Metric's
 	// Coverage.
 	Samples int
-	// Start, End bound the activity's recorded samples. Both are zero when
-	// Samples is 0.
+	// Start, End bound the ACTIVITY, as its own timer model resolves it --
+	// the session's start_time and declared elapsed total where the file
+	// carried them, the first and last sample otherwise. This is the same
+	// window the renderer lays its timeline over, deliberately: two answers to
+	// "how long was this activity" in one program is one too many.
+	//
+	// It can therefore be marginally wider than the records themselves cover.
+	// Both are zero for a file carrying neither session timing nor samples.
 	Start, End time.Time
-	// Elapsed is End-Start: the wall-clock span of the recording, INCLUDING
-	// any time the activity was paused. Active is the moving time the FIT's
+	// Elapsed is End-Start: the wall-clock span of the activity, INCLUDING
+	// any time it was paused. Active is the moving time the FIT's
 	// own timer events describe, which is what a watch displays. They differ
 	// on any activity with a stop in it, and a dashboard has to choose which
 	// one its timeline runs on -- so both are reported rather than one being
@@ -92,19 +98,26 @@ type Report struct {
 // Build computes the report for track.
 func Build(track *fitactivity.Track) Report {
 	r := Report{Path: track.SourcePath, Sport: track.Sport, Samples: len(track.Samples)}
-	if r.Samples > 0 {
-		r.Start = track.Samples[0].Time
-		r.End = track.Samples[len(track.Samples)-1].Time
-		r.Elapsed = r.End.Sub(r.Start)
-	}
 
-	// The timer model is the only honest source for moving time: subtracting
-	// pauses from Elapsed by hand would need the same event pairing it already
-	// does, and getting that wrong is silent -- the number still looks like a
-	// duration.
+	// Start, End, Elapsed and Active all come from the timer model, which owns
+	// the question of when an activity ran.
+	//
+	// This USED to derive the window from the first and last sample instead,
+	// and the two are not the same: a session declaring 1553.87 seconds of
+	// elapsed time whose records span 1553 gave `inspect` one answer and the
+	// renderer -- which lays its timeline over the model's window -- another,
+	// for the same file, differing by most of a second. Nothing errored; the
+	// two commands simply disagreed about how long the activity was. That is
+	// the second definition of an activity's extent this project set out not
+	// to have, found by rendering a real file and comparing.
+	//
+	// The sample count is reported separately, which is the honest way to say
+	// that records may cover marginally less than the activity claims.
 	if tm := fitactivity.BuildTimerModel(track); tm != nil {
 		r.HasTimerEvents = tm.HasTimerEvents()
-		if r.Samples > 0 {
+		r.Start, r.End = tm.Window()
+		if !r.Start.IsZero() && !r.End.IsZero() {
+			r.Elapsed = tm.Elapsed(r.End)
 			r.Active = tm.Active(r.End)
 		}
 	}

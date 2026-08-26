@@ -27,14 +27,24 @@ type formatFlag struct{ output.Format }
 func (formatFlag) Type() string { return "format" }
 
 var root = &cobra.Command{
-	Use:   "fitdash",
+	Use:   "fitdash ACTIVITY.fit",
 	Short: "Render a recorded exercise as a dashboard video",
 	Long: `fitdash reads a Garmin FIT activity and renders it as a dashboard video:
 the metrics animate as the activity progresses.
 
+The video spans the activity's ELAPSED time, so it freezes through a pause
+rather than cutting it out. Cutting pauses would splice two instants together
+and teleport the dashboard across whatever ground was covered while the watch
+was stopped.
+
 A rendered dashboard is a video of where you were, minute by minute, and what
 your body was doing. It is yours to publish or not -- fitdash writes it to a
-file and does nothing else with it.`,
+file, writes no location metadata into it, and does nothing else with it.
+
+Note that an activity file named exactly like a subcommand -- "inspect" -- is
+resolved as the subcommand. Write ./inspect to render it.`,
+	Args:          cobra.ExactArgs(1),
+	RunE:          runRender,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -47,6 +57,7 @@ file and does nothing else with it.`,
 // actually says what went wrong.
 func Execute() {
 	root.PersistentFlags().Var(&format, "format", "output format: text, csv, json or yaml")
+	bindRenderFlags(root)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "fitdash: %v\n", err)
 		os.Exit(1)

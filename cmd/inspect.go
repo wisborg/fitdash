@@ -139,4 +139,11 @@ func inspectTable(rep inspect.Report) *table.Table {
 
 // fmtDuration is here rather than inline so the header and any future summary
 // row spell a duration the same way.
-func fmtDuration(d time.Duration) string { return d.Round(time.Second).String() }
+//
+// TRUNCATED, not rounded, to match the clock burned into a rendered dashboard
+// -- which truncates because it is a stopwatch. The two describe the same
+// number, and rounding here made them disagree by a second on a real file:
+// inspect said 25m54s while the video's final frame read 0:25:53. A user
+// comparing them has no way to know that is a formatting choice rather than a
+// discrepancy in the data.
+func fmtDuration(d time.Duration) string { return d.Truncate(time.Second).String() }
