@@ -34,11 +34,16 @@ func LandscapeLayout() Layout {
 			{Dir: Row, Weight: 4, Children: []Slot{
 				{Dir: Col, Weight: 3, Children: []Slot{
 					{Panel: RoutePanel{}, Weight: 3, Pad: 0.01},
-					{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+					{Dir: Row, Weight: 2, Children: []Slot{
+						{Panel: ElapsedPanel{}, Weight: 3, Pad: 0.01},
+						{Panel: Distance(), Weight: 2, Pad: 0.01},
+					}},
 				}},
 				{Dir: Col, Weight: 1, Children: []Slot{
 					{Panel: HeartRate(), Pad: 0.01},
+					{Panel: Pace(), Pad: 0.01},
 					{Panel: Power(), Pad: 0.01},
+					{Panel: Cadence(), Pad: 0.01},
 				}},
 			}},
 			{Panel: ElevationPanel{}, Weight: 1, Pad: 0.01},
@@ -59,10 +64,17 @@ func PortraitLayout() Layout {
 		FontScale: 0.05,
 		Root: Slot{Dir: Col, Children: []Slot{
 			{Panel: RoutePanel{}, Weight: 4, Pad: 0.01},
-			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+			{Dir: Row, Weight: 2, Children: []Slot{
+				{Panel: ElapsedPanel{}, Weight: 3, Pad: 0.01},
+				{Panel: Distance(), Weight: 2, Pad: 0.01},
+			}},
 			{Dir: Row, Weight: 2, Children: []Slot{
 				{Panel: HeartRate(), Pad: 0.01},
+				{Panel: Pace(), Pad: 0.01},
+			}},
+			{Dir: Row, Weight: 2, Children: []Slot{
 				{Panel: Power(), Pad: 0.01},
+				{Panel: Cadence(), Pad: 0.01},
 			}},
 			{Panel: ElevationPanel{}, Weight: 2, Pad: 0.01},
 		}},

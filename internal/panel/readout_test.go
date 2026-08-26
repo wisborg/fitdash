@@ -548,3 +548,189 @@ func TestPower_AcceptsCannotBeAnsweredByTheReport(t *testing.T) {
 		t.Error("the panel agreed with the report rather than with the selected source")
 	}
 }
+
+// TestFormatPace_DerivesMinutesPerKilometre works every expectation out from
+// the speed rather than pinning what the function returns.
+func TestFormatPace_DerivesMinutesPerKilometre(t *testing.T) {
+	cases := []struct {
+		name  string
+		speed float64 // m/s
+		want  string
+	}{
+		// 1000 m at 5 m/s is 200 s = 3:20.
+		{"a fast runner", 5, "3:20"},
+		// 1000 / 3.0864 = 324 s = 5:24, the pace on the reference recording.
+		{"an ordinary run", 1000.0 / 324, "5:24"},
+		// A brisk walk: 1000 / 1.4 = 714 s = 11:54.
+		{"walking", 1.4, "11:54"},
+		// Exactly a round number, to catch a seconds field that should be
+		// padded and is not.
+		{"four minutes flat", 1000.0 / 240, "4:00"},
+		{"just over a minute boundary", 1000.0 / 241, "4:01"},
+		// Standing still has NO pace. Zero is a real reading and its
+		// reciprocal does not exist; printing "0:00" would say infinitely
+		// fast, and any figure at all would be invented.
+		{"stopped", 0, PacePlaceholder},
+		{"a negative speed cannot happen and must not divide", -1, PacePlaceholder},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := FormatPace(c.speed); got != c.want {
+				t.Errorf("FormatPace(%v) = %q, want %q", c.speed, got, c.want)
+			}
+		})
+	}
+}
+
+// TestPace_StoppedIsAbsentNotZero pins where the decision lives.
+//
+// A speed of zero is present data whose DERIVED value does not exist, which is
+// the absent-data rule reached from an unusual direction. The judgement is made
+// in the value accessor -- "there is no reading here" -- rather than as a
+// formatting special case downstream, so the panel's ordinary placeholder path
+// handles it and nothing has to know pace is peculiar.
+func TestPace_StoppedIsAbsentNotZero(t *testing.T) {
+	moving := fitactivity.Sample{HasSpeed: true, Speed: 3.2}
+	stopped := fitactivity.Sample{HasSpeed: true, Speed: 0}
+	noReading := fitactivity.Sample{}
+
+	p := Pace()
+	if _, ok := p.value(moving); !ok {
+		t.Error("a moving runner resolved no pace")
+	}
+	if _, ok := p.value(stopped); ok {
+		t.Error("a stopped runner resolved a pace; standing still is not infinitely slow")
+	}
+	if _, ok := p.value(noReading); ok {
+		t.Error("a sample with no speed resolved a pace")
+	}
+}
+
+// TestDistance_IsAlwaysKilometres pins the unit's constancy, which matters
+// more than it looks.
+//
+// The unit is drawn in the STATIC layer, rasterized once for the whole render.
+// A readout that began in metres and crossed into kilometres would leave "m"
+// burned in under a figure that had become kilometres, and nothing would report
+// it -- the static layer cannot know the reading changed shape.
+func TestDistance_IsAlwaysKilometres(t *testing.T) {
+	d := Distance()
+	if d.unit != "km" {
+		t.Errorf("unit is %q; it must not vary with magnitude, because it is drawn once", d.unit)
+	}
+	cases := []struct {
+		metres float64
+		want   string
+	}{
+		{0, "0.00"},
+		{340, "0.34"},
+		{1000, "1.00"},
+		{5049, "5.05"},
+		{42195, "42.20"},
+	}
+	for _, c := range cases {
+		v, ok := d.value(fitactivity.Sample{HasDistance: true, Distance: c.metres})
+		if !ok {
+			t.Fatalf("%v m resolved no distance", c.metres)
+		}
+		if got := d.format(v); got != c.want {
+			t.Errorf("%v m rendered as %q, want %q", c.metres, got, c.want)
+		}
+	}
+	if _, ok := d.value(fitactivity.Sample{}); ok {
+		t.Error("a sample with no distance resolved one")
+	}
+}
+
+// TestCadence_DoublesForRunningButNotForCycling pins the sport-dependent unit.
+//
+// FIT stores cadence as revolutions per minute: crank revolutions on a bike,
+// which is what a cyclist reads, and revolutions PER LEG on a run, where the
+// figure the runner recognises is twice it. Showing a run's 87 where the watch
+// said 174 spm is not wrong so much as unrecognisable.
+func TestCadence_DoublesForRunningButNotForCycling(t *testing.T) {
+	sample := fitactivity.Sample{HasCadence: true, Cadence: 87}
+
+	cases := []struct {
+		sport     string
+		wantValue float64
+		wantUnit  string
+	}{
+		{"running", 174, "spm"},
+		{"walking", 174, "spm"},
+		{"hiking", 174, "spm"},
+		// Case is the device's vocabulary, not this program's.
+		{"Running", 174, "spm"},
+		{"cycling", 87, "rpm"},
+		{"swimming", 87, "rpm"},
+		// An unknown or absent sport keeps the recorded number under its
+		// recorded unit: the answer that cannot be wrong, where a guessed
+		// doubling would silently halve or double somebody's cadence.
+		{"", 87, "rpm"},
+		{"some_new_sport", 87, "rpm"},
+	}
+	for _, c := range cases {
+		name := c.sport
+		if name == "" {
+			name = "(no sport recorded)"
+		}
+		t.Run(name, func(t *testing.T) {
+			track := trackWith(inspect.MetricCadence)
+			track.Sport = c.sport
+			ctx := &Context{Track: track, Report: inspect.Build(track)}
+
+			bound := Cadence().Prepare(ctx, Box{W: 200, H: 200}).(*readoutPainter)
+			if bound.unit != c.wantUnit {
+				t.Errorf("unit = %q, want %q", bound.unit, c.wantUnit)
+			}
+			got, ok := bound.value(sample)
+			if !ok {
+				t.Fatal("no cadence resolved")
+			}
+			if got != c.wantValue {
+				t.Errorf("cadence = %v, want %v", got, c.wantValue)
+			}
+		})
+	}
+}
+
+// TestReadouts_SizeAgainstTheirOwnWidestString pins that each readout measures
+// a template that can actually hold its readings.
+//
+// The default template is "888", which suits a three-digit integer and nothing
+// else: a pace of "12:34" and a distance of "42.20" are both wider, and a
+// readout sized against "888" prints them past the edge of its box.
+func TestReadouts_SizeAgainstTheirOwnWidestString(t *testing.T) {
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		r        Readout
+		examples []string
+	}{
+		{HeartRate(), []string{"48", "161", "205"}},
+		{Power(), []string{"0", "332", "568"}},
+		{Cadence(), []string{"87", "174"}},
+		{Distance(), []string{"0.00", "5.05", "42.20"}},
+		{Pace(), []string{"3:20", "5:24", "11:54", PacePlaceholder}},
+	}
+	for _, c := range cases {
+		t.Run(c.r.Name(), func(t *testing.T) {
+			tmplW, _, err := faces.Measure(c.r.valueTemplate(), 40)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ex := range c.examples {
+				w, _, err := faces.Measure(ex, 40)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if w > tmplW {
+					t.Errorf("%q measures %g but the template %q only reserves %g; it would overflow its box",
+						ex, w, c.r.valueTemplate(), tmplW)
+				}
+			}
+		})
+	}
+}
