@@ -67,14 +67,20 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 		}
 	}
 
-	e.labelY = box.Y + box.H*0.20
-	e.ruleY = box.Y + box.H*0.30
+	// Rows are spaced against `unit` and centred in the box rather than placed
+	// at fractions of its height, so the group keeps its shape whatever
+	// rectangle the layout hands over. A box that grows -- because a
+	// neighbouring panel declined and the layout closed up -- would otherwise
+	// pull the label and the sub-line away from the clock they belong to.
+	centerY := box.Y + box.H/2
+	e.clockY = centerY
+	e.labelY = centerY - unit*0.34
+	e.ruleY = centerY - unit*0.26
+	e.subY = centerY + unit*0.30
 	e.ruleH = unit * 0.012
 	if e.ruleH < 1 {
 		e.ruleH = 1
 	}
-	e.clockY = box.Y + box.H*0.52
-	e.subY = box.Y + box.H*0.78
 	e.centerX = box.X + box.W/2
 	e.ruleW = box.W * 0.72
 	return e

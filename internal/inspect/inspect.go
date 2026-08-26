@@ -24,6 +24,27 @@ import (
 	"github.com/wisborg/fitactivity"
 )
 
+// The names Build gives the metrics it counts.
+//
+// They are constants rather than string literals because a panel asks the
+// report whether an activity carries a metric, by name. A literal on each side
+// means a rename silently turns every such question into "no" -- the panel
+// would decline on every activity, the layout would close up around it, and
+// the result looks exactly like a file that genuinely lacks the data.
+const (
+	MetricPosition            = "Position"
+	MetricElevation           = "Elevation"
+	MetricSpeed               = "Speed"
+	MetricDistance            = "Distance"
+	MetricHeartRate           = "Heart rate"
+	MetricCadence             = "Cadence"
+	MetricPower               = "Power"
+	MetricTemperature         = "Temperature"
+	MetricVerticalOscillation = "Vertical oscillation"
+	MetricStanceTime          = "Stance time"
+	MetricStepLength          = "Step length"
+)
+
 // Metric is one metric's coverage across an activity.
 type Metric struct {
 	// Name is the metric as a person reads it ("Heart rate"), not as the
@@ -132,19 +153,19 @@ func Build(track *fitactivity.Track) Report {
 		unit string
 		get  func(fitactivity.Sample) (float64, bool)
 	}{
-		{"Position", "deg", func(s fitactivity.Sample) (float64, bool) { return s.Lat, s.HasGPS }},
-		{"Elevation", "m", func(s fitactivity.Sample) (float64, bool) { return s.Elevation, s.HasElevation }},
-		{"Speed", "m/s", func(s fitactivity.Sample) (float64, bool) { return s.Speed, s.HasSpeed }},
-		{"Distance", "m", func(s fitactivity.Sample) (float64, bool) { return s.Distance, s.HasDistance }},
-		{"Heart rate", "bpm", func(s fitactivity.Sample) (float64, bool) { return float64(s.HeartRate), s.HasHeartRate }},
-		{"Cadence", "rpm", func(s fitactivity.Sample) (float64, bool) { return float64(s.Cadence), s.HasCadence }},
-		{"Power", "W", func(s fitactivity.Sample) (float64, bool) { return float64(s.Power), s.HasPower }},
-		{"Temperature", "C", func(s fitactivity.Sample) (float64, bool) { return float64(s.Temperature), s.HasTemperature }},
-		{"Vertical oscillation", "mm", func(s fitactivity.Sample) (float64, bool) {
+		{MetricPosition, "deg", func(s fitactivity.Sample) (float64, bool) { return s.Lat, s.HasGPS }},
+		{MetricElevation, "m", func(s fitactivity.Sample) (float64, bool) { return s.Elevation, s.HasElevation }},
+		{MetricSpeed, "m/s", func(s fitactivity.Sample) (float64, bool) { return s.Speed, s.HasSpeed }},
+		{MetricDistance, "m", func(s fitactivity.Sample) (float64, bool) { return s.Distance, s.HasDistance }},
+		{MetricHeartRate, "bpm", func(s fitactivity.Sample) (float64, bool) { return float64(s.HeartRate), s.HasHeartRate }},
+		{MetricCadence, "rpm", func(s fitactivity.Sample) (float64, bool) { return float64(s.Cadence), s.HasCadence }},
+		{MetricPower, "W", func(s fitactivity.Sample) (float64, bool) { return float64(s.Power), s.HasPower }},
+		{MetricTemperature, "C", func(s fitactivity.Sample) (float64, bool) { return float64(s.Temperature), s.HasTemperature }},
+		{MetricVerticalOscillation, "mm", func(s fitactivity.Sample) (float64, bool) {
 			return s.VerticalOscillation, s.HasVerticalOscillation
 		}},
-		{"Stance time", "ms", func(s fitactivity.Sample) (float64, bool) { return s.StanceTime, s.HasStanceTime }},
-		{"Step length", "mm", func(s fitactivity.Sample) (float64, bool) { return s.StepLength, s.HasStepLength }},
+		{MetricStanceTime, "ms", func(s fitactivity.Sample) (float64, bool) { return s.StanceTime, s.HasStanceTime }},
+		{MetricStepLength, "mm", func(s fitactivity.Sample) (float64, bool) { return s.StepLength, s.HasStepLength }},
 	}
 
 	r.Metrics = make([]Metric, len(acc))
@@ -197,4 +218,40 @@ func buildDevFields(samples []fitactivity.Sample) []Metric {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// Metric looks up one metric by name, reporting whether the report knows it.
+//
+// The ok result is not decoration: a caller asking about a name Build never
+// produced -- a typo, or a constant that drifted -- would otherwise be told
+// the activity lacks the metric, which is the same answer it would get for a
+// file that genuinely does. Callers that treat "unknown" and "absent" alike
+// should say so deliberately.
+func (r Report) Metric(name string) (Metric, bool) {
+	for _, m := range r.Metrics {
+		if m.Name == name {
+			return m, true
+		}
+	}
+	for _, m := range r.DevFields {
+		if m.Name == name {
+			return m, true
+		}
+	}
+	return Metric{}, false
+}
+
+// Carries reports whether the activity holds any reading of the named metric.
+//
+// This is the single rule behind every panel's decision to draw or decline,
+// and behind what the inspect command prints. A panel deriving it by walking
+// the samples could disagree with the report the user just read.
+//
+// The threshold is any coverage at all rather than a percentage. A metric
+// present four per cent of the time is a metric with a very long dropout, and
+// the placeholder path already handles dropouts honestly; a percentage
+// threshold would need a defensible number and there is not one.
+func (r Report) Carries(name string) bool {
+	m, ok := r.Metric(name)
+	return ok && m.Present > 0
 }

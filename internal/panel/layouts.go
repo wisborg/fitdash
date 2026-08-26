@@ -1,23 +1,56 @@
 package panel
 
-// DefaultLayout is the shipped arrangement.
+// SelectLayout picks the arrangement for a frame of this shape.
 //
-// One panel today, filling the frame inside a margin. It is a function rather
-// than a variable so the Layout always carries its Name -- a struct literal
-// assembled elsewhere would have an empty one, and a diagnostic that named a
-// layout while the pixels showed another is a lie that is hard to catch.
+// Orientation is chosen from the frame rather than from a flag, because it is
+// not a preference: a landscape tree squeezed into a portrait frame gives every
+// panel an absurd aspect ratio, and there is no reason a user would want that.
+// A --layout flag selecting between whole arrangements can come later, when
+// there is more than one arrangement per orientation to choose between.
+func SelectLayout(w, h int) Layout {
+	if h > w {
+		return PortraitLayout()
+	}
+	return LandscapeLayout()
+}
+
+// LandscapeLayout is the wide arrangement: the clock on the left at twice the
+// width, the readouts stacked beside it.
 //
-// There is deliberately no --layout flag yet, and no landscape/portrait pair.
-// With a single panel the three arrangements the design calls for would all
-// resolve to the same rectangle, so the flag would be surface with no effect
-// behind it -- and a flag that does nothing is worse than a missing one,
-// because someone will eventually rely on it. It arrives with the second
-// panel, which is when the arrangements start to differ.
-func DefaultLayout() Layout {
+// Layouts are built by functions so they always carry a Name. A Layout
+// assembled as a struct literal elsewhere would have an empty one, and a
+// diagnostic naming a layout while the pixels show another is a lie that is
+// hard to catch.
+func LandscapeLayout() Layout {
 	return Layout{
-		Name:      "default",
+		Name:      "landscape",
 		Margin:    0.03,
 		FontScale: 0.05,
-		Root:      Slot{Panel: ElapsedPanel{}},
+		Root: Slot{Dir: Row, Children: []Slot{
+			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+			{Dir: Col, Weight: 1, Children: []Slot{
+				{Panel: HeartRate(), Pad: 0.01},
+				{Panel: Power(), Pad: 0.01},
+			}},
+		}},
+	}
+}
+
+// PortraitLayout is the tall arrangement: everything in one column, the clock
+// given the most room.
+//
+// A different TREE rather than the landscape one rescaled, because the
+// available width collapses in portrait and a row of three panels there would
+// give each a sliver too narrow to read.
+func PortraitLayout() Layout {
+	return Layout{
+		Name:      "portrait",
+		Margin:    0.03,
+		FontScale: 0.05,
+		Root: Slot{Dir: Col, Children: []Slot{
+			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+			{Panel: HeartRate(), Weight: 1, Pad: 0.01},
+			{Panel: Power(), Weight: 1, Pad: 0.01},
+		}},
 	}
 }

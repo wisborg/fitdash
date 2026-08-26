@@ -65,7 +65,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	layout := panel.DefaultLayout()
+	layout := panel.SelectLayout(w, h)
 	rctx := &panel.Context{
 		Track:     track,
 		Report:    inspect.Build(track),

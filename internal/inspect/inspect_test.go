@@ -236,3 +236,42 @@ func metricNamed(t *testing.T, rep Report, name string) Metric {
 	t.Fatalf("no metric named %q in report", name)
 	return Metric{}
 }
+
+// TestMetricNames_ArePinnedLiterals guards a rename that would otherwise be
+// invisible.
+//
+// Panels ask the report about a metric through these constants, so a rename
+// moves both sides together and nothing breaks -- which is exactly why a test
+// comparing the panel's name against the report's is circular and proves
+// nothing. What a rename DOES change is what the inspect command prints, and
+// that is user-visible output. Pinning the literals is the only assertion that
+// can see it.
+func TestMetricNames_ArePinnedLiterals(t *testing.T) {
+	cases := []struct{ got, want string }{
+		{MetricPosition, "Position"},
+		{MetricElevation, "Elevation"},
+		{MetricSpeed, "Speed"},
+		{MetricDistance, "Distance"},
+		{MetricHeartRate, "Heart rate"},
+		{MetricCadence, "Cadence"},
+		{MetricPower, "Power"},
+		{MetricTemperature, "Temperature"},
+		{MetricVerticalOscillation, "Vertical oscillation"},
+		{MetricStanceTime, "Stance time"},
+		{MetricStepLength, "Step length"},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("a metric name changed to %q, want %q -- this is printed to users", c.got, c.want)
+		}
+	}
+
+	// And every one of them must actually appear in a report, or a panel
+	// asking about it would decline on every activity.
+	rep := Build(&fitactivity.Track{Samples: []fitactivity.Sample{{}}})
+	for _, c := range cases {
+		if _, ok := rep.Metric(c.want); !ok {
+			t.Errorf("no metric named %q in a report; a panel asking for it would always decline", c.want)
+		}
+	}
+}

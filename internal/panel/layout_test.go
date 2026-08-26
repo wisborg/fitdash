@@ -58,6 +58,22 @@ func closeTo(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
 // background, not a rounding curiosity.
 func assertTiles(t *testing.T, placed []Placed, within Box) {
 	t.Helper()
+	area := assertNoOverlap(t, placed)
+	if want := within.W * within.H; !closeTo(area, want) {
+		t.Errorf("placed boxes cover %g of the available %g; the difference is a gap or an overlap", area, want)
+	}
+}
+
+// assertNoOverlap checks the boxes are pairwise disjoint and returns the area
+// they cover.
+//
+// Separate from assertTiles because a layout with a margin or per-slot padding
+// covers LESS than its frame by design, so demanding exact coverage there
+// would fail against correct output. Disjointness holds in both cases and is
+// the property that makes a rectangle the right shape for a Box; exact
+// coverage only means something for a layout with no gaps built into it.
+func assertNoOverlap(t *testing.T, placed []Placed) float64 {
+	t.Helper()
 	var area float64
 	for i, p := range placed {
 		if p.Box.W <= 0 || p.Box.H <= 0 {
@@ -73,9 +89,7 @@ func assertTiles(t *testing.T, placed []Placed, within Box) {
 			}
 		}
 	}
-	if want := within.W * within.H; !closeTo(area, want) {
-		t.Errorf("placed boxes cover %g of the available %g; the difference is a gap or an overlap", area, want)
-	}
+	return area
 }
 
 // threePanelRow is the fixture most tests here use: three equal panels in a
