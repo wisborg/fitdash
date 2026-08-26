@@ -35,12 +35,27 @@ import (
 // and nothing else changes -- not a panel, not the frame loop, not the
 // encoder. See docs/architecture.md.
 type Timeline struct {
-	start time.Time
-	fps   float64
-	n     int
+	start   time.Time
+	fps     float64
+	speedup float64
+	n       int
 }
 
-// NewTimeline lays n frames over d at fps, beginning at start.
+// NewTimeline lays frames over d at fps, beginning at start, compressing the
+// activity by speedup.
+//
+// A speedup of 1 renders in real time: a four-hour ride becomes a four-hour
+// video, which is faithful and almost nobody will watch. At 60 it becomes four
+// minutes. The activity's own clock still reads activity time -- the video is
+// compressed, the data is not relabelled -- so the elapsed readout advances
+// sixty seconds per second of video, which is what a time-lapse should look
+// like.
+//
+// What compression costs is stated rather than hidden: each frame samples the
+// activity 'speedup/fps' seconds further on, so at 60x and 30 fps a frame
+// covers two seconds and a heart-rate spike shorter than that falls between
+// frames entirely. Nothing is averaged over the interval, because averaging
+// would invent a reading nobody recorded; frames simply land where they land.
 //
 // Frames cover the HALF-OPEN interval [start, start+d): At(0) is start and
 // At(Frames()-1) is one frame short of the end. That is what makes the video's
@@ -54,7 +69,7 @@ type Timeline struct {
 // when d*fps rounds to zero: a ten-millisecond activity at 30 fps is a
 // one-frame video, which is odd but honest, where a zero-frame video is a file
 // no player will open.
-func NewTimeline(start time.Time, d time.Duration, fps float64) (Timeline, error) {
+func NewTimeline(start time.Time, d time.Duration, fps, speedup float64) (Timeline, error) {
 	if start.IsZero() {
 		return Timeline{}, fmt.Errorf("panel: timeline has no start instant")
 	}
@@ -64,11 +79,28 @@ func NewTimeline(start time.Time, d time.Duration, fps float64) (Timeline, error
 	if fps <= 0 || math.IsInf(fps, 0) || math.IsNaN(fps) {
 		return Timeline{}, fmt.Errorf("panel: fps must be a positive finite number, got %v", fps)
 	}
-	n := int(math.Round(d.Seconds() * fps))
+	if speedup <= 0 || math.IsInf(speedup, 0) || math.IsNaN(speedup) {
+		return Timeline{}, fmt.Errorf("panel: speedup must be a positive finite number, got %v", speedup)
+	}
+	n := int(math.Round(d.Seconds() / speedup * fps))
 	if n < 1 {
 		n = 1
 	}
-	return Timeline{start: start, fps: fps, n: n}, nil
+	return Timeline{start: start, fps: fps, speedup: speedup, n: n}, nil
+}
+
+// SpeedupFor returns the compression that fits an activity of length activity
+// into a video of length target.
+//
+// It is the inverse of the same arithmetic NewTimeline applies, kept here so a
+// caller offering a target duration and a caller offering a factor go through
+// one rule. Both zero or negative inputs yield 1, which renders in real time --
+// the caller validates; this does not silently invent a compression.
+func SpeedupFor(activity, target time.Duration) float64 {
+	if activity <= 0 || target <= 0 {
+		return 1
+	}
+	return activity.Seconds() / target.Seconds()
 }
 
 // NewTimelineForActivity lays a timeline over the whole of an activity.
@@ -81,7 +113,7 @@ func NewTimeline(start time.Time, d time.Duration, fps float64) (Timeline, error
 // against one window while Frame.Elapsed is measured against another produces
 // a final frame whose clock reads something other than the activity's total,
 // with nothing reporting a problem. One window, from the type that owns it.
-func NewTimelineForActivity(timer *fitactivity.TimerModel, fps float64) (Timeline, error) {
+func NewTimelineForActivity(timer *fitactivity.TimerModel, fps, speedup float64) (Timeline, error) {
 	if timer == nil {
 		return Timeline{}, fmt.Errorf("panel: no timer model")
 	}
@@ -93,7 +125,7 @@ func NewTimelineForActivity(timer *fitactivity.TimerModel, fps float64) (Timelin
 	if d <= 0 {
 		return Timeline{}, fmt.Errorf("panel: activity spans %v; there is nothing to render", d)
 	}
-	return NewTimeline(start, d, fps)
+	return NewTimeline(start, d, fps, speedup)
 }
 
 // Frames is the number of frames in the render.
@@ -104,11 +136,29 @@ func (t Timeline) Frames() int { return t.n }
 // one number or the video drifts against the readout burned into it.
 func (t Timeline) FPS() float64 { return t.fps }
 
+// Speedup is how much the activity is compressed into the video: 1 is real
+// time, 60 turns an hour into a minute.
+func (t Timeline) Speedup() float64 { return t.speedup }
+
+// ActivityDuration is how much of the ACTIVITY the frames span, as opposed to
+// how long the video runs.
+//
+// The two are the same only at a speedup of 1, and reporting just one of them
+// would be the confusing half: a user who asked for a three-minute video wants
+// to see that they got three minutes AND that it still covers the whole
+// four-hour ride.
+func (t Timeline) ActivityDuration() time.Duration {
+	return time.Duration(math.Round(float64(t.n) / t.fps * t.speedup * float64(time.Second)))
+}
+
 // Start is the instant frame 0 shows.
 func (t Timeline) Start() time.Time { return t.start }
 
-// Duration is the span the frames cover: Frames()/FPS, which is what the
-// encoded video's own duration will be.
+// Duration is how long the encoded VIDEO runs: Frames()/FPS.
+//
+// Not how much activity it covers -- see ActivityDuration. The two diverge as
+// soon as the render is sped up, and confusing them would put a four-hour
+// figure on a three-minute file.
 //
 // This is NOT necessarily the duration NewTimeline was given. Rounding the
 // frame count to a whole number of frames can move it by up to half a frame,
@@ -130,12 +180,17 @@ func (t Timeline) Duration() time.Duration {
 // the error against the exact instant stays bounded instead of accumulating
 // with i.
 func (t Timeline) At(i int) time.Time {
-	offset := math.Round(float64(i) / t.fps * float64(time.Second))
+	offset := math.Round(float64(i) / t.fps * t.speedup * float64(time.Second))
 	return t.start.Add(time.Duration(offset))
 }
 
-// IndexAt returns the frame showing the instant offset into the activity,
+// IndexAt returns the frame showing the instant offset into the ACTIVITY,
 // rounded to the nearest frame and clamped to the render.
+//
+// Activity time, not video time: a user asking for the frame at 12m30s means
+// twelve and a half minutes into their run, which at a speedup of 10 is
+// seventy-five seconds into the video. Interpreting the offset as video time
+// would answer a question nobody asked.
 //
 // This is At's inverse, and having it is most of the reason At is affine: it
 // is what lets a caller ask for "the frame at 12m30s" -- which is how a render
@@ -149,7 +204,7 @@ func (t Timeline) At(i int) time.Time {
 // request the caller must have computed wrongly. A caller who needs to know
 // the offset was out of range can compare against Duration.
 func (t Timeline) IndexAt(offset time.Duration) int {
-	i := int(math.Round(offset.Seconds() * t.fps))
+	i := int(math.Round(offset.Seconds() / t.speedup * t.fps))
 	if i < 0 {
 		return 0
 	}

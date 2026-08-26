@@ -39,7 +39,7 @@ func TestNewTimeline_FrameCountIsDurationTimesRate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			tl, err := NewTimeline(epoch, c.d, c.fps)
+			tl, err := NewTimeline(epoch, c.d, c.fps, 1)
 			if err != nil {
 				t.Fatalf("NewTimeline: %v", err)
 			}
@@ -64,7 +64,7 @@ func TestTimeline_AtIsAffineAndHalfOpen(t *testing.T) {
 		d   = 10 * time.Second
 		fps = 30.0
 	)
-	tl, err := NewTimeline(epoch, d, fps)
+	tl, err := NewTimeline(epoch, d, fps, 1)
 	if err != nil {
 		t.Fatalf("NewTimeline: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestTimeline_AtIsAffineAndHalfOpen(t *testing.T) {
 // fallen behind the video it is burned into.
 func TestTimeline_AtDoesNotDriftAcrossALongRender(t *testing.T) {
 	const fps = 30.0
-	tl, err := NewTimeline(epoch, 25*time.Minute, fps)
+	tl, err := NewTimeline(epoch, 25*time.Minute, fps, 1)
 	if err != nil {
 		t.Fatalf("NewTimeline: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestTimeline_AtDoesNotDriftAcrossALongRender(t *testing.T) {
 // the reason At is affine -- it is what makes "the frame at 12m30s" a division
 // rather than a search through a pause list.
 func TestTimeline_IndexAtRoundTripsWithAt(t *testing.T) {
-	tl, err := NewTimeline(epoch, 25*time.Minute, 30)
+	tl, err := NewTimeline(epoch, 25*time.Minute, 30, 1)
 	if err != nil {
 		t.Fatalf("NewTimeline: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestTimeline_IndexAtRoundTripsWithAt(t *testing.T) {
 // number the caller must have computed wrongly. Different questions, different
 // answers.
 func TestTimeline_IndexAtClampsRatherThanErroring(t *testing.T) {
-	tl, err := NewTimeline(epoch, 10*time.Second, 30)
+	tl, err := NewTimeline(epoch, 10*time.Second, 30, 1)
 	if err != nil {
 		t.Fatalf("NewTimeline: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestNewTimeline_RejectsUnusableInputs(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := NewTimeline(c.start, c.d, c.fps); err == nil {
+			if _, err := NewTimeline(c.start, c.d, c.fps, 1); err == nil {
 				t.Error("NewTimeline accepted it")
 			}
 		})
@@ -222,7 +222,7 @@ func TestNewTimelineForActivity_SpansTheModelsWindowNotTheSamples(t *testing.T) 
 	winStart, winEnd := timer.Window()
 
 	const fps = 30.0
-	tl, err := NewTimelineForActivity(timer, fps)
+	tl, err := NewTimelineForActivity(timer, fps, 1)
 	if err != nil {
 		t.Fatalf("NewTimelineForActivity: %v", err)
 	}
@@ -251,11 +251,175 @@ func TestNewTimelineForActivity_SpansTheModelsWindowNotTheSamples(t *testing.T) 
 // timeline instead would push the failure into the encoder, where it surfaces
 // as a broken video rather than as a message about the input.
 func TestNewTimelineForActivity_RejectsAnActivityWithNoExtent(t *testing.T) {
-	if _, err := NewTimelineForActivity(nil, 30); err == nil {
+	if _, err := NewTimelineForActivity(nil, 30, 1); err == nil {
 		t.Error("accepted a nil timer model")
 	}
 	empty := fitactivity.BuildTimerModel(&fitactivity.Track{})
-	if _, err := NewTimelineForActivity(empty, 30); err == nil {
+	if _, err := NewTimelineForActivity(empty, 30, 1); err == nil {
 		t.Error("accepted an activity with no resolved window")
+	}
+}
+
+// TestTimeline_SpeedupCompressesTheVideoNotTheActivity pins what a speedup
+// does and, as importantly, what it does not.
+//
+// The frame count falls, so the video is shorter. The instants the frames show
+// still march through the whole activity, so the dashboard's clock still reads
+// activity time -- the video is compressed, the data is not relabelled.
+func TestTimeline_SpeedupCompressesTheVideoNotTheActivity(t *testing.T) {
+	const (
+		activity = 60 * time.Minute
+		fps      = 30.0
+	)
+	cases := []struct {
+		name       string
+		speedup    float64
+		wantFrames int
+	}{
+		// 3600 s at 30 fps.
+		{"real time", 1, 108000},
+		{"ten times", 10, 10800},
+		{"sixty times: an hour becomes a minute", 60, 1800},
+		// Slower than real time is legal and occasionally wanted.
+		{"half speed", 0.5, 216000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tl, err := NewTimeline(epoch, activity, fps, c.speedup)
+			if err != nil {
+				t.Fatalf("NewTimeline: %v", err)
+			}
+			if got := tl.Frames(); got != c.wantFrames {
+				t.Errorf("Frames() = %d, want %d", got, c.wantFrames)
+			}
+			// The video's own length is frames/fps.
+			wantVideo := time.Duration(float64(c.wantFrames) / fps * float64(time.Second))
+			if got := tl.Duration(); got != wantVideo {
+				t.Errorf("Duration() = %v, want %v", got, wantVideo)
+			}
+			// And the frames still span the activity: the last one lands
+			// within a single frame's worth of its end.
+			covered := tl.At(tl.Frames() - 1).Sub(tl.Start())
+			step := time.Duration(c.speedup / fps * float64(time.Second))
+			if gap := activity - covered; gap < 0 || gap > step+time.Millisecond {
+				t.Errorf("the frames cover %v of a %v activity, short by %v; that is more than one frame's step of %v",
+					covered, activity, gap, step)
+			}
+		})
+	}
+}
+
+// TestTimeline_SpeedupLeavesFrameZeroAtTheStart checks the compression does not
+// shift the origin: whatever the speedup, the first frame shows the activity's
+// beginning.
+func TestTimeline_SpeedupLeavesFrameZeroAtTheStart(t *testing.T) {
+	for _, speedup := range []float64{0.5, 1, 10, 60, 3600} {
+		tl, err := NewTimeline(epoch, time.Hour, 30, speedup)
+		if err != nil {
+			t.Fatalf("speedup %v: %v", speedup, err)
+		}
+		if got := tl.At(0); !got.Equal(epoch) {
+			t.Errorf("speedup %v: At(0) = %v, want the start %v", speedup, got, epoch)
+		}
+		if got := tl.Speedup(); got != speedup {
+			t.Errorf("Speedup() = %v, want %v", got, speedup)
+		}
+	}
+}
+
+// TestTimeline_IndexAtMeansActivityTimeNotVideoTime pins whose clock an offset
+// is on.
+//
+// A user asking for the frame at 12m30s means twelve and a half minutes into
+// their RUN. At a speedup of 10 that is seventy-five seconds into the video,
+// and answering with the frame at 12m30s of video would be a different frame
+// entirely -- two hours into the activity.
+func TestTimeline_IndexAtMeansActivityTimeNotVideoTime(t *testing.T) {
+	tl, err := NewTimeline(epoch, 2*time.Hour, 30, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 12m30s of activity at 10x and 30 fps: 750 s / 10 * 30 = 2250.
+	i := tl.IndexAt(12*time.Minute + 30*time.Second)
+	if want := 2250; i != want {
+		t.Errorf("IndexAt(12m30s) = %d, want %d", i, want)
+	}
+	// And the frame it names shows that instant back.
+	if got, want := tl.At(i).Sub(tl.Start()), 12*time.Minute+30*time.Second; got != want {
+		t.Errorf("the frame IndexAt named shows %v into the activity, want %v", got, want)
+	}
+}
+
+// TestTimeline_DurationAndActivityDurationDiffer keeps the two apart. Reporting
+// one where the other belongs would put a four-hour figure on a three-minute
+// file.
+func TestTimeline_DurationAndActivityDurationDiffer(t *testing.T) {
+	tl, err := NewTimeline(epoch, 4*time.Hour, 30, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := tl.Duration(), 4*time.Minute; got != want {
+		t.Errorf("video Duration() = %v, want %v", got, want)
+	}
+	if got, want := tl.ActivityDuration(), 4*time.Hour; got != want {
+		t.Errorf("ActivityDuration() = %v, want %v", got, want)
+	}
+
+	// At real time they agree, which is the case that would let a confusion
+	// between them go unnoticed.
+	real1, err := NewTimeline(epoch, 4*time.Hour, 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real1.Duration() != real1.ActivityDuration() {
+		t.Errorf("at real time the two should agree: %v vs %v", real1.Duration(), real1.ActivityDuration())
+	}
+}
+
+// TestSpeedupFor_IsTheInverseOfTheCompression checks a target duration and a
+// factor are two ways of saying one thing.
+func TestSpeedupFor_IsTheInverseOfTheCompression(t *testing.T) {
+	cases := []struct {
+		activity, target time.Duration
+		want             float64
+	}{
+		{time.Hour, time.Minute, 60},
+		{4 * time.Hour, 4 * time.Minute, 60},
+		{25 * time.Minute, 25 * time.Minute, 1},
+		{10 * time.Minute, 20 * time.Minute, 0.5},
+	}
+	for _, c := range cases {
+		if got := SpeedupFor(c.activity, c.target); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("SpeedupFor(%v, %v) = %v, want %v", c.activity, c.target, got, c.want)
+		}
+	}
+
+	// Round trip: the factor a target implies produces a video of that length.
+	const activity = 4 * time.Hour
+	target := 3 * time.Minute
+	tl, err := NewTimeline(epoch, activity, 30, SpeedupFor(activity, target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tl.Duration(); math.Abs(float64(got-target)) > float64(time.Second/30) {
+		t.Errorf("a timeline built for a %v video came out %v", target, got)
+	}
+
+	// Nonsense inputs yield real time rather than an invented compression.
+	if got := SpeedupFor(0, time.Minute); got != 1 {
+		t.Errorf("SpeedupFor with no activity = %v, want 1", got)
+	}
+	if got := SpeedupFor(time.Hour, 0); got != 1 {
+		t.Errorf("SpeedupFor with no target = %v, want 1", got)
+	}
+}
+
+// TestNewTimeline_RejectsAnUnusableSpeedup keeps a nonsense factor from
+// producing a timeline whose arithmetic is meaningless.
+func TestNewTimeline_RejectsAnUnusableSpeedup(t *testing.T) {
+	for _, bad := range []float64{0, -1, math.Inf(1), math.NaN()} {
+		if _, err := NewTimeline(epoch, time.Hour, 30, bad); err == nil {
+			t.Errorf("NewTimeline accepted a speedup of %v", bad)
+		}
 	}
 }

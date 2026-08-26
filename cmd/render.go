@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,6 +30,8 @@ type renderOptions struct {
 	frameAt   []time.Duration
 	quiet     bool
 	power     string
+	speedup   float64
+	videoDur  time.Duration
 }
 
 // powerSources maps the --power-source flag values to their enum.
@@ -71,6 +74,12 @@ func bindRenderFlags(c *cobra.Command) {
 	f.BoolVar(&renderOpts.frames, "frames", false, "write landmark frames as PNG instead of encoding a video")
 	f.DurationSliceVar(&renderOpts.frameAt, "frame-at", nil, "with --frames, also write the frame at this offset into the activity (repeatable, e.g. 12m30s)")
 	f.BoolVar(&renderOpts.quiet, "quiet", false, "suppress the progress line and the summary")
+	f.Float64Var(&renderOpts.speedup, "speedup", 1,
+		"compress the activity into a shorter video: 60 turns an hour of activity into a minute of video. "+
+			"The dashboard still reads ACTIVITY time, so its clock advances that much faster. Mutually exclusive with --video-duration")
+	f.DurationVar(&renderOpts.videoDur, "video-duration", 0,
+		"compress the activity into a video of this length (e.g. 3m), whatever speedup that takes. "+
+			"Mutually exclusive with --speedup")
 	f.StringVar(&renderOpts.power, "power-source", "auto",
 		"which power reading to show when the activity carries both a footpod (Stryd) developer field and the standard FIT power field -- "+
 			"\"auto\" (default: prefer Stryd, fall back to native), \"stryd\" (force the footpod's developer field), or "+
@@ -97,7 +106,11 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 
 	timer := fitactivity.BuildTimerModel(track)
-	timeline, err := panel.NewTimelineForActivity(timer, renderOpts.fps)
+	speedup, err := resolveSpeedup(timer)
+	if err != nil {
+		return err
+	}
+	timeline, err := panel.NewTimelineForActivity(timer, renderOpts.fps, speedup)
 	if err != nil {
 		return err
 	}
@@ -164,6 +177,38 @@ func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activit
 	return nil
 }
 
+// resolveSpeedup turns --speedup or --video-duration into one compression
+// factor.
+//
+// The two are mutually exclusive rather than one overriding the other. They
+// express the same intention in opposite directions, and silently preferring
+// whichever the code checks first would let a user pass both and get a video
+// of a length they did not ask for, with nothing saying which flag won.
+func resolveSpeedup(timer *fitactivity.TimerModel) (float64, error) {
+	explicitSpeedup := renderOpts.speedup != 1
+	explicitDuration := renderOpts.videoDur != 0
+
+	switch {
+	case explicitSpeedup && explicitDuration:
+		return 0, fmt.Errorf("render: --speedup and --video-duration both set; they are two ways to say the same thing, so pass one")
+	case explicitDuration:
+		if renderOpts.videoDur <= 0 {
+			return 0, fmt.Errorf("render: --video-duration must be positive, got %v", renderOpts.videoDur)
+		}
+		start, end := timer.Window()
+		activity := end.Sub(start)
+		if activity <= 0 {
+			return 0, fmt.Errorf("render: the activity has no duration to compress")
+		}
+		return panel.SpeedupFor(activity, renderOpts.videoDur), nil
+	default:
+		if renderOpts.speedup <= 0 {
+			return 0, fmt.Errorf("render: --speedup must be positive, got %v", renderOpts.speedup)
+		}
+		return renderOpts.speedup, nil
+	}
+}
+
 // newReporter builds the progress reporter, or nil under --quiet.
 //
 // A nil *progress.Reporter is safe to call, which is why --quiet is one
@@ -180,7 +225,25 @@ func newReporter(cmd *cobra.Command, total int) *progress.Reporter {
 	return progress.New(w, total, inline)
 }
 
-// writeSummary reports what was rendered, and -- crucially -- which panels
+// speedupNote renders the compression, or nothing at all in real time -- where
+// saying "(1x)" would draw attention to a fact the two equal durations beside
+// it already state.
+//
+// Rounded to two decimals, and trimmed to none when it lands on a whole
+// number. A --video-duration of three minutes over a four-hour activity works
+// out at 79.99444444444444, and printing that is not more accurate, only
+// harder to read -- the exact figure is a consequence of the duration the user
+// asked for, which is the number they actually care about and which is printed
+// beside it.
+func speedupNote(s float64) string {
+	if s == 1 {
+		return ""
+	}
+	rounded := math.Round(s*100) / 100
+	return fmt.Sprintf(" (%sx)", strconv.FormatFloat(rounded, 'f', -1, 64))
+}
+
+// writeRenderSummary reports what was rendered, and -- crucially -- which panels
 // were left out and why.
 //
 // Naming the declined panels is not a nicety. A panel that vanishes because
@@ -193,9 +256,12 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timelin
 		return
 	}
 	out := cmd.ErrOrStderr()
-	fmt.Fprintf(out, "%d frames, %s at %s fps, %dx%d\n",
-		tl.Frames(), panel.FormatClock(tl.Duration()),
-		strconv.FormatFloat(tl.FPS(), 'f', -1, 64), w, h)
+	// Both durations, always. A user who asked for a three-minute video wants
+	// to see that they got three minutes AND that it still covers the whole
+	// activity; printing one of them leaves the other to be guessed at.
+	fmt.Fprintf(out, "%d frames, %s of activity in %s of video%s, %s fps, %dx%d\n",
+		tl.Frames(), panel.FormatClock(tl.ActivityDuration()), panel.FormatClock(tl.Duration()),
+		speedupNote(tl.Speedup()), strconv.FormatFloat(tl.FPS(), 'f', -1, 64), w, h)
 
 	drew := make([]string, 0, len(r.Placed()))
 	for _, p := range r.Placed() {

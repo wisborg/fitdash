@@ -5,9 +5,14 @@ produce a video in which the metrics animate as the activity progresses — the 
 drawing itself, an elevation profile with a moving playhead, pace, heart rate, power,
 splits.
 
-> **Status: scaffolding.** The repository layout, licensing and working conventions
-> are in place; the renderer is not built yet. See `CLAUDE.md` for how the pieces are
-> meant to fit together.
+```
+fitdash activity.fit --video-duration 3m
+```
+
+Five panels ship today: the route, an elapsed/active clock, heart rate, power, and an
+elevation profile. Panels that have no data in a given activity decline, and the layout
+closes up around them — an indoor ride simply has no route panel, and the summary says so
+by name rather than leaving an unexplained gap.
 
 ## What it is
 
@@ -42,6 +47,21 @@ requesting tiles tells a third party where you ran, and tile providers impose
 attribution and terms-of-use obligations that attach to the rendered video, not just
 to the source.
 
+**A video need not run as long as the activity did.** `--speedup 60` turns an hour into a
+minute; `--video-duration 3m` works out whatever factor that takes. The dashboard still
+reads *activity* time either way — the video is compressed, the data is not relabelled —
+so the clock advances that much faster, which is what a time-lapse should look like. What
+it costs is that each frame samples the activity further on, so at high compression a
+short spike can fall between frames; nothing is averaged over the gap, because averaging
+would invent a reading nobody recorded.
+
+**Some activities record power twice.** A footpod such as a Stryd registers its own
+reading alongside the standard FIT power field, and the two disagree — on the recording
+this was built against, by more than fifty watts at the same instant. `--power-source`
+takes `auto` (prefer the footpod, fall back to native), `stryd`, or `native`, using the
+same vocabulary as [videofx][videofx]. A forced source the activity lacks shows a
+placeholder rather than quietly substituting the other sensor's number.
+
 ## Requirements
 
 - Go 1.25+
@@ -50,6 +70,17 @@ to the source.
 ```
 scripts/fd check-deps
 scripts/fd gates
+```
+
+## Looking at a render without waiting for one
+
+`--frames` writes selected frames as PNGs instead of encoding a video, through the
+identical render path — only the output sink differs, so what you see is what the video
+would contain. `--frame-at 12m30s` picks a moment by its offset into the *activity*.
+
+```
+fitdash activity.fit --frames --frame-at 12m30s
+fitdash inspect activity.fit    # what metrics does this file actually carry?
 ```
 
 ## Privacy

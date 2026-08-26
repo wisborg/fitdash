@@ -42,7 +42,7 @@ func contextFor(t testing.TB, opts fittest.Options, w, h int, fps float64) *pane
 		t.Fatalf("Decode: %v", err)
 	}
 	timer := fitactivity.BuildTimerModel(track)
-	tl, err := panel.NewTimelineForActivity(timer, fps)
+	tl, err := panel.NewTimelineForActivity(timer, fps, 1)
 	if err != nil {
 		t.Fatalf("NewTimelineForActivity: %v", err)
 	}

@@ -102,7 +102,7 @@ func TestOutputPath_DerivesFromTheActivityAndRefusesToClobber(t *testing.T) {
 // boundaries far more often than in the middle, and frame 0 hits every
 // "nothing has happened yet" branch at once.
 func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
-	tl, err := panel.NewTimeline(time.Now(), 100*time.Second, 30)
+	tl, err := panel.NewTimeline(time.Now(), 100*time.Second, 30, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +219,88 @@ func TestParsePowerSource_MatchesVideofxsVocabulary(t *testing.T) {
 	for _, bad := range []string{"", "Stryd", "garmin", "footpod", "none"} {
 		if _, err := parsePowerSource(bad); err == nil {
 			t.Errorf("parsePowerSource(%q) was accepted", bad)
+		}
+	}
+}
+
+// TestResolveSpeedup_TakesEitherFlagButNotBoth pins the CLI's half of the
+// feature.
+//
+// The two flags express the same intention in opposite directions, so they are
+// mutually exclusive rather than one overriding the other. Silently preferring
+// whichever the code happens to check first would give a user who passed both
+// a video of a length they did not ask for, with nothing saying which flag won.
+func TestResolveSpeedup_TakesEitherFlagButNotBoth(t *testing.T) {
+	defer func(s float64, d time.Duration) {
+		renderOpts.speedup, renderOpts.videoDur = s, d
+	}(renderOpts.speedup, renderOpts.videoDur)
+
+	// A one-hour activity.
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	track := &fitactivity.Track{Samples: []fitactivity.Sample{
+		{Time: start}, {Time: start.Add(time.Hour)},
+	}}
+	timer := fitactivity.BuildTimerModel(track)
+
+	cases := []struct {
+		name    string
+		speedup float64
+		dur     time.Duration
+		want    float64
+		wantErr string
+	}{
+		{"neither: real time", 1, 0, 1, ""},
+		{"a factor", 12, 0, 12, ""},
+		{"a target duration", 1, time.Minute, 60, ""},
+		{"a target longer than the activity", 1, 2 * time.Hour, 0.5, ""},
+		{"both", 10, time.Minute, 0, "both set"},
+		{"a negative factor", -3, 0, 0, "must be positive"},
+		{"a negative duration", 1, -time.Minute, 0, "must be positive"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			renderOpts.speedup, renderOpts.videoDur = c.speedup, c.dur
+			got, err := resolveSpeedup(timer)
+			if c.wantErr != "" {
+				if err == nil {
+					t.Fatalf("resolveSpeedup = %v, want an error mentioning %q", got, c.wantErr)
+				}
+				if !strings.Contains(err.Error(), c.wantErr) {
+					t.Errorf("error %v does not mention %q", err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveSpeedup: %v", err)
+			}
+			if got != c.want {
+				t.Errorf("resolveSpeedup = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestSpeedupNote_IsSilentAtRealTime keeps the summary from drawing attention
+// to a fact the two equal durations beside it already state.
+func TestSpeedupNote_IsSilentAtRealTime(t *testing.T) {
+	if got := speedupNote(1); got != "" {
+		t.Errorf("speedupNote(1) = %q, want nothing", got)
+	}
+	for _, c := range []struct {
+		in   float64
+		want string
+	}{
+		{60, " (60x)"},
+		{2.5, " (2.5x)"},
+		{0.5, " (0.5x)"},
+		// A target duration rarely divides evenly: three minutes of a
+		// four-hour activity is 79.99444444444444, and printing all of that
+		// is not more accurate, only harder to read.
+		{79.99444444444444, " (79.99x)"},
+		{10.004, " (10x)"},
+	} {
+		if got := speedupNote(c.in); got != c.want {
+			t.Errorf("speedupNote(%v) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
