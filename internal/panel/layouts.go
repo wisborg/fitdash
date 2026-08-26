@@ -27,7 +27,10 @@ func LandscapeLayout() Layout {
 		Margin:    0.03,
 		FontScale: 0.05,
 		Root: Slot{Dir: Row, Children: []Slot{
-			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+			{Dir: Col, Weight: 3, Children: []Slot{
+				{Panel: RoutePanel{}, Weight: 3, Pad: 0.01},
+				{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+			}},
 			{Dir: Col, Weight: 1, Children: []Slot{
 				{Panel: HeartRate(), Pad: 0.01},
 				{Panel: Power(), Pad: 0.01},
@@ -48,9 +51,12 @@ func PortraitLayout() Layout {
 		Margin:    0.03,
 		FontScale: 0.05,
 		Root: Slot{Dir: Col, Children: []Slot{
+			{Panel: RoutePanel{}, Weight: 4, Pad: 0.01},
 			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
-			{Panel: HeartRate(), Weight: 1, Pad: 0.01},
-			{Panel: Power(), Weight: 1, Pad: 0.01},
+			{Dir: Row, Weight: 2, Children: []Slot{
+				{Panel: HeartRate(), Pad: 0.01},
+				{Panel: Power(), Pad: 0.01},
+			}},
 		}},
 	}
 }

@@ -279,11 +279,43 @@ Four things keep the static-layer trap shut, and the first is load-bearing:
 
 ### Cost
 
-A 25-minute activity at 30 fps is 45,000 frames, every pixel generated. The two things that
-dominate are redrawing invariant chrome per frame and recomputing a fixed projection, and
-both are eliminated by construction: chrome is `Static`, called once; the projection is a
-Painter field. One static base image and one frame buffer are allocated and reused — a fresh
-4K RGBA per frame would allocate about 33 MB per frame.
+A 25-minute activity at 30 fps is 45,000 frames, every pixel generated. Redrawing invariant
+chrome per frame and recomputing a fixed projection are both eliminated by construction:
+chrome is `Static`, called once; the projection is a Painter field. One static base image
+and one frame buffer are allocated and reused — a fresh 4K RGBA per frame would allocate
+about 33 MB per frame.
+
+**Measured, once the route panel existed** (`internal/render`'s benchmarks, on the
+reference machine):
+
+| | per frame |
+|---|---|
+| full landscape layout, 1080p | 7.2 ms |
+| full landscape layout, 4K | 27.6 ms |
+| route panel alone, 1080p | 0.17 ms |
+| the static-base copy alone, 1080p / 4K | 0.15 ms / 0.95 ms |
+
+Two things came out of that, and neither was what the design expected.
+
+**Text dominates, and it scales with size rather than with panel count.** Removing the
+route panel made a frame *slower* — 19.1 ms against 7.2 — because its column-mate then grew
+and the clock was drawn two and a half times larger. Glyph rasterization scales with area.
+Any future comparison that changes the layout is mostly measuring the layout.
+
+**97% of consecutive frames are pixel-identical.** The data arrives at 1 Hz and the clock
+advances once a second, so at 30 fps about thirty frames in a row show exactly the same
+thing; a measured render changed on 9 of 299. The renderer is therefore doing roughly
+thirty times more drawing than the output requires, and the largest available optimisation
+by far is not to draw a frame whose content has not changed.
+
+That is not free to build. Every frame's bytes must still reach ffmpeg, so nothing can be
+skipped at the sink — only the *drawing* can be. And the renderer cannot tell that content
+is unchanged without help: `Frame.At` differs every frame, so frames are never equal as
+values, while what a panel actually *shows* changes far more slowly. Knowing that requires
+each Painter to declare what it depends on, and a panel that got its declaration wrong
+would freeze silently, which is the worst failure mode this project has. It needs its own
+design and its own step; guessing that "content changes at 1 Hz" inside the renderer would
+break the first panel that animates smoothly, with no error.
 
 Parallel frame rendering is not built. The door is held open by one rule, that `Dynamic`
 must not mutate the Painter, and nothing more.

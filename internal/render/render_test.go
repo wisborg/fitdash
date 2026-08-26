@@ -24,6 +24,15 @@ import (
 // personal data, and a committed one would also be an unreviewable binary blob.
 func buildContext(t *testing.T, opts fittest.Options, w, h int, fps float64) *panel.Context {
 	t.Helper()
+	return contextFor(t, opts, w, h, fps)
+}
+
+// benchContext is buildContext at the shipping frame rate, for benchmarks.
+func benchContext(b testing.TB, opts fittest.Options, w, h int) *panel.Context {
+	return contextFor(b, opts, w, h, 30)
+}
+
+func contextFor(t testing.TB, opts fittest.Options, w, h int, fps float64) *panel.Context {
 	path := filepath.Join(t.TempDir(), "activity.fit")
 	if err := fittest.WriteFile(path, opts); err != nil {
 		t.Fatalf("generating fixture: %v", err)
@@ -209,7 +218,7 @@ func TestRenderer_StaticLayerIsNotEmpty(t *testing.T) {
 	}
 }
 
-func mustFaces(t *testing.T) *panel.FaceCache {
+func mustFaces(t testing.TB) *panel.FaceCache {
 	t.Helper()
 	f, err := panel.NewFaceCache()
 	if err != nil {

@@ -214,6 +214,16 @@ func (c *Canvas) Polyline(xs, ys []float64, width float64, col color.Color) {
 	c.dc.Stroke()
 }
 
+// Circle fills a disc of radius r centred at (x, y).
+func (c *Canvas) Circle(x, y, r float64, col color.Color) {
+	if r <= 0 {
+		return
+	}
+	c.dc.SetColor(col)
+	c.dc.DrawCircle(x, y, r)
+	c.dc.Fill()
+}
+
 // Text draws s at px pixels, anchored at (x, y).
 //
 // ax and ay place the anchor within the text's own box: 0 is left/top, 0.5 is
