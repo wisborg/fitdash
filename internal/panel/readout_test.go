@@ -43,8 +43,9 @@ func TestReadout_MetricNamesResolveInARealReport(t *testing.T) {
 	rep := inspect.Build(&fitactivity.Track{Samples: []fitactivity.Sample{{}}})
 
 	for _, r := range []Readout{HeartRate(), Power(), Cadence()} {
-		if _, ok := rep.Metric(r.Name()); !ok {
-			t.Errorf("panel %q asks about a metric no report produces; it would decline on every activity", r.Name())
+		if _, ok := rep.Metric(r.metric); !ok {
+			t.Errorf("panel %q asks about metric %q, which no report produces; it would decline on every activity",
+				r.Name(), r.metric)
 		}
 	}
 }
@@ -241,8 +242,8 @@ func TestLayouts_CloseUpWhenAPanelDeclines(t *testing.T) {
 		t.Fatalf("an activity without power placed %d panels, want 2", len(two))
 	}
 
-	hrBefore := boxOf(t, three, inspect.MetricHeartRate)
-	hrAfter := boxOf(t, two, inspect.MetricHeartRate)
+	hrBefore := boxOf(t, three, HeartRate().Name())
+	hrAfter := boxOf(t, two, HeartRate().Name())
 	if !(hrAfter.H > hrBefore.H) {
 		t.Errorf("heart rate is %g tall with power and %g without; the survivor must grow into the gap",
 			hrBefore.H, hrAfter.H)
@@ -377,5 +378,34 @@ func TestReadout_RowsClearOneAnother(t *testing.T) {
 					"the group is being stretched by the box rather than sized against it", extent, unit)
 			}
 		})
+	}
+}
+
+// TestPanelNames_AreConsistentAndDistinct keeps the render summary readable.
+//
+// These names are printed to the user, so a mix of styles -- "elapsed" beside
+// "Heart rate" -- reads as two different kinds of thing rather than a list of
+// panels. And two panels sharing a name would make the summary ambiguous about
+// which one declined.
+func TestPanelNames_AreConsistentAndDistinct(t *testing.T) {
+	panels := []Panel{ElapsedPanel{}, HeartRate(), Power(), Cadence()}
+
+	seen := map[string]bool{}
+	for _, p := range panels {
+		n := p.Name()
+		if n == "" {
+			t.Errorf("%T has an empty name", p)
+			continue
+		}
+		if seen[n] {
+			t.Errorf("two panels are both named %q", n)
+		}
+		seen[n] = true
+		for _, r := range n {
+			if !(r >= 'a' && r <= 'z') && r != '-' {
+				t.Errorf("panel name %q contains %q; names are lower-case with hyphens so the summary reads as one list", n, r)
+				break
+			}
+		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/wisborg/fitdash/internal/encode"
 	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/panel"
+	"github.com/wisborg/fitdash/internal/progress"
 	"github.com/wisborg/fitdash/internal/render"
 )
 
@@ -26,6 +27,7 @@ type renderOptions struct {
 	crf       int
 	frames    bool
 	frameAt   []time.Duration
+	quiet     bool
 }
 
 var renderOpts renderOptions
@@ -40,6 +42,7 @@ func bindRenderFlags(c *cobra.Command) {
 	f.IntVar(&renderOpts.crf, "crf", 20, "H.264 quality; lower is better (18-28 is the useful range)")
 	f.BoolVar(&renderOpts.frames, "frames", false, "write landmark frames as PNG instead of encoding a video")
 	f.DurationSliceVar(&renderOpts.frameAt, "frame-at", nil, "with --frames, also write the frame at this offset into the activity (repeatable, e.g. 12m30s)")
+	f.BoolVar(&renderOpts.quiet, "quiet", false, "suppress the progress line and the summary")
 }
 
 // runRender is the root command: fitdash ACTIVITY.fit.
@@ -105,18 +108,64 @@ func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activit
 	// Close is the encode's own verdict. Both happen at most once.
 	defer sink.Close()
 
-	if err := render.Run(cmd.Context(), r, sink, nil); err != nil {
+	prog := newReporter(cmd, r.Frames())
+	if err := render.Run(cmd.Context(), r, sink, func(i, n int) { prog.Update(i) }); err != nil {
+		prog.Done()
 		return err
 	}
+	prog.Done()
 	if err := sink.Close(); err != nil {
 		return err
 	}
 
+	// The path goes to stdout so it can be piped; everything else is
+	// commentary and goes to stderr.
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
-	fmt.Fprintf(cmd.ErrOrStderr(), "%d frames, %s at %s fps, %dx%d\n",
+	writeRenderSummary(cmd, r, tl, w, h)
+	return nil
+}
+
+// newReporter builds the progress reporter, or nil under --quiet.
+//
+// A nil *progress.Reporter is safe to call, which is why --quiet is one
+// decision here rather than a condition at every call site.
+func newReporter(cmd *cobra.Command, total int) *progress.Reporter {
+	if renderOpts.quiet {
+		return nil
+	}
+	w := cmd.ErrOrStderr()
+	inline := false
+	if f, ok := w.(*os.File); ok {
+		inline = progress.IsTerminal(f)
+	}
+	return progress.New(w, total, inline)
+}
+
+// writeSummary reports what was rendered, and -- crucially -- which panels
+// were left out and why.
+//
+// Naming the declined panels is not a nicety. A panel that vanishes because
+// the activity carries nothing for it leaves "no unexplained holes" true in
+// the pixels and false in the user's understanding of them: they see a
+// dashboard with no power reading and have no way to tell whether their file
+// lacks power, or fitdash does.
+func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, w, h int) {
+	if renderOpts.quiet {
+		return
+	}
+	out := cmd.ErrOrStderr()
+	fmt.Fprintf(out, "%d frames, %s at %s fps, %dx%d\n",
 		tl.Frames(), panel.FormatClock(tl.Duration()),
 		strconv.FormatFloat(tl.FPS(), 'f', -1, 64), w, h)
-	return nil
+
+	drew := make([]string, 0, len(r.Placed()))
+	for _, p := range r.Placed() {
+		drew = append(drew, p.Panel.Name())
+	}
+	fmt.Fprintf(out, "panels: %s\n", strings.Join(drew, ", "))
+	if declined := r.Declined(); len(declined) > 0 {
+		fmt.Fprintf(out, "declined (this activity carries no such data): %s\n", strings.Join(declined, ", "))
+	}
 }
 
 // runFrames writes selected frames as PNGs instead of encoding.
@@ -137,14 +186,28 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activi
 	}
 	defer sink.Close()
 
-	if err := render.Run(cmd.Context(), r, sink, nil); err != nil {
+	prog := newReporter(cmd, r.Frames())
+	if err := render.Run(cmd.Context(), r, sink, func(i, n int) { prog.Update(i) }); err != nil {
+		prog.Done()
 		return err
 	}
+	prog.Done()
 	if err := sink.Close(); err != nil {
 		return err
 	}
 	for _, p := range sink.Written() {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
+	}
+	if !renderOpts.quiet {
+		drew := make([]string, 0, len(r.Placed()))
+		for _, p := range r.Placed() {
+			drew = append(drew, p.Panel.Name())
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "panels: %s\n", strings.Join(drew, ", "))
+		if declined := r.Declined(); len(declined) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "declined (this activity carries no such data): %s\n",
+				strings.Join(declined, ", "))
+		}
 	}
 	return nil
 }

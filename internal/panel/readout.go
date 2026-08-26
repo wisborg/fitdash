@@ -16,6 +16,7 @@ import (
 // PowerPanel with the same body would be two places to fix the same
 // placeholder bug.
 type Readout struct {
+	name   string
 	label  string
 	unit   string
 	metric string
@@ -26,7 +27,7 @@ type Readout struct {
 // HeartRate reads the standard FIT heart rate field.
 func HeartRate() Readout {
 	return Readout{
-		label: "HEART RATE", unit: "bpm", metric: inspect.MetricHeartRate,
+		name: "heart-rate", label: "HEART RATE", unit: "bpm", metric: inspect.MetricHeartRate,
 		value: func(s fitactivity.Sample) (float64, bool) {
 			return float64(s.HeartRate), s.HasHeartRate
 		},
@@ -42,7 +43,7 @@ func HeartRate() Readout {
 // project, and it is not made here yet.
 func Power() Readout {
 	return Readout{
-		label: "POWER", unit: "W", metric: inspect.MetricPower,
+		name: "power", label: "POWER", unit: "W", metric: inspect.MetricPower,
 		value: func(s fitactivity.Sample) (float64, bool) {
 			return float64(s.Power), s.HasPower
 		},
@@ -53,7 +54,7 @@ func Power() Readout {
 // Cadence reads the standard FIT cadence field.
 func Cadence() Readout {
 	return Readout{
-		label: "CADENCE", unit: "rpm", metric: inspect.MetricCadence,
+		name: "cadence", label: "CADENCE", unit: "rpm", metric: inspect.MetricCadence,
 		value: func(s fitactivity.Sample) (float64, bool) {
 			return float64(s.Cadence), s.HasCadence
 		},
@@ -62,7 +63,15 @@ func Cadence() Readout {
 }
 
 // Name identifies the panel.
-func (r Readout) Name() string { return r.metric }
+//
+// It is NOT the metric name. The two are different things that were briefly
+// the same string: a panel's identity, which appears in the render summary
+// telling a user which panels drew and which declined, and the name of the
+// datum it reads, which is what the inspect report calls a column. Conflating
+// them made the summary read "elapsed, Heart rate, Power" -- three panels
+// named in two different styles because two of them were answering a different
+// question.
+func (r Readout) Name() string { return r.name }
 
 // Accepts declines when the activity carries no reading of this metric at all.
 //

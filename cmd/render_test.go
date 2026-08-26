@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/wisborg/fitdash/internal/panel"
 )
@@ -124,5 +128,52 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 	got = frameIndices(tl, []time.Duration{50 * time.Second})
 	if last := got[len(got)-1]; last != 1500 {
 		t.Errorf("--frame-at 50s resolved to frame %d, want 1500", last)
+	}
+}
+
+// TestNewReporter_QuietReturnsNil pins how --quiet is implemented.
+//
+// A nil *progress.Reporter is safe to call, so quiet is one decision here
+// rather than a condition at every call site -- and the render loop's progress
+// callback stays unconditional.
+func TestNewReporter_QuietReturnsNil(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+
+	cmd := &cobra.Command{}
+	cmd.SetErr(io.Discard)
+
+	renderOpts.quiet = false
+	if newReporter(cmd, 100) == nil {
+		t.Error("a reporter was expected without --quiet")
+	}
+
+	renderOpts.quiet = true
+	r := newReporter(cmd, 100)
+	if r != nil {
+		t.Error("--quiet should produce no reporter")
+	}
+	// The nil must be usable, or every call site needs a guard.
+	r.Update(1)
+	r.Done()
+}
+
+// TestNewReporter_UsesInlineOnlyForATerminal keeps a redirected stderr from
+// collecting one enormous line full of carriage returns.
+func TestNewReporter_UsesInlineOnlyForATerminal(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	// A bytes.Buffer is not an *os.File at all, so inline must be off.
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetErr(&buf)
+	rep := newReporter(cmd, 10)
+	if rep == nil {
+		t.Fatal("no reporter")
+	}
+	rep.Update(0)
+	rep.Update(5)
+	if strings.Contains(buf.String(), "\r") {
+		t.Error("progress to a non-terminal used a carriage return")
 	}
 }
