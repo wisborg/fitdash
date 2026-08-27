@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/wisborg/fitactivity"
 
@@ -303,7 +304,41 @@ func Distance() Readout {
 			return s.Distance / 1000, s.HasDistance
 		},
 		format: func(v float64) string { return fmt.Sprintf("%.2f", v) },
+		bind:   bindDistancePrecision,
 	}
+}
+
+// coarseDistanceStep is how much activity a frame must cover before distance
+// drops to one decimal.
+//
+// Distance is not smoothed -- averaging an accumulator buys nothing -- but it
+// still churns when the activity is compressed. At 480x a frame advances
+// sixteen seconds, which is something like eighty metres, so a readout in
+// hundredths of a kilometre changes both decimals every single frame and is
+// unreadable for a different reason than a gauge is. One decimal changes far
+// less often and loses precision nobody could read at that speed anyway.
+//
+// Five seconds is the threshold because below it a frame covers roughly twenty
+// metres, which the second decimal can still track without flickering.
+const coarseDistanceStep = 5 * time.Second
+
+// bindDistancePrecision drops distance to one decimal on a heavily compressed
+// render.
+//
+// It changes the FORMAT and not the value, so the number is still the distance
+// at this instant -- shown to the precision the render can display, rather than
+// to a precision that only produces flicker.
+func bindDistancePrecision(ctx *Context, r Readout) Readout {
+	if ctx.Timeline.FPS() <= 0 {
+		return r
+	}
+	step := time.Duration(ctx.Timeline.Speedup() / ctx.Timeline.FPS() * float64(time.Second))
+	if step < coarseDistanceStep {
+		return r
+	}
+	r.template = "888.8"
+	r.format = func(v float64) string { return fmt.Sprintf("%.1f", v) }
+	return r
 }
 
 // Pace reads speed and shows it as time per kilometre.

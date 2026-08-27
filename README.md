@@ -64,6 +64,20 @@ leg* on a run, so the figure a runner recognises is twice it. A run shows `spm`,
 shows `rpm`, and a sport fitdash does not recognise keeps the recorded number under its
 recorded unit rather than being guessed at.
 
+**Compressed hard, the gauges become unreadable — so they are averaged.** At 480×, a
+frame advances sixteen seconds of activity and shows one arbitrary sample out of them,
+which makes power flick between 200 and 500 from frame to frame. `--smoothing` averages
+the gauges over a window of activity time: `auto` (default) scales with the compression
+and switches itself off below about three times real time, `off` shows what was recorded,
+or give a duration such as `30s`. Measured on a real run, it cuts power's frame-to-frame
+change from 18.7 W to 3.1 W at 311×, while leaving the shape of the effort intact.
+
+Averaging is arguably the *more* faithful choice at compression, not the less: the frame
+already stands for a span of activity, so a number describing that span is closer to what
+a viewer takes it to mean than one sample plucked from it. Position, distance and
+elevation are never averaged — a moving average of latitude cuts corners and puts the
+route dot off the path.
+
 **Pace has no value when you stop.** A speed of zero is a real reading whose reciprocal
 does not exist — standing still is not infinitely slow — so a stopped runner sees `--:--`
 rather than a `0:00` that would claim the opposite, or the confident multi-hour figure a

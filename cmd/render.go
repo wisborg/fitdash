@@ -32,6 +32,7 @@ type renderOptions struct {
 	power     string
 	layout    string
 	theme     string
+	smoothing string
 	speedup   float64
 	videoDur  time.Duration
 }
@@ -107,6 +108,11 @@ func bindRenderFlags(c *cobra.Command) {
 			"and usually not")
 	f.StringVar(&renderOpts.theme, "theme", panel.DefaultTheme().Name,
 		"colour palette -- \"dark\" (default) or \"light\"")
+	f.StringVar(&renderOpts.smoothing, "smoothing", smoothingAuto,
+		"average the gauge readings -- heart rate, pace, power, cadence -- over this much ACTIVITY time, "+
+			"so they can be read when the activity is compressed. \"auto\" (default) scales with the compression and "+
+			"comes out to nothing at real time; \"off\" shows what was recorded; or a duration such as 30s. "+
+			"Position, distance and elevation are never averaged")
 	f.Float64Var(&renderOpts.speedup, "speedup", 1,
 		"compress the activity into a shorter video: 60 turns an hour of activity into a minute of video. "+
 			"The dashboard still reads ACTIVITY time, so its clock advances that much faster. Mutually exclusive with --video-duration")
@@ -150,6 +156,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	smoothing, err := resolveSmoothing(timeline)
+	if err != nil {
+		return err
+	}
 	fonts, err := panel.NewFaceCache()
 	if err != nil {
 		return err
@@ -173,6 +183,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		FontScale:   layout.FontScale,
 		Fonts:       fonts,
 		PowerSource: powerSrc,
+		Smoothing:   smoothing,
 	}
 	r, err := render.New(rctx, layout, theme)
 	if err != nil {
@@ -180,13 +191,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 
 	if renderOpts.frames {
-		return runFrames(cmd, r, timeline, activity, layout.Name, theme.Name)
+		return runFrames(cmd, r, timeline, activity, layout.Name, theme.Name, smoothing)
 	}
-	return runVideo(cmd, r, timeline, activity, w, h, layout.Name, theme.Name)
+	return runVideo(cmd, r, timeline, activity, w, h, layout.Name, theme.Name, smoothing)
 }
 
 // runVideo encodes the whole render to a video file.
-func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity string, w, h int, layoutName, themeName string) error {
+func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity string, w, h int, layoutName, themeName string, smoothing time.Duration) error {
 	out, err := outputPath(activity, renderOpts.output, renderOpts.outputDir, ".mp4")
 	if err != nil {
 		return err
@@ -216,8 +227,34 @@ func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activit
 	// The path goes to stdout so it can be piped; everything else is
 	// commentary and goes to stderr.
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
-	writeRenderSummary(cmd, r, tl, w, h, layoutName, themeName)
+	writeRenderSummary(cmd, r, tl, w, h, layoutName, themeName, smoothing)
 	return nil
+}
+
+// smoothingAuto names the window derived from the compression.
+const smoothingAuto = "auto"
+
+// resolveSmoothing turns --smoothing into a window in activity time.
+//
+// "off" is spelled out rather than left to "0s", which parses as a duration and
+// would work -- but a user reaching for a way to disable this should not have
+// to guess that zero is it, and "off" in the summary reads better than "0s".
+func resolveSmoothing(tl panel.Timeline) (time.Duration, error) {
+	switch renderOpts.smoothing {
+	case smoothingAuto, "":
+		return tl.AutoSmoothing(), nil
+	case "off":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(renderOpts.smoothing)
+	if err != nil {
+		return 0, fmt.Errorf("render: --smoothing %q is not %s, off, or a duration such as 30s",
+			renderOpts.smoothing, smoothingAuto)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("render: --smoothing %v is negative", d)
+	}
+	return d, nil
 }
 
 // resolveSpeedup turns --speedup or --video-duration into one compression
@@ -299,7 +336,7 @@ func speedupNote(s float64) string {
 // the pixels and false in the user's understanding of them: they see a
 // dashboard with no power reading and have no way to tell whether their file
 // lacks power, or fitdash does.
-func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, w, h int, layoutName, themeName string) {
+func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, w, h int, layoutName, themeName string, smoothing time.Duration) {
 	if renderOpts.quiet {
 		return
 	}
@@ -311,7 +348,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timelin
 		tl.Frames(), panel.FormatClock(tl.ActivityDuration()), panel.FormatClock(tl.Duration()),
 		speedupNote(tl.Speedup()), strconv.FormatFloat(tl.FPS(), 'f', -1, 64), w, h)
 
-	writePanelSummary(cmd, r, layoutName, themeName)
+	writePanelSummary(cmd, r, layoutName, themeName, smoothing)
 }
 
 // writePanelSummary reports the arrangement and, crucially, which panels were
@@ -321,7 +358,16 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timelin
 // written twice, and the copies drifted immediately: --frames reported the
 // panels but not the layout or theme, so the one command whose whole purpose
 // is checking how a render looks said least about how it had been configured.
-func writePanelSummary(cmd *cobra.Command, r *render.Renderer, layoutName, themeName string) {
+// smoothingNote spells a window for the summary, so a reader can tell an
+// averaged readout from a recorded one -- which the video itself does not say.
+func smoothingNote(d time.Duration) string {
+	if d <= 0 {
+		return "off"
+	}
+	return d.Round(time.Second).String()
+}
+
+func writePanelSummary(cmd *cobra.Command, r *render.Renderer, layoutName, themeName string, smoothing time.Duration) {
 	if renderOpts.quiet {
 		return
 	}
@@ -330,7 +376,7 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, layoutName, theme
 	for _, p := range r.Placed() {
 		drew = append(drew, p.Panel.Name())
 	}
-	fmt.Fprintf(out, "layout %s, theme %s\n", layoutName, themeName)
+	fmt.Fprintf(out, "layout %s, theme %s, smoothing %s\n", layoutName, themeName, smoothingNote(smoothing))
 	fmt.Fprintf(out, "panels: %s\n", strings.Join(drew, ", "))
 	if declined := r.Declined(); len(declined) > 0 {
 		fmt.Fprintf(out, "declined (this activity carries no such data): %s\n", strings.Join(declined, ", "))
@@ -342,7 +388,7 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, layoutName, theme
 // It runs the IDENTICAL render path -- only the sink differs -- which is what
 // makes the fast visual loop a trustworthy proxy for the real render rather
 // than a second implementation free to disagree with it.
-func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity, layoutName, themeName string) error {
+func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity, layoutName, themeName string, smoothing time.Duration) error {
 	indices, err := frameIndices(tl, renderOpts.frameAt)
 	if err != nil {
 		return err
@@ -367,7 +413,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activi
 	for _, p := range sink.Written() {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
-	writePanelSummary(cmd, r, layoutName, themeName)
+	writePanelSummary(cmd, r, layoutName, themeName, smoothing)
 	return nil
 }
 

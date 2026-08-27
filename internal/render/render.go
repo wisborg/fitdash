@@ -128,7 +128,12 @@ func (r *Renderer) Frame(i int) panel.Frame {
 		HasTimerEvents: r.ctx.Timer.HasTimerEvents(),
 	}
 	if s, ok := r.ctx.Track.AtWithGap(at, maxGap); ok {
-		f.Sample, f.HasSample = s, true
+		// Smoothing is applied only where there IS a reading. Deep in a
+		// dropout the sample stays zero, so the invariant every panel's single
+		// presence check relies on survives -- an average drawn from either
+		// side of a gap would fill it in with a number nobody recorded, which
+		// is the stale-reading failure wearing arithmetic.
+		f.Sample, f.HasSample = smoothSample(r.ctx.Track, at, r.ctx.Smoothing, s), true
 	}
 	return f
 }

@@ -2,6 +2,7 @@ package panel
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -757,6 +758,68 @@ func TestReadouts_SizeAgainstTheirOwnWidestString(t *testing.T) {
 					t.Errorf("%q measures %g but the template %q only reserves %g; it would overflow its box",
 						ex, w, c.r.valueTemplate(), tmplW)
 				}
+			}
+		})
+	}
+}
+
+// TestDistance_CoarsensOnAHeavilyCompressedRender pins the other half of the
+// readability problem.
+//
+// Distance is never averaged -- averaging an accumulator buys nothing -- but it
+// still churns under compression. At 480x a frame advances sixteen seconds,
+// something like eighty metres, so hundredths of a kilometre change both
+// decimals every single frame. One decimal changes far less often and drops
+// precision nobody could read at that speed anyway.
+func TestDistance_CoarsensOnAHeavilyCompressedRender(t *testing.T) {
+	epochT := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	sample := fitactivity.Sample{HasDistance: true, Distance: 12345}
+
+	cases := []struct {
+		name    string
+		speedup float64
+		want    string
+	}{
+		// A frame covers 1/30 s of activity: hundredths track it fine.
+		{"real time", 1, "12.35"},
+		// 60x is 2 s per frame, still fine.
+		{"sixty times", 60, "12.35"},
+		// 150x is 5 s per frame, the threshold.
+		{"at the threshold", 150, "12.3"},
+		// 480x is 16 s per frame -- both decimals would change every frame.
+		{"four hours into thirty seconds", 480, "12.3"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tl, err := NewTimeline(epochT, 4*time.Hour, 30, c.speedup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			track := trackWith(inspect.MetricDistance)
+			ctx := &Context{Track: track, Report: inspect.Build(track), Timeline: tl}
+
+			p := Distance().Prepare(ctx, Box{W: 300, H: 200}).(*readoutPainter)
+			v, ok := p.value(sample)
+			if !ok {
+				t.Fatal("no distance resolved")
+			}
+			if got := p.format(v); got != c.want {
+				t.Errorf("at %vx distance rendered as %q, want %q", c.speedup, got, c.want)
+			}
+			// The template must carry the same number of DECIMALS as the
+			// output, or the readout is sized against a shape it will never
+			// print. Comparing lengths would be wrong: the template is the
+			// widest case ("888.8", up to 999.9 km) while a reading is
+			// whatever it happens to be.
+			decimals := func(s string) int {
+				if i := strings.IndexByte(s, '.'); i >= 0 {
+					return len(s) - i - 1
+				}
+				return 0
+			}
+			if got, want := decimals(p.valueTemplate()), decimals(c.want); got != want {
+				t.Errorf("template %q has %d decimals but the reading %q has %d",
+					p.valueTemplate(), got, c.want, want)
 			}
 		})
 	}

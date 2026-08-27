@@ -126,6 +126,11 @@ type Context struct {
 	// formatting preference.
 	PowerSource fitactivity.PowerSource
 
+	// Smoothing is how much ACTIVITY time a gauge reading is averaged over.
+	// Zero shows what was recorded. See render's smoothSample for which
+	// readings are averaged and which are deliberately left alone.
+	Smoothing time.Duration
+
 	// Fonts measures text. It is here because a panel must resolve its text
 	// sizes in Prepare, which has no Canvas -- see FaceCache.FitSize for why
 	// sizing during drawing is wrong rather than merely inconvenient.

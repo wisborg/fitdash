@@ -128,6 +128,50 @@ func NewTimelineForActivity(timer *fitactivity.TimerModel, fps, speedup float64)
 	return NewTimeline(start, d, fps, speedup)
 }
 
+// autoSmoothingVideoWindow is how much VIDEO time the automatic smoothing
+// window covers.
+//
+// Video time rather than activity time, because the problem it solves is
+// perceptual: a number that changes wildly from frame to frame cannot be read,
+// and how fast that is depends on the frame rate and on nothing else. Fixing
+// the window in activity time instead would smooth a real-time render as hard
+// as a 480x one, and would smooth a 60 fps render half as much as a 30 fps one
+// for no reason a viewer could see.
+//
+// A third of a second is a judgement rather than a derivation: long enough that
+// consecutive frames' windows overlap heavily and the readout drifts instead of
+// flickering, short enough that a hard effort still shows as a rise. It is what
+// --smoothing exists to override.
+const autoSmoothingVideoWindow = 300 * time.Millisecond
+
+// minSmoothingWindow is the shortest window worth applying.
+//
+// The activities this targets are recorded at 1 Hz, so a window narrower than
+// a second spans at most one recorded sample and there is nothing in it to
+// average. It is not a no-op, though, and assuming it was is a mistake this
+// constant exists to stop repeating: Track.Window INTERPOLATES its endpoints,
+// so a 300ms window returns three points -- two invented -- whose mean is not
+// the recorded reading. Measured, it moved a real-time heart rate from 147 to
+// 149: harmless, and still a value nobody recorded, shown where the user asked
+// for no smoothing in all but name.
+const minSmoothingWindow = time.Second
+
+// AutoSmoothing is the smoothing window this timeline implies, in ACTIVITY
+// time, or zero when the compression is mild enough not to need any.
+//
+// It scales with the compression, which is the point. Below roughly three
+// times real time the window falls under minSmoothingWindow and auto means
+// off -- there is no flicker to fix at that speed. At 480x it is two minutes
+// and twenty-four seconds, about the span nine consecutive frames cover
+// between them.
+func (t Timeline) AutoSmoothing() time.Duration {
+	w := time.Duration(float64(autoSmoothingVideoWindow) * t.speedup)
+	if w < minSmoothingWindow {
+		return 0
+	}
+	return w
+}
+
 // Frames is the number of frames in the render.
 func (t Timeline) Frames() int { return t.n }
 
