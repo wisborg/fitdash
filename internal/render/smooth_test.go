@@ -50,7 +50,8 @@ func smoothContext(t *testing.T, track *fitactivity.Track, speedup float64, smoo
 	}
 	return &panel.Context{
 		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
-		Width: 320, Height: 180, FontScale: 0.05, Fonts: mustFaces(t), Smoothing: smoothing,
+		Width: 320, Height: 180, FontScale: 0.05, Fonts: mustFaces(t),
+		Smoothing: panel.Smoothing{Window: smoothing},
 	}
 }
 
@@ -90,7 +91,7 @@ func TestSmoothing_ReducesFrameToFrameFlicker(t *testing.T) {
 
 	off := meanAbsStep(t, smoothContext(t, track, 480, 0), hr)
 	auto := smoothContext(t, track, 480, 0)
-	autoWindow := auto.Timeline.AutoSmoothing()
+	autoWindow := auto.Timeline.AutoSmoothingAt(0)
 	on := meanAbsStep(t, smoothContext(t, track, 480, autoWindow), hr)
 
 	t.Logf("heart rate changes by %.1f bpm per frame unsmoothed, %.1f smoothed over %v",
@@ -112,7 +113,7 @@ func TestSmoothing_ReducesFrameToFrameFlicker(t *testing.T) {
 func TestSmoothing_PreservesTheTrend(t *testing.T) {
 	track := noisyTrack(14400)
 	ctx := smoothContext(t, track, 480, 0)
-	window := ctx.Timeline.AutoSmoothing()
+	window := ctx.Timeline.AutoSmoothingAt(0)
 
 	r, err := New(smoothContext(t, track, 480, window), oneMarkerLayout(markerPanel{name: "a", accept: true}), panel.DefaultTheme())
 	if err != nil {
@@ -273,7 +274,7 @@ func TestAutoSmoothing_ScalesWithCompressionAndVanishesAtRealTime(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := tl.AutoSmoothing(); got != c.want {
+		if got := tl.AutoSmoothingAt(0); got != c.want {
 			t.Errorf("at %vx the auto window is %v, want %v", c.speedup, got, c.want)
 		}
 	}
@@ -290,7 +291,7 @@ func TestAutoSmoothing_ScalesWithCompressionAndVanishesAtRealTime(t *testing.T) 
 	}
 	track := noisyTrack(600)
 	base := track.Samples[300]
-	if got := smoothSample(track, base.Time, tl.AutoSmoothing(), base); got.HeartRate != base.HeartRate {
+	if got := smoothSample(track, base.Time, tl.AutoSmoothingAt(0), base); got.HeartRate != base.HeartRate {
 		t.Errorf("auto smoothing at real time changed a reading from %d to %d", base.HeartRate, got.HeartRate)
 	}
 }

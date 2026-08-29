@@ -52,6 +52,16 @@ type Theme struct {
 	// axis label without knowing which is which in advance, so this must stay
 	// visibly different from BOTH Foreground and Background.
 	Absent color.Color
+
+	// Highlight marks a --highlight range: the highlight strip's blocks draw
+	// with it, and the margin border the render loop overlays on top of a
+	// render will too. A distinct role from Accent rather than a reuse of it,
+	// because the two say different things and can be on screen together --
+	// the strip's playhead (Accent, "the render is here") sweeps across the
+	// strip's own blocks (Highlight, "a range the user chose") -- and
+	// conflating them would make the current position indistinguishable from
+	// a configured one.
+	Highlight color.Color
 }
 
 // DefaultTheme is the palette used when none is chosen.
@@ -66,6 +76,7 @@ func DarkTheme() Theme {
 		Dim:        color.RGBA{0x6E, 0x6E, 0x78, 0xFF},
 		Accent:     color.RGBA{0xFF, 0x5A, 0x36, 0xFF},
 		Absent:     color.RGBA{0x4A, 0x4A, 0x54, 0xFF},
+		Highlight:  color.RGBA{0x9B, 0x6B, 0xFF, 0xFF},
 	}
 }
 
@@ -85,6 +96,7 @@ func LightTheme() Theme {
 		Dim:        color.RGBA{0x7A, 0x7A, 0x84, 0xFF},
 		Accent:     color.RGBA{0xC4, 0x37, 0x14, 0xFF},
 		Absent:     color.RGBA{0xBE, 0xBE, 0xC6, 0xFF},
+		Highlight:  color.RGBA{0x5B, 0x3D, 0xE0, 0xFF},
 	}
 }
 

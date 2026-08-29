@@ -206,6 +206,15 @@ func TestThemesAreLegible(t *testing.T) {
 				{"dim vs background", th.Dim, th.Background},
 				{"accent vs background", th.Accent, th.Background},
 				{"accent vs foreground", th.Accent, th.Foreground},
+				// Highlight has to read against everything it can share a
+				// frame with: the ribbon it sits on (Dim), the background
+				// around it, and the playhead (Accent) that sweeps across
+				// its own blocks -- conflating Highlight with Accent would
+				// make a configured range indistinguishable from "the
+				// render is here right now".
+				{"highlight vs background", th.Highlight, th.Background},
+				{"highlight vs dim", th.Highlight, th.Dim},
+				{"highlight vs accent", th.Highlight, th.Accent},
 			} {
 				if d := dist(c.a, c.b); d < minSeparation {
 					t.Errorf("%s: separation %.4f is below %v; the two would read as the same thing",

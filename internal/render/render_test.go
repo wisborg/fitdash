@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
+	"math"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -190,6 +192,339 @@ func countDiff(a, b *image.RGBA) int {
 		}
 	}
 	return n
+}
+
+// buildHighlightContext is buildContext with one highlight configured and
+// --highlight-style wash selected, so a test built on it exercises the one
+// style that renders TWO static bases and blends them per frame -- the only
+// thing this feature added to internal/render that the plain equality test
+// above cannot see, since it never configures a highlight at all.
+func buildHighlightContext(t *testing.T, w, h int, fps float64) (*panel.Context, panel.Timeline) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "activity.fit")
+	if err := fittest.WriteFile(path, shortOptions()); err != nil {
+		t.Fatalf("generating fixture: %v", err)
+	}
+	track, err := fitactivity.Decode(path)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	timer := fitactivity.BuildTimerModel(track)
+	highlights := []panel.Highlight{{Name: "test highlight", From: 5 * time.Second, To: 15 * time.Second, RateFactor: 3}}
+	tl, err := panel.NewTimelineForActivityWithHighlights(timer, fps, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithHighlights: %v", err)
+	}
+	ctx := &panel.Context{
+		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
+		Width: w, Height: h, FontScale: 0.05, Fonts: mustFaces(t),
+		Highlights: highlights, HighlightStyle: panel.HighlightStyleWash, HighlightTransition: 200 * time.Millisecond,
+	}
+	return ctx, tl
+}
+
+// highlightMarkerLayout is oneMarkerLayout with a real margin, so the
+// highlighted equality test below also exercises the border overlay --
+// drawn inside that margin, see drawHighlightBorder -- at the same time as
+// the wash blend, rather than only one of the two effects this feature added
+// here. A zero margin (oneMarkerLayout's own) makes the border a no-op, which
+// would leave it untested by this file.
+func highlightMarkerLayout(panels ...panel.Panel) panel.Layout {
+	l := oneMarkerLayout(panels...)
+	l.Margin = 0.05
+	return l
+}
+
+// TestRenderer_StaticPlusDynamicEqualsRenderExactly_HighlightWash extends the
+// equality test above to a highlighted frame under --highlight-style wash --
+// the one style that can break the invariant, and the reason it ships last
+// among this feature's steps (see docs/architecture.md).
+//
+// The split path here is NOT the naive "RenderStatic once, then
+// RenderDynamic" the plain test above uses: Run's own fast loop blends TWO
+// precomputed static bases by Frame.IntervalWeight before compositing the
+// dynamic pass (see blendBases and renderStaticWash), so that is what this
+// test replicates by hand and compares against Render's single-call path --
+// which resolves the same blend itself, in renderBase, on every call. If the
+// two ever disagreed, this is what would catch it: a pixel count, not a
+// video that quietly differs depending on which path rendered it.
+func TestRenderer_StaticPlusDynamicEqualsRenderExactly_HighlightWash(t *testing.T) {
+	ctx, tl := buildHighlightContext(t, 320, 180, 10)
+	r, err := New(ctx, highlightMarkerLayout(
+		markerPanel{name: "a", accept: true},
+		markerPanel{name: "b", accept: true},
+	), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	base := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+	if err := r.RenderStatic(base); err != nil {
+		t.Fatalf("RenderStatic: %v", err)
+	}
+	wash := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+	if err := r.renderStaticWash(wash); err != nil {
+		t.Fatalf("renderStaticWash: %v", err)
+	}
+
+	// Frames spanning the highlight's own entrance and exit transitions, plus
+	// its middle, since IntervalWeight -- and therefore the wash blend and
+	// the border's own alpha -- varies across exactly those. A frame outside
+	// the highlight cannot exercise either.
+	first := tl.IndexAt(5 * time.Second)
+	last := tl.IndexAt(15*time.Second - time.Nanosecond)
+	if last <= first {
+		t.Fatalf("precondition: the fixture highlight occupies %d frames, want more than one to see a transition", last-first+1)
+	}
+	mid := (first + last) / 2
+	for _, i := range []int{first, first + 1, mid, last - 1, last} {
+		f := r.Frame(i)
+		if f.Interval == panel.NoHighlight {
+			t.Fatalf("frame %d fell outside the fixture's own highlight; the test fixture is wrong", i)
+		}
+
+		whole := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.Render(whole, f); err != nil {
+			t.Fatalf("Render(%d): %v", i, err)
+		}
+
+		split := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		blendBases(split, base, wash, f.IntervalWeight)
+		if err := r.RenderDynamic(split, f); err != nil {
+			t.Fatalf("RenderDynamic(%d): %v", i, err)
+		}
+
+		if !bytes.Equal(whole.Pix, split.Pix) {
+			t.Errorf("frame %d (weight %.3f): the one-shot and static+dynamic paths differ in %d pixels under --highlight-style wash",
+				i, f.IntervalWeight, countDiff(whole, split))
+		}
+	}
+}
+
+// TestRenderer_HighlightBorderRampsAndStaysInsideTheMargin pins step 6's own
+// contract for the accent border: it draws nothing outside a highlight, it
+// ramps rather than cutting (a mid-transition frame is neither absent nor at
+// full strength), it draws nothing at all under --highlight-style none, and
+// every pixel it touches sits within the layout's own margin -- the region
+// Layout.Resolve guarantees carries no panel's Box, which is what makes this
+// overlay collision-proof by construction rather than by convention.
+func TestRenderer_HighlightBorderRampsAndStaysInsideTheMargin(t *testing.T) {
+	ctx, tl := buildHighlightContext(t, 200, 120, 10)
+	ctx.HighlightStyle = panel.HighlightStyleBorder
+	layout := highlightMarkerLayout(markerPanel{name: "a", accept: true})
+	r, err := New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if r.marginPx <= 0 {
+		t.Fatal("precondition: the test layout must carry a margin for the border to draw inside of")
+	}
+
+	// The point on the frame this test samples: the middle of the top
+	// border's own stroke, computed from the same constants
+	// drawHighlightBorder itself uses rather than a pixel guessed from the
+	// test -- a hardcoded offset would silently stop meaning "inside the
+	// border" the moment either constant changed.
+	inset := r.marginPx * highlightBorderInsetFraction
+	thick := r.marginPx * highlightBorderThicknessFraction
+	x, y := ctx.Width/2, int(inset+thick/2)
+
+	sample := func(f panel.Frame) color.RGBA {
+		img := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.Render(img, f); err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		return img.RGBAAt(x, y)
+	}
+	bg := color.RGBAModel.Convert(panel.DefaultTheme().Background).(color.RGBA)
+	highlightRGBA := color.RGBAModel.Convert(panel.DefaultTheme().Highlight).(color.RGBA)
+	sqDist := func(a, b color.RGBA) float64 {
+		dr, dg, db := float64(a.R)-float64(b.R), float64(a.G)-float64(b.G), float64(a.B)-float64(b.B)
+		return dr*dr + dg*dg + db*db
+	}
+
+	// Outside the highlight -- the fixture's own starts at 5s -- the border
+	// draws nothing: the sampled pixel is bare background.
+	outside := r.Frame(0)
+	if outside.Interval != panel.NoHighlight {
+		t.Fatal("precondition: frame 0 must sit outside the fixture's own highlight, which starts at 5s")
+	}
+	if got := sample(outside); got != bg {
+		t.Errorf("outside the highlight the border's own pixel is %v, want the background %v", got, bg)
+	}
+
+	// One frame into the highlight -- inside its 200ms entrance transition at
+	// this fixture's 10fps -- IntervalWeight is a mid-ramp value, neither 0
+	// nor 1, and the sampled pixel must already have moved off the
+	// background without being a hard cut to the full highlight colour.
+	entrance := r.Frame(tl.IndexAt(5*time.Second) + 1)
+	if entrance.IntervalWeight <= 0 || entrance.IntervalWeight >= 1 {
+		t.Fatalf("precondition: the entrance frame's weight is %v, want a mid-ramp value or this frame proves nothing about ramping", entrance.IntervalWeight)
+	}
+	entranceColor := sample(entrance)
+	if entranceColor == bg {
+		t.Error("the border drew nothing at the entrance frame, despite a positive IntervalWeight -- it is cutting rather than ramping")
+	}
+
+	// Further into the highlight, past the transition, IntervalWeight reaches
+	// 1 and the sampled pixel must sit CLOSER to the theme's own Highlight
+	// colour than the entrance frame's partial ramp did -- proving the ramp
+	// actually progresses rather than reaching full strength immediately.
+	full := r.Frame(tl.IndexAt(5*time.Second) + int(0.5*tl.FPS()))
+	if full.IntervalWeight <= entrance.IntervalWeight {
+		t.Fatalf("precondition: frame %d's weight %v should exceed the entrance frame's %v", full.Index, full.IntervalWeight, entrance.IntervalWeight)
+	}
+	fullColor := sample(full)
+	if sqDist(fullColor, highlightRGBA) >= sqDist(entranceColor, highlightRGBA) {
+		t.Errorf("the border did not ramp toward full strength: entrance pixel %v, later pixel %v, theme highlight %v",
+			entranceColor, fullColor, highlightRGBA)
+	}
+
+	// --highlight-style none re-paces the highlighted stretch without
+	// drawing the border at all -- the highlight strip panel is what still
+	// marks it.
+	noneCtx, noneTl := buildHighlightContext(t, 200, 120, 10)
+	noneCtx.HighlightStyle = panel.HighlightStyleNone
+	noneR, err := New(noneCtx, highlightMarkerLayout(markerPanel{name: "a", accept: true}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	noneFrame := noneR.Frame(noneTl.IndexAt(5*time.Second) + int(0.5*noneTl.FPS()))
+	if noneFrame.IntervalWeight <= 0 {
+		t.Fatal("precondition: this frame must sit inside the highlight for --highlight-style none to be a real test of anything")
+	}
+	noneImg := image.NewRGBA(image.Rect(0, 0, noneCtx.Width, noneCtx.Height))
+	if err := noneR.Render(noneImg, noneFrame); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if got := noneImg.RGBAAt(x, y); got != bg {
+		t.Errorf("--highlight-style none drew something at the border's own pixel: %v, want the background %v", got, bg)
+	}
+}
+
+// TestRenderer_NoHighlightsBorderStyleIsByteIdenticalToNoneStyle is the
+// differential test the pixel-identity claim in internal/panel never
+// actually exercises: TestNoHighlightRenderIsPixelIdenticalToBeforeThisFeature
+// (internal/panel/highlight_panel_test.go) reimplements the frame loop by
+// hand -- renderFullFrame there never calls drawHighlightBorder, because that
+// function lives in this package and the loop it reimplements does not
+// reach it. So a border overlay that painted something even with NO
+// highlights configured at all (a bug in the r.marginPx<=0 or
+// f.Interval==NoHighlight guards in drawHighlightBorder) could ship with
+// every existing test green.
+//
+// Run through the real Renderer instead: with Context.Highlights nil (no
+// --highlight given), --highlight-style border and --highlight-style none
+// must produce byte-identical renders across several frames, since neither
+// style has anything to mark.
+func TestRenderer_NoHighlightsBorderStyleIsByteIdenticalToNoneStyle(t *testing.T) {
+	base := buildContext(t, shortOptions(), 200, 120, 10)
+	base.Highlights = nil // the whole point: nothing was configured at all
+
+	borderCtx := *base
+	borderCtx.HighlightStyle = panel.HighlightStyleBorder
+	noneCtx := *base
+	noneCtx.HighlightStyle = panel.HighlightStyleNone
+
+	layout := highlightMarkerLayout(markerPanel{name: "a", accept: true})
+
+	borderR, err := New(&borderCtx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New (border): %v", err)
+	}
+	noneR, err := New(&noneCtx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New (none): %v", err)
+	}
+	if borderR.marginPx <= 0 {
+		t.Fatal("precondition: the test layout must carry a margin, or the two styles could never possibly differ and this test would prove nothing")
+	}
+
+	for _, i := range []int{0, borderR.Frames() / 2, borderR.Frames() - 1} {
+		imgB := image.NewRGBA(image.Rect(0, 0, borderCtx.Width, borderCtx.Height))
+		if err := borderR.Render(imgB, borderR.Frame(i)); err != nil {
+			t.Fatalf("Render (border, frame %d): %v", i, err)
+		}
+		imgN := image.NewRGBA(image.Rect(0, 0, noneCtx.Width, noneCtx.Height))
+		if err := noneR.Render(imgN, noneR.Frame(i)); err != nil {
+			t.Fatalf("Render (none, frame %d): %v", i, err)
+		}
+		if !bytes.Equal(imgB.Pix, imgN.Pix) {
+			t.Errorf("frame %d: --highlight-style border differs from --highlight-style none with NO highlights configured, in %d pixels; "+
+				"with nothing to mark the two styles must be identical", i, countDiff(imgB, imgN))
+		}
+	}
+}
+
+// TestRenderer_HighlightBorderPixelsLieStrictlyWithinTheMarginBand is the
+// margin-containment check with an INDEPENDENT sample point: unlike
+// TestRenderer_HighlightBorderRampsAndStaysInsideTheMargin, this test never
+// reads highlightBorderInsetFraction or highlightBorderThicknessFraction --
+// the two constants drawHighlightBorder itself uses to place its stroke --
+// so a mistake in either constant's own arithmetic cannot cancel out against
+// the same mistake reappearing in the test that is supposed to catch it.
+//
+// Instead it isolates exactly which pixels the border touched (by diffing a
+// render against the identical one under --highlight-style none, which
+// draws no border at all) and checks each one's plain distance to the
+// nearest frame edge against r.marginPx alone -- the one number
+// Layout.Resolve itself insets by, and the fact this feature's own fix round
+// exists to make structural (see Layout.MarginPx and render.New's own doc
+// comment on marginPx).
+func TestRenderer_HighlightBorderPixelsLieStrictlyWithinTheMarginBand(t *testing.T) {
+	ctx, tl := buildHighlightContext(t, 240, 140, 10)
+	ctx.HighlightStyle = panel.HighlightStyleBorder
+	layout := highlightMarkerLayout(markerPanel{name: "a", accept: true})
+	r, err := New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if r.marginPx <= 0 {
+		t.Fatal("precondition: the test layout must carry a margin for the border to draw inside of")
+	}
+
+	noneCtx, noneTl := buildHighlightContext(t, 240, 140, 10)
+	noneCtx.HighlightStyle = panel.HighlightStyleNone
+	noneR, err := New(noneCtx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New (none): %v", err)
+	}
+
+	i := tl.IndexAt(5*time.Second) + int(0.5*tl.FPS())
+	f := r.Frame(i)
+	if f.IntervalWeight <= 0 {
+		t.Fatal("precondition: this frame must sit inside the fixture's own highlight")
+	}
+	ni := noneTl.IndexAt(5*time.Second) + int(0.5*noneTl.FPS())
+
+	withBorder := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+	if err := r.Render(withBorder, f); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	withoutBorder := image.NewRGBA(image.Rect(0, 0, noneCtx.Width, noneCtx.Height))
+	if err := noneR.Render(withoutBorder, noneR.Frame(ni)); err != nil {
+		t.Fatalf("Render (none): %v", err)
+	}
+
+	w, h := ctx.Width, ctx.Height
+	margin := r.marginPx
+	touched := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if withBorder.RGBAAt(x, y) == withoutBorder.RGBAAt(x, y) {
+				continue
+			}
+			touched++
+			distToEdge := math.Min(math.Min(float64(x), float64(w-1-x)), math.Min(float64(y), float64(h-1-y)))
+			if distToEdge >= margin {
+				t.Fatalf("the border touched pixel (%d,%d), %.2fpx from the nearest edge, which is outside the layout's own %.2fpx margin",
+					x, y, distToEdge, margin)
+			}
+		}
+	}
+	if touched == 0 {
+		t.Fatal("the border and none renders are pixel-identical; nothing isolates the border for this test to check")
+	}
 }
 
 // TestRenderer_StaticLayerIsNotEmpty keeps the equality test above honest.

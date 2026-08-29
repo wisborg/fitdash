@@ -126,10 +126,42 @@ type Context struct {
 	// formatting preference.
 	PowerSource fitactivity.PowerSource
 
-	// Smoothing is how much ACTIVITY time a gauge reading is averaged over.
-	// Zero shows what was recorded. See render's smoothSample for which
-	// readings are averaged and which are deliberately left alone.
-	Smoothing time.Duration
+	// Smoothing controls how much a gauge reading is averaged over. See
+	// Smoothing and Timeline.AutoSmoothingAt: an explicit window applies
+	// everywhere, but "auto" is resolved per FRAME rather than once, because
+	// a render can run at more than one rate once highlights are in play,
+	// and a window derived from the render-wide base rate would average a
+	// highlight slowed down to show a rep's detail over a window many times
+	// too wide -- smoothing away the very detail the highlight exists to
+	// show. See render's smoothSample for which readings are averaged and
+	// which are deliberately left alone.
+	Smoothing Smoothing
+
+	// Highlights is the resolved, sorted, clipped set of --highlight ranges,
+	// or nil when none were given. Panels read it in Accepts (a highlight
+	// panel declines outright with none configured, which is a fact about
+	// the flags rather than about the activity) and in Prepare, to size and
+	// place whatever they draw from the whole set once rather than per
+	// frame.
+	Highlights []Highlight
+
+	// HighlightStyle selects how a highlight is marked on screen --
+	// HighlightStyleBorder, HighlightStyleWash or HighlightStyleNone.
+	//
+	// Read by internal/render and by no panel, which is not an oversight:
+	// both treatments it selects are render-WIDE -- the border drawn in the
+	// margin Layout.Resolve leaves empty, and the second static base the
+	// wash blends toward -- so neither belongs to any box in the layout
+	// tree, and neither could be a Painter's decision without that Painter
+	// drawing outside its own Box. A panel that needs to know a highlight is
+	// active reads Frame.Interval instead, which says that it is without
+	// saying anything about how it is being marked.
+	HighlightStyle string
+
+	// HighlightTransition is how much VIDEO time a highlight's on-screen
+	// mark takes to ramp in and out. See Frame.IntervalWeight, which is
+	// where the render loop actually applies it.
+	HighlightTransition time.Duration
 
 	// Fonts measures text. It is here because a panel must resolve its text
 	// sizes in Prepare, which has no Canvas -- see FaceCache.FitSize for why
@@ -208,4 +240,35 @@ type Frame struct {
 	// print a marker -- is the panel's decision; reporting the fact is the
 	// renderer's.
 	Paused bool
+
+	// Interval is this frame's position in Context.Highlights, or
+	// NoHighlight when it belongs to none.
+	//
+	// Deliberately an index, not the Highlight value itself: Dynamic has no
+	// route back to Context by design (see the Context doc comment), so this
+	// is how the loop hands a Painter the one fact it needs in order to look
+	// the highlight back up -- which is what Prepare, not Dynamic, is for.
+	// And deliberately an index alone, not an index plus a HasInterval bool:
+	// index 0 is a legitimate highlight, so the two fields could disagree,
+	// which is exactly the "second declaration free to disagree with the
+	// first" the Panel contract's Accepts/Prepare split exists to prevent at
+	// a different seam. NoHighlight is the one documented meaning of the
+	// sentinel, chosen because it reads as a violation of the absence rule
+	// otherwise: this is the one case in the project where the safer risk is
+	// a sentinel rather than a second flag.
+	Interval int
+
+	// IntervalWeight ramps 0->1 across a highlight's entrance transition,
+	// holds at 1 through its body, and ramps 1->0 across its exit -- 0
+	// outside every highlight. See Timeline.IntervalAt for the arithmetic.
+	//
+	// Computed once, here in the loop, in VIDEO time -- the ramp is a
+	// perceptual effect, so --highlight-transition promises it looks the
+	// same however compressed the render is -- rather than left for each
+	// consumer to derive on its own. The border overlay and the highlight
+	// strip both animate on this one number, and two independent
+	// recomputations landing a frame apart is exactly the
+	// two-layers-drew-and-disagreed failure this architecture exists to
+	// prevent.
+	IntervalWeight float64
 }

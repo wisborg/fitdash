@@ -104,6 +104,22 @@ type Layout struct {
 	Root Slot
 }
 
+// MarginPx resolves Margin -- a fraction of the frame's smaller dimension --
+// to pixels for a frame of w by h. It is exactly the quantity Resolve insets
+// its own working frame by before dividing anything among the tree, exported
+// so a caller outside this package can locate that same guaranteed-empty
+// band without re-deriving the formula by hand.
+//
+// internal/render's highlight border is the reason this exists: it draws
+// inside the margin on the strength of a comment claiming the two can never
+// collide, a guarantee that used to rest on two independent copies of
+// `Margin * min(w, h)` agreeing rather than on one formula computed once. If
+// Resolve's own margin handling ever changes, a caller still doing the
+// arithmetic by hand would silently stop matching the real empty band.
+func (l Layout) MarginPx(w, h int) float64 {
+	return l.Margin * math.Min(float64(w), float64(h))
+}
+
 // Placed is one panel and the box it was given.
 type Placed struct {
 	Panel Panel
@@ -182,7 +198,7 @@ func (l Layout) Resolve(w, h int, keep func(Panel) bool) ([]Placed, error) {
 	}
 
 	unit := math.Min(float64(w), float64(h))
-	frame := Box{W: float64(w), H: float64(h)}.inset(l.Margin * unit)
+	frame := Box{W: float64(w), H: float64(h)}.inset(l.MarginPx(w, h))
 	if frame.W <= 0 || frame.H <= 0 {
 		return nil, fmt.Errorf("panel: layout %q has a margin of %v, which leaves nothing of a %dx%d frame", l.Name, l.Margin, w, h)
 	}

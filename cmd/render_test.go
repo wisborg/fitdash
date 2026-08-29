@@ -12,8 +12,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/fittest"
 
 	"github.com/wisborg/fitdash/internal/panel"
+	"github.com/wisborg/fitdash/internal/render"
 )
 
 // TestParseSize_ReadsWxHAndRefusesTheRest keeps a malformed --size from
@@ -108,7 +110,7 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 	}
 	n := tl.Frames() // 3000
 
-	got, err := frameIndices(tl, nil)
+	got, err := frameIndices(tl, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
@@ -130,12 +132,79 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 
 	// --frame-at resolves through the timeline, so it is the same arithmetic
 	// the render itself uses. 50 seconds at 30 fps is frame 1500.
-	got, err = frameIndices(tl, []time.Duration{50 * time.Second})
+	got, err = frameIndices(tl, []time.Duration{50 * time.Second}, nil, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
 	if last := got[len(got)-1]; last != 1500 {
 		t.Errorf("--frame-at 50s resolved to frame %d, want 1500", last)
+	}
+}
+
+// TestFrameIndices_HonoursFrameAtVideo pins that --frame-at-video is read
+// against the VIDEO's own clock rather than the activity's: at a speedup of
+// 10, five seconds of video is fifty seconds of activity, so the two flags
+// must disagree on which frame that names.
+func TestFrameIndices_HonoursFrameAtVideo(t *testing.T) {
+	tl, err := panel.NewTimeline(time.Now(), 100*time.Second, 30, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 5s of VIDEO at 30fps is frame 150 -- and, at a 10x speedup, a
+	// completely different frame from what --frame-at 5s would have named
+	// (--frame-at 5s of ACTIVITY time is frame 15).
+	got, err := frameIndices(tl, nil, []time.Duration{5 * time.Second}, nil)
+	if err != nil {
+		t.Fatalf("frameIndices: %v", err)
+	}
+	if last := got[len(got)-1]; last != 150 {
+		t.Errorf("--frame-at-video 5s resolved to frame %d, want 150", last)
+	}
+
+	if _, err := frameIndices(tl, nil, []time.Duration{-time.Second}, nil); err == nil {
+		t.Error("frameIndices accepted a negative --frame-at-video offset")
+	}
+	if _, err := frameIndices(tl, nil, []time.Duration{11 * time.Second}, nil); err == nil {
+		t.Error("frameIndices accepted a --frame-at-video offset past the end of the video")
+	} else if !strings.Contains(err.Error(), "0:00:10") {
+		t.Errorf("the error should say how long the video runs; got: %v", err)
+	}
+	// The video's own last instant is a legitimate thing to ask for.
+	if _, err := frameIndices(tl, nil, []time.Duration{10 * time.Second}, nil); err != nil {
+		t.Errorf("frameIndices rejected the video's final instant: %v", err)
+	}
+}
+
+// TestFrameIndices_IncludesEveryHighlightsFirstAndLastFrame pins the
+// landmark this feature adds: a highlight's own boundaries, unconditionally,
+// because that is exactly where a panel's transition gets it wrong and the
+// ordinary quarter-marks will not land near it on a long render.
+func TestFrameIndices_IncludesEveryHighlightsFirstAndLastFrame(t *testing.T) {
+	tl, err := panel.NewSegmentedTimeline(time.Now(), 100*time.Second, 30, 1, []panel.Highlight{
+		{From: 20 * time.Second, To: 30 * time.Second, RateFactor: 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := frameIndices(tl, nil, nil, []panel.Highlight{
+		{From: 20 * time.Second, To: 30 * time.Second, RateFactor: 5},
+	})
+	if err != nil {
+		t.Fatalf("frameIndices: %v", err)
+	}
+	first := tl.IndexAt(20 * time.Second)
+	last := tl.IndexAt(30*time.Second - time.Nanosecond)
+	var sawFirst, sawLast bool
+	for _, i := range got {
+		if i == first {
+			sawFirst = true
+		}
+		if i == last {
+			sawLast = true
+		}
+	}
+	if !sawFirst || !sawLast {
+		t.Errorf("frameIndices = %v, want the highlight's first frame %d and last frame %d among them", got, first, last)
 	}
 }
 
@@ -153,18 +222,18 @@ func TestFrameIndices_RejectsAnOffsetPastTheActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := frameIndices(tl, []time.Duration{40 * time.Minute}); err == nil {
+	if _, err := frameIndices(tl, []time.Duration{40 * time.Minute}, nil, nil); err == nil {
 		t.Fatal("frameIndices accepted an offset past the end of the activity")
 	} else if !strings.Contains(err.Error(), "0:25:00") {
 		t.Errorf("the error should say how long the activity runs; got: %v", err)
 	}
-	if _, err := frameIndices(tl, []time.Duration{-time.Minute}); err == nil {
+	if _, err := frameIndices(tl, []time.Duration{-time.Minute}, nil, nil); err == nil {
 		t.Error("frameIndices accepted a negative offset")
 	}
 
 	// The boundary is inclusive: the very last instant of the activity is a
 	// legitimate thing to ask for.
-	if _, err := frameIndices(tl, []time.Duration{25 * time.Minute}); err != nil {
+	if _, err := frameIndices(tl, []time.Duration{25 * time.Minute}, nil, nil); err != nil {
 		t.Errorf("frameIndices rejected the activity's final instant: %v", err)
 	}
 
@@ -174,7 +243,7 @@ func TestFrameIndices_RejectsAnOffsetPastTheActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := frameIndices(fast, []time.Duration{20 * time.Minute}); err != nil {
+	if _, err := frameIndices(fast, []time.Duration{20 * time.Minute}, nil, nil); err != nil {
 		t.Errorf("a 20m offset was rejected on a 25m activity rendered as a 1m video: %v", err)
 	}
 }
@@ -366,6 +435,50 @@ func TestSpeedupNote_IsSilentAtRealTime(t *testing.T) {
 	}
 }
 
+// TestFormatMultiplier_RoundsAndTrims pins the shared rounding rule
+// speedupNote and the highlight table both spell a compression factor with.
+func TestFormatMultiplier_RoundsAndTrims(t *testing.T) {
+	for _, c := range []struct {
+		in   float64
+		want string
+	}{
+		{60, "60"},
+		{2.5, "2.5"},
+		{0.5, "0.5"},
+		// A target duration rarely divides evenly: three minutes of a
+		// four-hour activity is 79.99444444444444, and printing all of that
+		// is not more accurate, only harder to read.
+		{79.99444444444444, "79.99"},
+		{10.004, "10"},
+	} {
+		if got := formatMultiplier(c.in); got != c.want {
+			t.Errorf("formatMultiplier(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestBaseSpeedupNote_LabelsTheBaseOnlyWhenHighlightsExist pins the one
+// wording change highlights force onto the render summary's first line: a
+// bare "(60x)" beside a video running at more than one rate would be exactly
+// the confident lie speedupNote's own doc comment describes avoiding at real
+// time, so once any highlight is configured the figure is named "base"
+// explicitly -- even at a base of 1x, because a highlight can still run its
+// own rate while the rest of the render is real time.
+func TestBaseSpeedupNote_LabelsTheBaseOnlyWhenHighlightsExist(t *testing.T) {
+	if got := baseSpeedupNote(1, false); got != "" {
+		t.Errorf("baseSpeedupNote(1, false) = %q, want nothing -- identical to speedupNote at real time with no highlights", got)
+	}
+	if got, want := baseSpeedupNote(60, false), " (60x)"; got != want {
+		t.Errorf("baseSpeedupNote(60, false) = %q, want %q", got, want)
+	}
+	if got, want := baseSpeedupNote(1, true), " (base 1x)"; got != want {
+		t.Errorf("baseSpeedupNote(1, true) = %q, want %q -- a highlight can run its own rate even while the base is real time", got, want)
+	}
+	if got, want := baseSpeedupNote(60, true), " (base 60x)"; got != want {
+		t.Errorf("baseSpeedupNote(60, true) = %q, want %q", got, want)
+	}
+}
+
 // TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay covers two
 // review findings, both cases of a flag quietly doing something other than
 // what its help text promised.
@@ -428,6 +541,42 @@ func TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay(t *testing.
 	}
 }
 
+// TestRunRender_RejectsANegativeHighlightTransition covers the one rejection
+// path in runRender that has no test of its own: unlike every check above,
+// which lives in validateRenderOptions (testable with no activity file at
+// all) or is exercised through resolveHighlights/resolveSmoothing directly,
+// --highlight-transition's own "< 0" guard is inline in runRender itself,
+// reached only after the activity is decoded and the timer model built. So
+// this test drives the real command end to end against a synthetic
+// activity, through cobra exactly as Execute does -- but the negative value
+// must be refused before render.New or ffmpeg is ever reached, so no video
+// is produced and no ffmpeg is required.
+func TestRunRender_RejectsANegativeHighlightTransition(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+
+	opts := fittest.DefaultOptions()
+	opts.Count = 50 // a handful of samples is enough for the timer window this check needs; nothing here reads a sample.
+	path := filepath.Join(t.TempDir(), "activity.fit")
+	if err := fittest.WriteFile(path, opts); err != nil {
+		t.Fatalf("generating fixture: %v", err)
+	}
+
+	renderOpts = renderOptions{}
+	cmd := &cobra.Command{Use: "test", Args: cobra.ExactArgs(1), RunE: runRender, SilenceUsage: true, SilenceErrors: true}
+	bindRenderFlags(cmd)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--highlight-transition=-1s", "--frames", "--output-dir", t.TempDir(), path})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("accepted a negative --highlight-transition")
+	}
+	if !strings.Contains(err.Error(), "negative") {
+		t.Errorf("error should say the value is negative; got: %v", err)
+	}
+}
+
 // TestRenderFlags_LayoutAndThemeDefaultsAreSelectable pins that the values the
 // flags default to are values the flags accept.
 //
@@ -456,5 +605,236 @@ func TestRenderFlags_LayoutAndThemeDefaultsAreSelectable(t *testing.T) {
 		if _, err := panel.SelectTheme(th.Name); err != nil {
 			t.Errorf("--theme %s is offered but rejected: %v", th.Name, err)
 		}
+	}
+}
+
+// --- the highlight summary block --------------------------------------------
+
+// TestWriteHighlightSummary_DecomposesBaseAndHighlightsAndListsEach pins the
+// decomposition line and the per-highlight table.
+//
+// The fixture is the exact one internal/panel's own
+// TestNewSegmentedTimeline_ThirtySecondsPlusNineSecondsOfHighlightsIsThirtyNine
+// already verifies independently: a 30-minute activity at a 60x base renders
+// in 30s alone, and this highlight -- 10m to 11m, paced to fill 10s of video
+// -- adds 9s on top, for 39s total. Reusing it here rather than deriving a
+// second fixture means the two tests cannot quietly drift apart about what
+// "30s base + 9s of highlights = 39s of video" is supposed to mean.
+func TestWriteHighlightSummary_DecomposesBaseAndHighlightsAndListsEach(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	const fps, base = 30.0, 60.0
+	highlight := panel.Highlight{Name: "Hill climb", From: 10 * time.Minute, To: 11 * time.Minute, Video: 10 * time.Second}
+	tl, err := panel.NewSegmentedTimeline(time.Now(), 30*time.Minute, fps, base, []panel.Highlight{highlight})
+	if err != nil {
+		t.Fatalf("NewSegmentedTimeline: %v", err)
+	}
+	if got, want := tl.Duration(), 39*time.Second; got != want {
+		t.Fatalf("precondition: tl.Duration() = %v, want %v -- the fixture no longer matches the one this test's own doc comment describes", got, want)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+
+	writeHighlightSummary(c, tl, []panel.Highlight{highlight}, panel.Smoothing{})
+
+	out := buf.String()
+	if !strings.Contains(out, "0:00:30 base + 0:00:09 of highlights = 0:00:39 of video") {
+		t.Errorf("summary is missing the base/highlight decomposition; got:\n%s", out)
+	}
+	// Rate = (11m-10m)/10s = 6x; 60s of activity at 6x and 30fps is exactly
+	// 300 frames, 10.0s of video -- no rounding remainder to complicate this
+	// expectation.
+	if !strings.Contains(out, `highlights: "Hill climb" 0:10:00 -> 10.0s (6x)`) {
+		t.Errorf("summary is missing the highlight's own table line; got:\n%s", out)
+	}
+}
+
+// TestWriteHighlightSummary_WarnsOnClippedOneFrameAndPaused pins the three
+// "adjusted, and reported" surprises resolveHighlights marks rather than
+// refuses -- a highlight running past the activity's own end, one whose own
+// rate rounds its frame count down to one, and one lying wholly inside a
+// paused stretch. Each is a warning this printer owes the reader BECAUSE
+// resolveHighlights already decided not to make it fatal.
+func TestWriteHighlightSummary_WarnsOnClippedOneFrameAndPaused(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	highlights := []panel.Highlight{
+		{Name: "Final push", From: 0, To: 5 * time.Second, Clipped: true},
+		// A RateFactor this extreme over ten milliseconds rounds well below
+		// one frame at 30fps, so Timeline forces it to exactly one.
+		{Name: "Blip", From: 10 * time.Second, To: 10*time.Second + 10*time.Millisecond, RateFactor: 1000},
+		{Name: "Water stop", From: 20 * time.Second, To: 25 * time.Second, PausedThroughout: true},
+	}
+	tl, err := panel.NewSegmentedTimeline(time.Now(), time.Minute, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewSegmentedTimeline: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeHighlightSummary(c, tl, highlights, panel.Smoothing{})
+
+	out := buf.String()
+	for _, want := range []string{
+		`highlight "Final push" clipped to the activity's end (0:00:05)`,
+		`highlight "Blip" occupies one frame; its speedup is higher than the render can show`,
+		`highlight "Water stop" lies inside a paused stretch; the dashboard is frozen through it`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary is missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestWriteHighlightSummary_PrintsNothingWithNoHighlights keeps an ordinary
+// render's summary identical to one from before this feature existed -- the
+// same promise the highlight panel's own Accepts makes for the pixels.
+func TestWriteHighlightSummary_PrintsNothingWithNoHighlights(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	tl, err := panel.NewTimeline(time.Now(), time.Minute, 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeHighlightSummary(c, tl, nil, panel.Smoothing{})
+	if buf.Len() != 0 {
+		t.Errorf("writeHighlightSummary printed something with no highlights configured: %q", buf.String())
+	}
+}
+
+// --- the two decline headings ------------------------------------------------
+
+// summaryDecliner is a panel that always declines, standing in for a panel
+// whose activity genuinely carries none of its data -- the "carries no such
+// data" heading's own real case.
+type summaryDecliner string
+
+func (d summaryDecliner) Name() string              { return string(d) }
+func (summaryDecliner) Accepts(*panel.Context) bool { return false }
+func (summaryDecliner) Prepare(*panel.Context, panel.Box) panel.Painter {
+	// Never actually called: Accepts is false, so layout.Resolve prunes this
+	// leaf before any Prepare is invoked. A panic here would say so loudly if
+	// that ever stopped being true.
+	panic("summaryDecliner.Prepare called despite declining")
+}
+
+// summaryAccepter is a panel that always accepts, so the test layout has at
+// least one survivor and "panels: ..." has something real to report.
+type summaryAccepter string
+
+func (a summaryAccepter) Name() string              { return string(a) }
+func (summaryAccepter) Accepts(*panel.Context) bool { return true }
+func (summaryAccepter) Prepare(*panel.Context, panel.Box) panel.Painter {
+	return summaryPainter{}
+}
+
+type summaryPainter struct{ panel.NoStatic }
+
+func (summaryPainter) Dynamic(*panel.Canvas, panel.Frame) {}
+
+// summaryTestContext builds the minimum panel.Context render.New will accept,
+// with no real FIT data behind it -- this suite is about what the summary
+// PRINTS, not about a real activity, so a two-sample track and a bare timer
+// are enough to satisfy render.New's own nil checks.
+func summaryTestContext(t *testing.T, highlights []panel.Highlight) *panel.Context {
+	t.Helper()
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	track := &fitactivity.Track{Samples: []fitactivity.Sample{
+		{Time: start}, {Time: start.Add(time.Minute)},
+	}}
+	timer := fitactivity.BuildTimerModel(track)
+	tl, err := panel.NewTimelineForActivityWithHighlights(timer, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithHighlights: %v", err)
+	}
+	fonts, err := panel.NewFaceCache()
+	if err != nil {
+		t.Fatalf("NewFaceCache: %v", err)
+	}
+	return &panel.Context{
+		Track: track, Timer: timer, Timeline: tl,
+		Width: 200, Height: 120, FontScale: 0.05, Fonts: fonts,
+		Highlights: highlights,
+	}
+}
+
+// TestWritePanelSummary_SplitsTheHighlightDeclineFromTheActivityDataOne is
+// the fix this step exists for: with no --highlight given at all, the
+// highlight panel declines because of a FLAG, not because of anything the
+// activity does or does not carry, and folding its name into "this activity
+// carries no such data" tells the user their FIT file lacks something no FIT
+// file has ever recorded. Verified against a real render.Renderer, built
+// through render.New exactly as the CLI builds one, rather than against a
+// hand-built Declined() list that could quietly stop matching what New
+// actually reports.
+func TestWritePanelSummary_SplitsTheHighlightDeclineFromTheActivityDataOne(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := summaryTestContext(t, nil) // no --highlight given at all
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: summaryAccepter("clock")},
+		{Panel: summaryDecliner("power")},
+		{Panel: panel.HighlightPanel{}},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writePanelSummary(c, r, ctx.Timeline, layout.Name, "dark", panel.Smoothing{})
+
+	out := buf.String()
+	// The activity-data heading names ONLY power -- never highlight, and
+	// never both together under this heading, which is exactly the bug this
+	// step fixes: `declined (...carries no such data): power, highlight`.
+	if !strings.Contains(out, "declined (this activity carries no such data): power") {
+		t.Errorf("the activity-data decline heading is missing or wrong; got:\n%s", out)
+	}
+	if strings.Contains(out, "no such data): power, highlight") || strings.Contains(out, "no such data): highlight") {
+		t.Fatalf("the highlight panel's decline was folded into the activity-data heading; got:\n%s", out)
+	}
+	if !strings.Contains(out, "declined (no --highlight given): highlight") {
+		t.Errorf("the highlight panel's decline is missing its own configuration heading; got:\n%s", out)
+	}
+}
+
+// TestWritePanelSummary_ReportsNoHighlightDeclineWhenHighlightsAreConfigured
+// is the other half: once --highlight is given, the highlight panel accepts
+// and there is nothing to report under either decline heading for it.
+func TestWritePanelSummary_ReportsNoHighlightDeclineWhenHighlightsAreConfigured(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	highlights := []panel.Highlight{{From: 5 * time.Second, To: 10 * time.Second}}
+	ctx := summaryTestContext(t, highlights)
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: summaryAccepter("clock")},
+		{Panel: panel.HighlightPanel{}},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writePanelSummary(c, r, ctx.Timeline, layout.Name, "dark", panel.Smoothing{})
+
+	if out := buf.String(); strings.Contains(out, "declined") {
+		t.Errorf("nothing declined once --highlight is configured, but the summary printed a decline line; got:\n%s", out)
 	}
 }

@@ -332,7 +332,7 @@ func bindDistancePrecision(ctx *Context, r Readout) Readout {
 	if ctx.Timeline.FPS() <= 0 {
 		return r
 	}
-	step := time.Duration(ctx.Timeline.Speedup() / ctx.Timeline.FPS() * float64(time.Second))
+	step := time.Duration(ctx.Timeline.MaxSpeedup() / ctx.Timeline.FPS() * float64(time.Second))
 	if step < coarseDistanceStep {
 		return r
 	}

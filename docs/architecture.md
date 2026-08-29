@@ -356,6 +356,9 @@ The dashboard **freezes through a pause**. Three reasons:
    frame → active-duration → instant through the pause list, which is a search, and it makes
    `Frame.At` non-affine in `Frame.Index` — so any panel deriving anything from the index
    breaks, and seeking or parallelising becomes a lookup problem rather than arithmetic.
+   (This stopped being literally true once named highlight intervals landed — see
+   "Timeline: piecewise" below for what was given up, and why elapsed time was still the
+   right side of this argument to be on.)
 2. **It never fabricates motion.** Cutting a pause splices two instants together. Someone
    who stopped their watch at a trailhead and restarted a kilometre later gets a route dot
    that teleports — a discontinuity that looks exactly like the GPS glitch this project
@@ -399,6 +402,57 @@ Two rules for panels:
   current kilometre comes from `Splits.CurrentKm`, which is a step function. Interpolating a
   cumulative quantity is a different act from interpolating an instantaneous one, and
   lerping a *lap number* is a third thing that is simply meaningless.
+
+### Timeline: piecewise
+
+Named highlight intervals (`--highlight`) gave up the one property the section above spent
+three reasons defending: `Timeline.At` is no longer a single affine map. It is now piecewise
+affine — a short list of segments, each running at its own rate, most Timelines carrying
+exactly one segment spanning the whole activity. Read this section before "fixing" `At` back
+to a single multiply-and-add; the discrepancy with the argument above is deliberate and
+recorded here rather than resolved by changing the code back.
+
+**Why this is not the rejected pause-cutting case**, even though both are described as
+"cutting into the affine map": the table is objection-by-objection.
+
+| Objection to cutting pauses (above) | Applies to per-highlight pacing? |
+|---|---|
+| **2. It never fabricates motion.** Cutting a pause splices two instants; the route dot teleports. | **No.** Every segment — highlighted or not — has its own strictly positive rate. The map stays strictly increasing end to end and every recorded instant still shows; some just show for longer or shorter than others. Nothing is skipped, nothing is spliced, the route dot never jumps. |
+| **3. A frozen dashboard is honest; a spliced one is not.** | **No.** Nothing vanishes. A highlight makes some seconds of activity fill more seconds of video, or fewer — the opposite of a pause silently disappearing — and it announces itself on screen (the highlight strip, the margin border) rather than doing it invisibly. |
+| **1. It is the only affine map.** `IndexAt` becomes a search, and a panel deriving anything from the index breaks. | **Partly — this is the one genuinely given up.** But the search is over a render-wide list of at most a couple of thousand segments (one per `--highlight`, plus the ordinary stretches around them), not over the activity's own timer events, so it stays a handful of comparisons rather than growing with the recording. And no panel reads `Frame.Index` today — that population this argument was protecting is empty, so the part of the cost that would have mattered is not being paid by anyone. |
+
+So cutting pauses breaks the *data* (a splice, a teleport, four minutes that do not admit
+they are gone); per-segment pacing breaks only the *arithmetic convenience* of one rate for
+the whole render. The first was worth refusing outright. The second was worth paying for.
+
+**Where the segments live.** A `[]segment` field private to `Timeline`, built once at
+construction by the one function every constructor funnels through — a highlight-free render
+is the zero-segment case of the same builder, not a different code path beside it, so
+`NewTimeline` and its tests keep working unchanged. The segment list is never handed to a
+panel and never will be: it is what would have to be duplicated if a future feature reached
+for its own copy of "which rate applies at frame *i*", which is exactly the failure mode
+keeping it private prevents.
+
+**The construction trap worth remembering** (found while building this, not obvious in
+advance): a segment must be anchored at its own *true* boundary in activity time — the exact
+offset a `--highlight from=`/`to=` named — never at wherever the previous segment's *rounded*
+frame count happened to land. Chaining segment origins that way accumulates rounding error
+across the render, so a highlight late in a long video would start measurably later than the
+instant it was asked for, worse the more segments came before it. Anchoring each segment
+independently instead means the error cannot accumulate — it can only ever appear once, at
+the one seam between that segment and its neighbour.
+
+That seam is the cost, and it is worth being precise about rather than hand-waving "some
+rounding": the last frame of one segment and the first frame of the next are still frame
+`i` and `i+1` of the render — consecutive — but because each segment rounds its own frame
+count independently, the video-time gap between those two frames is not exactly one frame
+the way it is everywhere else, only somewhere between half a frame and one and a half. The
+map stays *strictly increasing* across the seam (each segment's last frame provably lands
+before that segment's own end, and the next segment's first frame sits exactly at it), so
+nothing goes backwards or repeats — the irregularity is bounded, does not accumulate, and is
+smaller than what a viewer can perceive at any frame rate this project targets. It is pinned
+by a test that walks every seam of a render rather than asserted in prose, because it is not
+something a future reader would otherwise re-derive by inspection.
 
 ## Encoding
 

@@ -10,9 +10,10 @@ fitdash activity.fit --video-duration 3m
 ```
 
 Eight panels ship today: the route, an elapsed/active clock, distance, heart rate, pace,
-power, cadence, and an elevation profile. Panels that have no data in a given activity
-decline, and the layout closes up around them — an indoor ride simply has no route panel,
-and the summary says so by name rather than leaving an unexplained gap.
+power, cadence, and an elevation profile — plus a ninth, the highlight strip, which appears
+only when `--highlight` gives it something to show. Panels that have no data in a given
+activity decline, and the layout closes up around them — an indoor ride simply has no route
+panel, and the summary says so by name rather than leaving an unexplained gap.
 
 `--layout` picks the arrangement (`auto`, which follows the frame's shape, or `landscape`
 or `portrait` forced) and `--theme` the palette (`dark` or `light`).
@@ -57,6 +58,24 @@ so the clock advances that much faster, which is what a time-lapse should look l
 it costs is that each frame samples the activity further on, so at high compression a
 short spike can fall between frames; nothing is averaged over the gap, because averaging
 would invent a reading nobody recorded.
+
+**One stretch can be given more of the video than its share.** `--highlight
+'from=10m,to=11m,video=10s,name=Hill climb'` marks a range of the activity and paces it on
+its own terms, so a minute of climbing that the base compression would have flashed past in
+about a second fills ten seconds of video instead. The flag is repeatable, and a highlight's
+video time is added *on top of* `--video-duration` rather than taken out of it: a 30-second
+base plus that climb is a 39-second video, and the summary prints the decomposition rather
+than leaving the discrepancy to be noticed. Re-solving the base so the total held at 30
+seconds was the alternative, and it was rejected — adding one highlight would then silently
+change the pace of everything else in the render.
+
+`--highlight-style` chooses the on-screen mark: `border` (the default) draws an accent
+border in the frame's margin, which is the one band the layout guarantees is empty, and
+lights the highlight's block on the strip; `wash` additionally tints the background; `none`
+re-paces without marking, leaving the strip alone to say where the highlights fall.
+`--highlight-transition` sets how long the mark takes to ramp in and out, measured in video
+time rather than activity time, because how fast a fade reads depends on the video's clock
+and nothing else.
 
 **Cadence means different things to different sports.** FIT records it as revolutions per
 minute — crank revolutions on a bike, which is what a cyclist reads, but revolutions *per

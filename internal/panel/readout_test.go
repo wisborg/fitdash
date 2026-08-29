@@ -824,3 +824,55 @@ func TestDistance_CoarsensOnAHeavilyCompressedRender(t *testing.T) {
 		})
 	}
 }
+
+// TestDistance_CoarsensFromTheCoarsestSegmentNotTheBase pins the property
+// TestDistance_CoarsensOnAHeavilyCompressedRender never had the machinery to
+// try: MaxSpeedup, not BaseSpeedup, decides distance precision, and it does
+// so ONCE in Prepare -- before any Frame exists -- so the same precision
+// applies for the whole render whether a reading came from the base-rate
+// stretch or from inside the highlight that made the render coarsen. Naming
+// only one call site ("bindDistancePrecision, readout.go") in the design was
+// exactly the risk this test locks down: MaxSpeedup was renamed FROM
+// BaseSpeedup deliberately (see Timeline's own doc comment) so a stale call
+// site keeping the old name would fail to compile, but nothing stopped a
+// call site that compiled fine while reading the WRONG one of the two.
+//
+// The base alone stays fine at two decimals (60x, 2s/frame -- the same case
+// TestDistance_CoarsensOnAHeavilyCompressedRender already pins at 60x); one
+// highlight running far faster (480x, 16s/frame) must coarsen the WHOLE
+// readout, not just the highlight's own stretch, because the unit and the
+// decimal count are drawn in the static layer and there is no per-frame
+// re-Prepare to vary it.
+func TestDistance_CoarsensFromTheCoarsestSegmentNotTheBase(t *testing.T) {
+	track := trackWith(inspect.MetricDistance)
+	sample := fitactivity.Sample{HasDistance: true, Distance: 12345}
+
+	plain, err := NewTimeline(epoch, time.Hour, 30, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainCtx := &Context{Track: track, Report: inspect.Build(track), Timeline: plain}
+	plainP := Distance().Prepare(plainCtx, Box{W: 300, H: 200}).(*readoutPainter)
+	v, ok := plainP.value(sample)
+	if !ok {
+		t.Fatal("no distance resolved")
+	}
+	if got, want := plainP.format(v), "12.35"; got != want {
+		t.Fatalf("precondition: at the base rate alone (60x), format = %q, want %q", got, want)
+	}
+
+	fast := Highlight{From: 10 * time.Minute, To: 11 * time.Minute, RateFactor: 480}
+	tl, err := NewSegmentedTimeline(epoch, time.Hour, 30, 60, []Highlight{fast})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &Context{Track: track, Report: inspect.Build(track), Timeline: tl}
+	p := Distance().Prepare(ctx, Box{W: 300, H: 200}).(*readoutPainter)
+	if got, want := p.format(v), "12.3"; got != want {
+		t.Errorf("with a 480x highlight added on top of the same 60x base, format = %q, want %q -- "+
+			"MaxSpeedup (the highlight's own coarser rate), not BaseSpeedup, must decide precision", got, want)
+	}
+	if p.valueTemplate() != "888.8" {
+		t.Errorf("valueTemplate() = %q, want the one-decimal template", p.valueTemplate())
+	}
+}
