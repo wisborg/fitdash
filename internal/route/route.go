@@ -39,6 +39,15 @@ type Point struct {
 // 29 seconds and then jumping several hundred metres, and even a 25-minute run
 // moves it in 3-second steps. The fixes and the drawn points are now separate
 // things, and only the drawing is thinned.
+//
+// SpanIndices below looks like it should follow the same rule and does not,
+// deliberately: a highlighted SPAN of the route has to be drawn as a stretch
+// of the OUTLINE itself, and the outline only exists at this thinned
+// resolution. A mark resolved against every fix would name a stretch the
+// outline never draws, and the coloured line would float off the dim one
+// under it. The position dot and a highlight's span are answering different
+// questions -- "where is it right now" versus "which part of the drawn line
+// is this" -- and each is right to use the list the other must not.
 const DefaultMaxPoints = 500
 
 // FromTrack extracts the route, keeping at most maxPoints of it.
@@ -187,4 +196,83 @@ func (p Projection) Placer(w, h float64) (func(Point) (x, y float64), bool) {
 func IndexAt(pts []Point, at time.Time) int {
 	i := sort.Search(len(pts), func(i int) bool { return pts[i].Time.After(at) })
 	return i - 1
+}
+
+// SpanIndices locates the drawn vertices of pts -- the THINNED, drawn list,
+// never the full fix list; see DefaultMaxPoints's own note on why this is
+// the opposite rule from IndexAt's -- that fall inside [from, to).
+//
+// GUARANTEE: when ok is true, i0 < i1 and pts[i0:i1+1] is a genuinely
+// drawable polyline -- at least two vertices, never one. A caller may rely
+// on that without checking it again.
+//
+// i0 is the first index with pts[i].Time >= from; i1 is the last index with
+// pts[i].Time < to.
+//
+//   - Two or more drawn vertices already fall inside the span (i0 < i1):
+//     they are returned as they are.
+//
+//   - Exactly one drawn vertex falls inside the span (i0 == i1): a single
+//     point is not a polyline, so it is extended to include a neighbour --
+//     preferring the vertex after the span, the same direction time in the
+//     span itself runs, and falling back to the one before it when the span
+//     reaches the route's own last point. This is the case a one-vertex
+//     fixture cannot even pose: it only shows up once a highlight is
+//     shorter than roughly the outline's own stride, which is the ordinary
+//     case for a short highlight over a long activity (at DefaultMaxPoints
+//     over a four-hour ride, one vertex is 29 seconds from the next), and
+//     which no fixture under DefaultMaxPoints can ever produce, because
+//     under the cap the stride is one sample.
+//
+//   - No drawn vertex falls inside the span at all (i0 > i1): the whole
+//     span lies strictly between two consecutive vertices. Rather than
+//     drawing nothing, the single chord [i0-1, i0] that straddles the span
+//     is returned instead: the mark is placed at the resolution the
+//     outline was actually drawn at, honestly, the same minBlockFraction
+//     reasoning the highlight strip already applies to a block that would
+//     otherwise round to nothing.
+//
+// Both extensions above require a neighbour to exist. When pts has fewer
+// than two points there is no chord to build under any span, and ok is
+// false -- but this cannot happen through RoutePanel or cmd's own use of
+// this function, both of which already require at least two drawn points
+// before calling it at all.
+//
+// When the span lies entirely before the first point or entirely after the
+// last, ok is false and i0/i1 are meaningless. Widening to the nearest chord
+// here would draw a mark claiming the route passed through that place, which
+// is a claim about position this package does not invent (see FromTrack's own
+// note on why a GPS gap is drawn as a visible chord rather than papered over).
+func SpanIndices(pts []Point, from, to time.Time) (i0, i1 int, ok bool) {
+	n := len(pts)
+	i0 = sort.Search(n, func(i int) bool { return !pts[i].Time.Before(from) })
+	i1 = sort.Search(n, func(i int) bool { return !pts[i].Time.Before(to) }) - 1
+
+	switch {
+	case i0 < i1:
+		return i0, i1, true
+	case i0 == i1:
+		// Exactly one drawn vertex inside the span. Extend to a neighbour
+		// so the result is a drawable polyline rather than a single point
+		// -- see the doc comment above for which side and why.
+		if i1+1 < n {
+			return i0, i1 + 1, true
+		}
+		if i0-1 >= 0 {
+			return i0 - 1, i1, true
+		}
+		// n == 1: the whole list is a single point, so no chord can ever
+		// be built from it.
+		return 0, 0, false
+	case i0 > 0 && i0 < n:
+		// The bracketing chord: the span sits strictly between pts[i0-1] and
+		// pts[i0], both of which exist.
+		return i0 - 1, i0, true
+	default:
+		// i0 == 0 means even the first point is at or after `from`, so the
+		// span ends before the route begins. i0 == n means no point reaches
+		// `from` at all, so the span starts after the route ends. Either
+		// way there is nothing to bracket.
+		return 0, 0, false
+	}
 }

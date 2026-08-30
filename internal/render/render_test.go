@@ -301,6 +301,217 @@ func TestRenderer_StaticPlusDynamicEqualsRenderExactly_HighlightWash(t *testing.
 	}
 }
 
+// buildTwoColourHighlightContext is buildHighlightContext with a SECOND
+// highlight, each carrying its own distinct background=, so a test built on
+// it can exercise Run's colour-keyed table of static wash bases (see
+// washBaseFor) with more than one entry. The single-highlight fixture above
+// can never do this: with only one highlight, the table can only ever hold
+// one entry, so it cannot distinguish a table indexed correctly from one
+// indexed by something else entirely (the highlight's own slice index, say,
+// or "whichever colour was built last") that happens to work when there is
+// only one possible answer.
+func buildTwoColourHighlightContext(t *testing.T, w, h int, fps float64) (*panel.Context, panel.Timeline, []panel.Highlight) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "activity.fit")
+	if err := fittest.WriteFile(path, shortOptions()); err != nil {
+		t.Fatalf("generating fixture: %v", err)
+	}
+	track, err := fitactivity.Decode(path)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	timer := fitactivity.BuildTimerModel(track)
+	highlights := []panel.Highlight{
+		{
+			Name: "first", From: 5 * time.Second, To: 15 * time.Second, RateFactor: 3,
+			Background: color.NRGBA{R: 0x1B, G: 0x2A, B: 0x4A, A: 0xFF}, HasBackground: true,
+		},
+		{
+			Name: "second", From: 20 * time.Second, To: 30 * time.Second, RateFactor: 3,
+			Background: color.NRGBA{R: 0xC8, G: 0x40, B: 0x20, A: 0xFF}, HasBackground: true,
+		},
+	}
+	tl, err := panel.NewTimelineForActivityWithHighlights(timer, fps, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithHighlights: %v", err)
+	}
+	ctx := &panel.Context{
+		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
+		Width: w, Height: h, FontScale: 0.05, Fonts: mustFaces(t),
+		Highlights: highlights, HighlightStyle: panel.HighlightStyleWash, HighlightTransition: 200 * time.Millisecond,
+	}
+	return ctx, tl, highlights
+}
+
+// TestRun_TwoDifferentlyColouredHighlightsMatchRenderAtAFrameInsideEach is
+// the gate the two-colour case needs, per docs/architecture.md and this
+// feature's own build plan: a table indexed by the wrong thing fails HERE
+// and only here.
+//
+// It runs the real fast loop (Run, which builds and reads r.washBases, the
+// colour-keyed table -- see washBaseFor) end to end, then compares a frame
+// deep inside EACH highlight against Render, the independent simple path,
+// which never reads that table at all and recomputes its own base from
+// washColorFor on every call (see renderBase). If the table were keyed by
+// the highlight's own index instead of its resolved colour, or collapsed
+// two distinct colours into one entry, at least one of the two frames below
+// would blend toward the wrong colour in Run's output while Render kept
+// resolving its own correctly, and the two would diverge in exactly the
+// pixels that colour touches.
+//
+// Verified load-bearing by hand while writing this test: temporarily keying
+// r.washBases in Run on the highlight's slice index rather than
+// r.washColorFor(i) left every OTHER test in this file green (none of them
+// configures two distinct colours) and made exactly this test fail, on the
+// second highlight, with a nonzero pixel count.
+func TestRun_TwoDifferentlyColouredHighlightsMatchRenderAtAFrameInsideEach(t *testing.T) {
+	ctx, tl, highlights := buildTwoColourHighlightContext(t, 160, 90, 10)
+	r, err := New(ctx, highlightMarkerLayout(markerPanel{name: "a", accept: true}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if highlights[0].Background == highlights[1].Background {
+		t.Fatal("precondition: the fixture's two highlights must use different colours, or this test cannot tell a correct table from a broken one")
+	}
+
+	sink := &recordingSink{}
+	if err := Run(context.Background(), r, sink, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for n, h := range highlights {
+		mid := (h.From + h.To) / 2
+		i := tl.IndexAt(mid)
+		f := r.Frame(i)
+		if f.Interval != n {
+			t.Fatalf("frame %d (t=%v) sits in interval %d, want highlight %d (%q); the fixture is wrong", i, mid, f.Interval, n, h.Name)
+		}
+		if f.IntervalWeight < 1 {
+			t.Fatalf("frame %d has IntervalWeight %v, want 1 at this highlight's own middle; the fixture's transition is too wide for this fixture's rate", i, f.IntervalWeight)
+		}
+
+		want := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.Render(want, f); err != nil {
+			t.Fatalf("Render(%d): %v", i, err)
+		}
+		if !bytes.Equal(sink.frames[i].Pix, want.Pix) {
+			t.Errorf("frame %d (highlight %q, colour %v): Run's fast loop differs from Render in %d pixels -- the wash-base table is indexed by the wrong thing",
+				i, h.Name, h.Background, countDiff(sink.frames[i], want))
+		}
+	}
+}
+
+// buildSameColourHighlightContext is buildTwoColourHighlightContext with
+// both highlights resolving to the exact SAME colour -- the fixture the
+// two-different-colour test above cannot produce. That test proves the
+// table is not indexed by the highlight's own slice index when the two
+// colours DIFFER; it says nothing about what happens when they agree. A
+// table indexed by highlight rather than by colour would still pass every
+// pixel comparison in this file, including the one above, because each
+// entry -- even a duplicate -- holds the right pixels regardless of how
+// many entries exist. Only counting, or identity-checking, the table's own
+// entries can catch that mistake, which is what the test below does.
+func buildSameColourHighlightContext(t *testing.T, w, h int, fps float64) (*panel.Context, panel.Timeline, []panel.Highlight) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "activity.fit")
+	if err := fittest.WriteFile(path, shortOptions()); err != nil {
+		t.Fatalf("generating fixture: %v", err)
+	}
+	track, err := fitactivity.Decode(path)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	timer := fitactivity.BuildTimerModel(track)
+	same := color.NRGBA{R: 0x1B, G: 0x2A, B: 0x4A, A: 0xFF}
+	highlights := []panel.Highlight{
+		{
+			Name: "first", From: 5 * time.Second, To: 15 * time.Second, RateFactor: 3,
+			Background: same, HasBackground: true,
+		},
+		{
+			Name: "second", From: 20 * time.Second, To: 30 * time.Second, RateFactor: 3,
+			Background: same, HasBackground: true,
+		},
+	}
+	tl, err := panel.NewTimelineForActivityWithHighlights(timer, fps, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithHighlights: %v", err)
+	}
+	ctx := &panel.Context{
+		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
+		Width: w, Height: h, FontScale: 0.05, Fonts: mustFaces(t),
+		Highlights: highlights, HighlightStyle: panel.HighlightStyleWash, HighlightTransition: 200 * time.Millisecond,
+	}
+	return ctx, tl, highlights
+}
+
+// TestRun_TwoHighlightsWithTheSameColourShareOneWashBase pins the memory
+// argument docs/architecture.md and this feature's own build plan make for
+// keying the wash-base table by colour rather than by highlight: "k
+// distinct wash colours cost k full-frame RGBA buffers", so two highlights
+// that type the SAME background= must cost ONE buffer, not two. See
+// buildSameColourHighlightContext's own doc comment for why no pixel
+// comparison, including TestRun_TwoDifferentlyColouredHighlightsMatchRenderAtAFrameInsideEach
+// above, can tell a table indexed by highlight from one indexed by colour
+// in this case -- only inspecting the table itself can.
+//
+// A declining panel is included deliberately: washColorFor/washBaseFor are
+// resolved in New from ctx.Highlights alone, before any panel's Prepare
+// runs at all, so the wash table's own size must not depend on which
+// panels were placed or declined -- a render with the marker strip alone,
+// and nothing else accepting, must still tint its whole background under
+// every highlight the user configured.
+func TestRun_TwoHighlightsWithTheSameColourShareOneWashBase(t *testing.T) {
+	ctx, tl, highlights := buildSameColourHighlightContext(t, 160, 90, 10)
+	if highlights[0].Background != highlights[1].Background {
+		t.Fatal("precondition: the fixture's two highlights must share one colour, or this test cannot tell a correct table from one indexed by highlight")
+	}
+	layout := highlightMarkerLayout(
+		markerPanel{name: "a", accept: true},
+		markerPanel{name: "declines", accept: false},
+	)
+	r, err := New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := r.Declined(); len(got) != 1 || got[0] != "declines" {
+		t.Fatalf("Declined() = %v, want [declines]", got)
+	}
+
+	sink := &recordingSink{}
+	if err := Run(context.Background(), r, sink, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := len(r.washBases); got != 1 {
+		t.Fatalf("Run built %d wash bases for two highlights sharing one colour, want 1 -- "+
+			"a table indexed by highlight rather than colour would build one entry per highlight regardless of whether their colours agree", got)
+	}
+	if r.washBaseFor(0) != r.washBaseFor(1) {
+		t.Error("the two highlights' own wash bases are different buffers; two highlights naming the same colour must share ONE, not build two")
+	}
+
+	// Belt and suspenders: correctness at the pixel level too, exactly like
+	// the two-different-colour test above, so this test cannot pass merely
+	// because it stopped checking pixels.
+	for n, h := range highlights {
+		mid := (h.From + h.To) / 2
+		i := tl.IndexAt(mid)
+		f := r.Frame(i)
+		if f.Interval != n {
+			t.Fatalf("frame %d sits in interval %d, want highlight %d (%q); the fixture is wrong", i, f.Interval, n, h.Name)
+		}
+		want := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.Render(want, f); err != nil {
+			t.Fatalf("Render(%d): %v", i, err)
+		}
+		if !bytes.Equal(sink.frames[i].Pix, want.Pix) {
+			t.Errorf("frame %d (highlight %q): Run's fast loop differs from Render in %d pixels",
+				i, h.Name, countDiff(sink.frames[i], want))
+		}
+	}
+}
+
 // TestRenderer_HighlightBorderRampsAndStaysInsideTheMargin pins step 6's own
 // contract for the accent border: it draws nothing outside a highlight, it
 // ramps rather than cutting (a mid-transition frame is neither absent nor at

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 	"time"
@@ -181,7 +182,7 @@ func syntheticTimer(totalElapsed time.Duration, pauses ...[2]time.Duration) *fit
 // set resolves to nil rather than an error -- a highlight panel's Accepts
 // declines on exactly this, and it is a fact about the flags, not a failure.
 func TestResolveHighlights_NoneGivenIsNotAnError(t *testing.T) {
-	got, err := resolveHighlights(nil, syntheticTimer(30*time.Minute))
+	got, err := resolveHighlights(nil, syntheticTimer(30*time.Minute), panel.HighlightStyleBorder)
 	if err != nil {
 		t.Fatalf("resolveHighlights(nil, ...): %v", err)
 	}
@@ -198,7 +199,7 @@ func TestResolveHighlights_SortsByStart(t *testing.T) {
 		"from=20m,to=21m,name=Second",
 		"from=5m,to=6m,name=First",
 	}
-	got, err := resolveHighlights(raw, syntheticTimer(30*time.Minute))
+	got, err := resolveHighlights(raw, syntheticTimer(30*time.Minute), panel.HighlightStyleBorder)
 	if err != nil {
 		t.Fatalf("resolveHighlights: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestResolveHighlights_SortsByStart(t *testing.T) {
 // it and marked Clipped, rather than refused or silently dropped.
 func TestResolveHighlights_ClipsToTheActivitysEnd(t *testing.T) {
 	timer := syntheticTimer(25*time.Minute + 53*time.Second)
-	got, err := resolveHighlights([]string{"from=25m,to=40m,name=Final push"}, timer)
+	got, err := resolveHighlights([]string{"from=25m,to=40m,name=Final push"}, timer, panel.HighlightStyleBorder)
 	if err != nil {
 		t.Fatalf("resolveHighlights: %v", err)
 	}
@@ -236,10 +237,10 @@ func TestResolveHighlights_ClipsToTheActivitysEnd(t *testing.T) {
 // well-defined nearest frame, so it is refused rather than clamped.
 func TestResolveHighlights_RejectsFromAtOrPastTheEnd(t *testing.T) {
 	timer := syntheticTimer(25 * time.Minute)
-	if _, err := resolveHighlights([]string{"from=25m,to=26m"}, timer); err == nil {
+	if _, err := resolveHighlights([]string{"from=25m,to=26m"}, timer, panel.HighlightStyleBorder); err == nil {
 		t.Fatal("a highlight starting exactly at the activity's end was accepted")
 	}
-	if _, err := resolveHighlights([]string{"from=40m,to=41m"}, timer); err == nil {
+	if _, err := resolveHighlights([]string{"from=40m,to=41m"}, timer, panel.HighlightStyleBorder); err == nil {
 		t.Fatal("a highlight starting well past the activity's end was accepted")
 	}
 }
@@ -254,7 +255,7 @@ func TestResolveHighlights_RejectsOverlapButAllowsTouchingEndpoints(t *testing.T
 	if _, err := resolveHighlights([]string{
 		"from=5m,to=10m,name=A",
 		"from=9m,to=12m,name=B",
-	}, timer); err == nil {
+	}, timer, panel.HighlightStyleBorder); err == nil {
 		t.Fatal("overlapping highlights were accepted")
 	} else if !strings.Contains(err.Error(), "A") || !strings.Contains(err.Error(), "B") {
 		t.Errorf("the overlap error should name both highlights; got: %v", err)
@@ -263,7 +264,7 @@ func TestResolveHighlights_RejectsOverlapButAllowsTouchingEndpoints(t *testing.T
 	got, err := resolveHighlights([]string{
 		"from=5m,to=10m,name=A",
 		"from=10m,to=12m,name=B",
-	}, timer)
+	}, timer, panel.HighlightStyleBorder)
 	if err != nil {
 		t.Fatalf("touching endpoints were refused: %v", err)
 	}
@@ -283,7 +284,7 @@ func TestResolveHighlights_MarksWhatLiesInAPause(t *testing.T) {
 	got, err := resolveHighlights([]string{
 		"from=10m10s,to=10m50s,name=Water stop",
 		"from=20m,to=21m,name=Sprint",
-	}, timer)
+	}, timer, panel.HighlightStyleBorder)
 	if err != nil {
 		t.Fatalf("resolveHighlights: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestResolveHighlights_StraddlingAPauseBoundaryIsNotPausedThroughout(t *test
 		// ends. Two of this highlight's three minutes are real, unfrozen
 		// activity.
 		"from=9m,to=12m,name=Straddling",
-	}, timer)
+	}, timer, panel.HighlightStyleBorder)
 	if err != nil {
 		t.Fatalf("resolveHighlights: %v", err)
 	}
@@ -344,5 +345,115 @@ func TestParseHighlightStyle_RefusesUnknownValues(t *testing.T) {
 	}
 	if _, err := parseHighlightStyle("glow"); err == nil {
 		t.Error("parseHighlightStyle accepted an unknown value")
+	}
+}
+
+// TestParseHighlight_ParsesBackground pins background='s hex grammar: leading
+// "#" required, #RGB and #RRGGBB accepted case-insensitively, and both
+// stored as an opaque color.NRGBA with HasBackground set.
+func TestParseHighlight_ParsesBackground(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want color.NRGBA
+	}{
+		{
+			name: "six-digit hex",
+			in:   "from=1m,to=2m,background=#1B2A4A",
+			want: color.NRGBA{R: 0x1B, G: 0x2A, B: 0x4A, A: 0xFF},
+		},
+		{
+			name: "six-digit hex, lower case",
+			in:   "from=1m,to=2m,background=#1b2a4a",
+			want: color.NRGBA{R: 0x1B, G: 0x2A, B: 0x4A, A: 0xFF},
+		},
+		{
+			name: "three-digit hex expands each digit",
+			in:   "from=1m,to=2m,background=#1AF",
+			want: color.NRGBA{R: 0x11, G: 0xAA, B: 0xFF, A: 0xFF},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseHighlight(c.in)
+			if err != nil {
+				t.Fatalf("parseHighlight(%q): %v", c.in, err)
+			}
+			if !got.HasBackground {
+				t.Fatalf("parseHighlight(%q).HasBackground = false, want true", c.in)
+			}
+			if got.Background != c.want {
+				t.Errorf("parseHighlight(%q).Background = %+v, want %+v", c.in, got.Background, c.want)
+			}
+		})
+	}
+
+	// No background= at all is legal and leaves HasBackground false -- the
+	// project's own presence-flag rule, not a zero colour standing in for
+	// "unset".
+	got, err := parseHighlight("from=1m,to=2m")
+	if err != nil {
+		t.Fatalf("parseHighlight: %v", err)
+	}
+	if got.HasBackground {
+		t.Error("no background= field set HasBackground true")
+	}
+	if got.Background != (color.NRGBA{}) {
+		t.Errorf("no background= field left Background = %+v, want the zero value", got.Background)
+	}
+}
+
+// TestParseHighlight_RejectsMalformedBackground pins the refusals a naive
+// reading of "hex colour" would not think to add: no bare named colour, no
+// alpha channel, no wrong-length hex.
+func TestParseHighlight_RejectsMalformedBackground(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantErr string
+	}{
+		{"a named colour has no table to look it up in", "from=1m,to=2m,background=blue", `must start with "#"`},
+		{"no leading #", "from=1m,to=2m,background=1B2A4A", `must start with "#"`},
+		{"an alpha channel is refused, not silently dropped", "from=1m,to=2m,background=#1B2A4A80", "opaque only"},
+		{"the wrong digit count", "from=1m,to=2m,background=#1B2A", "not #RGB or #RRGGBB"},
+		{"non-hex digits", "from=1m,to=2m,background=#GGGGGG", "not valid hex"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := parseHighlight(c.in)
+			if err == nil {
+				t.Fatalf("parseHighlight(%q) accepted it", c.in)
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("parseHighlight(%q) error = %v, want it to mention %q", c.in, err, c.wantErr)
+			}
+		})
+	}
+}
+
+// TestResolveHighlights_RefusesBackgroundUnderNonWashStyles pins the
+// USER-APPROVED ruling: background= has no meaning outside
+// --highlight-style wash, and is refused there rather than silently ignored
+// (this project's characteristic bug in flag form) or auto-upgraded to wash
+// (which would override a style the user may have typed on purpose).
+func TestResolveHighlights_RefusesBackgroundUnderNonWashStyles(t *testing.T) {
+	timer := syntheticTimer(30 * time.Minute)
+	raw := []string{"from=5m,to=10m,name=Climb,background=#1B2A4A"}
+
+	if _, err := resolveHighlights(raw, timer, panel.HighlightStyleWash); err != nil {
+		t.Fatalf("background= under --highlight-style wash was refused: %v", err)
+	}
+
+	for _, style := range []string{panel.HighlightStyleBorder, panel.HighlightStyleNone} {
+		_, err := resolveHighlights(raw, timer, style)
+		if err == nil {
+			t.Fatalf("background= under --highlight-style %s was accepted", style)
+		}
+		if !strings.Contains(err.Error(), "--highlight-style wash") {
+			t.Errorf("the error should name --highlight-style wash; got: %v", err)
+		}
+		if style == panel.HighlightStyleNone && !strings.Contains(err.Error(), "leaves the frame itself unmarked") {
+			t.Errorf("the --highlight-style none error should also explain what none itself does; got: %v", err)
+		}
 	}
 }

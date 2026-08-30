@@ -10,10 +10,10 @@ fitdash activity.fit --video-duration 3m
 ```
 
 Eight panels ship today: the route, an elapsed/active clock, distance, heart rate, pace,
-power, cadence, and an elevation profile — plus a ninth, the highlight strip, which appears
-only when `--highlight` gives it something to show. Panels that have no data in a given
-activity decline, and the layout closes up around them — an indoor ride simply has no route
-panel, and the summary says so by name rather than leaving an unexplained gap.
+power, cadence, and an elevation profile — plus a ninth, the marker strip, which appears
+only when `--highlight` or `--label` gives it something to mark. Panels that have no data in
+a given activity decline, and the layout closes up around them — an indoor ride simply has
+no route panel, and the summary says so by name rather than leaving an unexplained gap.
 
 `--layout` picks the arrangement (`auto`, which follows the frame's shape, or `landscape`
 or `portrait` forced) and `--theme` the palette (`dark` or `light`).
@@ -69,13 +69,51 @@ than leaving the discrepancy to be noticed. Re-solving the base so the total hel
 seconds was the alternative, and it was rejected — adding one highlight would then silently
 change the pace of everything else in the render.
 
-`--highlight-style` chooses the on-screen mark: `border` (the default) draws an accent
-border in the frame's margin, which is the one band the layout guarantees is empty, and
-lights the highlight's block on the strip; `wash` additionally tints the background; `none`
-re-paces without marking, leaving the strip alone to say where the highlights fall.
-`--highlight-transition` sets how long the mark takes to ramp in and out, measured in video
-time rather than activity time, because how fast a fade reads depends on the video's clock
-and nothing else.
+`--highlight-style` chooses how the *frame* is marked while a highlight plays: `border` (the
+default) draws an accent border in the frame's margin, which is the one band the layout
+guarantees is empty; `wash` tints the whole background instead; `none` re-paces without
+marking the frame at all. Two marks are drawn whatever the style says, because they are
+about *where* the highlights are rather than about the frame you are looking at: the marker
+strip lights each highlight's block on a ribbon of the video's own timeline, and the route
+draws that stretch of the outline in the same colour. Both are lit from the first frame and
+brighten while the highlight plays, so you can see where a highlight lies before the render
+reaches it. A highlight whose range contains no GPS fix at all cannot be placed on the
+route, and the summary names it and says it went unmarked rather than leaving a mark
+silently missing. `--highlight-transition` sets how long a mark takes to ramp in and out —
+and a `--label`'s too — measured in video time rather than activity time, because how fast a
+fade reads depends on the video's clock and nothing else.
+
+**A highlight can name the colour it washes to.** `--highlight
+'from=10m,to=11m,video=10s,background=#1B2A4A'` gives that one highlight its own background,
+and the colour arrives exactly as typed: at full strength, not the 22% blend toward the
+accent that the uncoloured default uses, because a colour you chose *as* a background should
+not come back as a fraction of itself you can neither predict nor match against anything
+else in your video. Hex only — `#RGB` or `#RRGGBB`, with the `#` required so that
+`background=blue` is an error rather than something quietly parsed — and opaque, since there
+is nothing behind the frame for an alpha channel to reveal. The key means something only
+under `--highlight-style wash`, so under `border` or `none` it is refused with an error
+naming that style, rather than being accepted and doing nothing. A colour that leaves the
+dashboard hard to read is warned about and rendered anyway: the readings are checked against
+WCAG 2's 4.5:1, and the deliberately recessive chrome and placeholder colours against a
+lower floor of their own, since a moody near-black wash may be exactly what you asked for
+and the choice is one flag to reverse.
+
+**A single moment can be given a name.** `--label 'at=12m30s,name=Lighthouse,video=3s'`
+puts a name on screen and changes nothing else — no re-pacing, no border, no wash. `at` is
+an offset into the activity's elapsed time, the same clock as `--highlight from`; `video`
+is how long the name stays up, and it is *video* time, defaulting to three seconds,
+because at 60× a five-second stretch of activity is two frames and a label timed on the
+activity's clock would be invisible at any ordinary compression. The name is required,
+which a highlight's is not: a nameless highlight still lights a block and marks the
+margin, while a nameless label is nothing at all. The flag is repeatable, each label puts
+a tick on the marker strip, and two labels whose on-screen spans would overlap are not
+refused the way two overlapping highlights are — the earlier name is truncated to end
+where the next begins, and the summary says which. Overlapping highlights have no obvious
+composition, but "show each name until the next arrives" is the plain reading of a
+sequence of instants, and the collision is in video time between two moments you typed in
+activity time, which is arithmetic nobody can do in their head. Two labels at the *same*
+instant are still refused: that is a typo, not a range. Marking a label on the route
+itself is the obvious next step and is not built.
 
 **Cadence means different things to different sports.** FIT records it as revolutions per
 minute — crank revolutions on a bike, which is what a cyclist reads, but revolutions *per

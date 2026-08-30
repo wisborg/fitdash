@@ -172,6 +172,13 @@ type Context struct {
 	// face the first already holds, and at 45,000 frames that is not a
 	// rounding error.
 	Fonts *FaceCache
+
+	// Labels is the resolved, sorted set of --label instants, or nil when
+	// none were given -- the label analogue of Highlights, for the same
+	// reason: MarkerPanel reads it in Accepts (nil or empty means nothing to
+	// show, unless a highlight is also configured) and in Prepare, to place
+	// every label's tick and size its name once rather than per frame.
+	Labels []Label
 }
 
 // BasePx is the layout's base text size in pixels for this frame size.
@@ -271,4 +278,17 @@ type Frame struct {
 	// two-layers-drew-and-disagreed failure this architecture exists to
 	// prevent.
 	IntervalWeight float64
+
+	// Label is this frame's position in Context.Labels, or NoLabel when it
+	// belongs to none -- the label analogue of Interval, for the same
+	// reason given on that field's own comment: an index alone, not an
+	// index plus a HasLabel bool, because index 0 is a legitimate label and
+	// the two fields could otherwise disagree.
+	Label int
+
+	// LabelWeight is the label analogue of IntervalWeight: the same 0->1->0
+	// ramp across a label's own entrance and exit transition, built from
+	// the same shared rampWeight arithmetic (see LabelAt) so a highlight's
+	// ramp and a label's cannot drift a frame apart.
+	LabelWeight float64
 }

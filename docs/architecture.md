@@ -344,6 +344,89 @@ make the next smoothly-animating panel look like a regression.
 Parallel frame rendering is not built. The door is held open by one rule, that `Dynamic`
 must not mutate the Painter, and nothing more.
 
+### Marking a highlight: one base per colour, and one index rule
+
+Two decisions inside the highlight marks are invisible in the output, cheap to "simplify"
+and expensive to put back, so they are recorded here rather than left to be re-derived from
+the code.
+
+**The wash is a colour-keyed table of static bases, built eagerly.** Under
+`--highlight-style wash` the frame is drawn over a different background while a highlight
+plays, and a highlight's own `background=` names that colour outright. The mechanism is one
+full static base per *distinct* wash colour, built by `Run` before its loop starts and
+looked up per frame. What lives where is the whole of it: `washColors` — each highlight's
+resolved colour — and `washBases` — colour → base — are `Renderer` fields, computed once per
+render; the only per-frame inputs are `Frame.Interval`, which picks the base, and
+`Frame.IntervalWeight`, which says how far to blend toward it. A highlight with no
+`background=` is deliberately not a branch: it resolves to the theme's own derived tint and
+goes into the same table under the same key, so two highlights naming the same colour share
+one buffer and the loop never has to know which *highlight* is playing, only which colour.
+
+The thriftier-looking alternative is two bases, with the alternate rebuilt each time the
+render crosses into the next highlight. Highlights cannot overlap, so at most one is active
+per frame and two buffers would suffice. It was rejected because the *compute* is identical
+either way — one static render per distinct colour — so rebuilding buys only memory, and it
+pays for that with mutable cache state inside the frame loop, written by `Run` and not by
+`Render`. Two paths that differ in what they cache is precisely the shape of bug the
+static/dynamic equality test exists to catch, and here it would catch this one only if the
+fixture happened to render two differently-coloured highlights — the same "every fixture was
+below the cap" blindness that hid the route-dot bug in the parenthetical above. It would
+also close the parallel-frames door that "`Dynamic` must not mutate the Painter" holds
+open, for a feature with no performance case. The memory is stated plainly instead:
+*k* distinct colours cost *k* full-frame buffers, 8.3 MB each at 1080p and 33.2 MB at 4K, so
+three colours at 4K is about 100 MB on a program that renders thirty-second videos. If that
+ever stops being acceptable, `washBaseFor` is the seam a lazy implementation drops into
+without touching a caller.
+
+`Render`, the simple path, recomputes its own base per call and never reads the table. That
+looks like duplicated work waiting to be removed, and removing it would be a mistake: it is
+what keeps the equality test a test *of* the table rather than a comparison of the table
+with itself.
+
+**The background mask is wrong, and attractively so.** It is named here because it will
+otherwise be rediscovered: one 8-bit buffer marking every pixel equal to `Theme.Background`,
+recoloured per frame, with no second base at all. Antialiased glyph edges are
+`a·ink + (1−a)·bg` — they are *not* equal to the background, so a mask misses them and every
+reading and label comes out ringed in an un-washed halo. Blending two *full* bases is exact
+at those same edges for a reason the mask cannot inherit:
+`blend(a·ink + (1−a)·bg₁, a·ink + (1−a)·bg₂, w) = a·ink + (1−a)·blend(bg₁, bg₂, w)`, so the
+ink term passes through the interpolation untouched.
+
+**A highlight's route mark is resolved against the drawn, thinned outline.**
+`route.SpanIndices` searches the same downsampled list the outline is drawn from, never the
+full fix list — the *opposite* of the rule for the position dot in the parenthetical above,
+and the two must not be reconciled into one. The dot answers "where is it right now", which
+the thinned list quantises into 29-second freezes; the mark answers "which part of the drawn
+line is this", and a span resolved against every fix would name vertices the outline never
+draws, leaving a coloured line floating beside the dim one instead of lying on it. Each is
+right to use the list the other must not, and a reader who has internalised the dot bug is
+the one most likely to "fix" this into it.
+
+The genuine hazard is not which list but what the thinning does to a short highlight. At the
+cap of 500 drawn points a four-hour ride puts 29 seconds between consecutive vertices, so
+any highlight shorter than that stride contains no drawn vertex at all, and the obvious
+implementation strokes a one-vertex polyline, which draws nothing — a highlight the user
+asked for, silently unmarked. `SpanIndices` returns the single chord straddling the span
+instead: the mark placed at the resolution the outline was actually drawn at, the same
+reasoning the marker strip already applies to a block that would otherwise round away to
+nothing. A span lying entirely before the first fix or after the last is a different case
+and returns `ok = false`; widening there would draw a mark claiming the activity passed
+through a place, and this program does not invent claims about position. The panel draws
+nothing for such a highlight and `cmd` reports it by name in the summary, through the same
+`SpanIndices` call over the same thinned list, so the two cannot come to disagree.
+
+None of it is testable below the cap, where the drawn list and the fix list are identical
+and every stride is a single sample. The panel tests therefore use a 3,000-point fixture,
+six times the cap, whose drawn vertices land about six seconds apart, and each states in its
+own comment that a fixture under the cap could not have failed it — the same sentence the
+dot bug's own regression test already carries.
+
+Finally, the mark's geometry is computed in `Prepare` and stroked in `Dynamic`, which reads
+like static content stranded in the wrong pass. It is not. `Dynamic` draws the covered
+prefix over the outline and wider than it, so a mark drawn into the static base is erased
+the moment the playhead passes over it. The coordinates are per-render Painter fields; only
+the stroke is per-frame, and `Dynamic` still mutates nothing.
+
 ## Timeline: elapsed
 
 ```go

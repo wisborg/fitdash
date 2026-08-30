@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"image/color"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/wisborg/fitdash/internal/panel"
 	"github.com/wisborg/fitdash/internal/progress"
 	"github.com/wisborg/fitdash/internal/render"
+	"github.com/wisborg/fitdash/internal/route"
 )
 
 type renderOptions struct {
@@ -39,6 +41,7 @@ type renderOptions struct {
 	highlights          []string
 	highlightStyle      string
 	highlightTransition time.Duration
+	labels              []string
 }
 
 // validateRenderOptions rejects flag combinations that cannot mean what they
@@ -136,18 +139,31 @@ func bindRenderFlags(c *cobra.Command) {
 		"mark a stretch of the activity for its own on-screen pace and treatment (repeatable). Comma-separated "+
 			"key=value fields: from=DURATION and to=DURATION (both required, Go duration syntax into the activity's "+
 			"ELAPSED time, e.g. 12m30s), name=TEXT (optional, free text; a literal comma needs \\, and a literal "+
-			"backslash needs \\\\), and video=DURATION or speedup=N (optional, mutually exclusive -- how much video "+
-			"this stretch should take, or its own compression factor; neither means mark it without re-pacing it). "+
+			"backslash needs \\\\), video=DURATION or speedup=N (optional, mutually exclusive -- how much video "+
+			"this stretch should take, or its own compression factor; neither means mark it without re-pacing it), "+
+			"and background=#RRGGBB or #RGB (optional, hex only, opaque only -- the exact colour the frame washes "+
+			"to while this highlight is active; only meaningful under --highlight-style wash, and refused under "+
+			"any other style). "+
 			"Example: --highlight 'from=12m30s,to=16m10s,video=10s,name=Hill climb'")
 	f.StringVar(&renderOpts.highlightStyle, "highlight-style", panel.HighlightStyleBorder,
 		"how a highlight is marked on screen -- \"border\" (default: an accent border in the frame's margin, plus "+
-			"the highlight strip), \"wash\" (additionally tints the whole background -- costs a second static base "+
-			"and a full-frame blend per frame), or \"none\" (re-pace only, with the highlight strip still marking "+
-			"where the highlights are)")
+			"the marker strip), \"wash\" (additionally tints the whole background toward the highlight's own "+
+			"background=, or the theme's own tint when it has none -- costs one static base per DISTINCT wash "+
+			"colour, plus a full-frame blend per frame), or \"none\" (re-pace only, with the marker strip still "+
+			"marking where the highlights are; background= is refused under this style too)")
 	f.DurationVar(&renderOpts.highlightTransition, "highlight-transition", 400*time.Millisecond,
 		"how much VIDEO time a highlight's on-screen mark takes to appear and to disappear at each end -- video "+
 			"time, not activity time, because this is a perceptual ramp and should look the same however compressed "+
-			"the render is. 0 makes it a hard cut")
+			"the render is. Also governs a --label's own fade in and out. 0 makes it a hard cut")
+	f.StringArrayVar(&renderOpts.labels, "label", nil,
+		"call out an instant in the activity by name (repeatable). Comma-separated key=value fields: "+
+			"at=DURATION and name=TEXT (both required -- Go duration syntax into the activity's ELAPSED time for at, "+
+			"e.g. 12m30s; a literal comma in name needs \\, and a literal backslash needs \\\\; a label with no name "+
+			"draws nothing at all, unlike a --highlight), and video=DURATION (optional, VIDEO time, default 3s -- "+
+			"how long the name stays on screen, starting AT the instant rather than centred on it). Two labels "+
+			"whose on-screen spans would overlap are not refused: the earlier one is truncated to end where the "+
+			"next begins, and it is reported. --highlight-transition governs a label's fade too. "+
+			"Example: --label 'at=12m30s,name=Lighthouse,video=3s'")
 }
 
 // runRender is the root command: fitdash ACTIVITY.fit.
@@ -176,11 +192,15 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	highlights, err := resolveHighlights(renderOpts.highlights, timer)
+	// Resolved BEFORE resolveHighlights, rather than after as it used to be:
+	// a background= only has meaning under --highlight-style wash, and
+	// refusing it under any other style (see backgroundStyleError) needs the
+	// style in scope at the point each highlight is resolved.
+	highlightStyle, err := parseHighlightStyle(renderOpts.highlightStyle)
 	if err != nil {
 		return err
 	}
-	highlightStyle, err := parseHighlightStyle(renderOpts.highlightStyle)
+	highlights, err := resolveHighlights(renderOpts.highlights, timer, highlightStyle)
 	if err != nil {
 		return err
 	}
@@ -192,6 +212,16 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// the whole point of funnelling both through one segment builder rather
 	// than branching here on whether any were configured.
 	timeline, err := panel.NewTimelineForActivityWithHighlights(timer, renderOpts.fps, speedup, highlights)
+	if err != nil {
+		return err
+	}
+	// Labels are resolved HERE, after the Timeline exists, rather than
+	// beside resolveHighlights just above despite the obvious surface
+	// symmetry of the two flags. See resolveLabels' own doc comment for
+	// why: the overlap it checks for is in VIDEO time, and video time does
+	// not exist until this Timeline -- itself built from the highlights --
+	// has been constructed.
+	labels, err := resolveLabels(renderOpts.labels, timeline)
 	if err != nil {
 		return err
 	}
@@ -226,27 +256,67 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Highlights:          highlights,
 		HighlightStyle:      highlightStyle,
 		HighlightTransition: renderOpts.highlightTransition,
+		Labels:              labels,
 	}
 	r, err := render.New(rctx, layout, theme)
 	if err != nil {
 		return err
 	}
 
-	if renderOpts.frames {
-		return runFrames(cmd, r, timeline, activity, layout.Name, theme.Name, smoothing, highlights)
+	in := renderInputs{
+		track: track, tl: timeline, w: w, h: h,
+		layoutName: layout.Name, theme: theme, smoothing: smoothing,
+		highlights: highlights, labels: labels,
 	}
-	return runVideo(cmd, r, timeline, activity, w, h, layout.Name, theme.Name, smoothing, highlights)
+	if renderOpts.frames {
+		return runFrames(cmd, r, in)
+	}
+	return runVideo(cmd, r, activity, in)
+}
+
+// renderInputs bundles the values runRender resolves before building the
+// Renderer, so runVideo, runFrames and writeRenderSummary take one value
+// instead of a long positional list threaded through unchanged from
+// runRender. Introduced because runVideo and writeRenderSummary had each
+// grown past ten parameters, most of them the same bag threaded straight
+// through, and several adjacent same-typed parameters (two ints, a
+// []panel.Highlight next to a []panel.Label) made a transposition at a
+// call site something the compiler would wave through.
+//
+// A plain data holder, not a type with behaviour of its own: everything in
+// it was already validated by whichever function produced it --
+// resolveHighlights, resolveLabels, panel.SelectLayout, panel.SelectTheme,
+// resolveSmoothing, parseSize -- and a method here would blur which of
+// those owns the rule.
+//
+// Deliberately NOT *panel.Context, though the two overlap (both carry the
+// track, the highlights and the labels): writeHighlightSummary,
+// writePanelSummary and writeLabelSummary are each exercised directly by
+// tests that build a bare Timeline with no Context at all, and folding this
+// into Context would drag those tests into constructing one just to call a
+// summary function. This bundles only runVideo, runFrames and
+// writeRenderSummary -- the three functions with no such test and no
+// business being called with anything but runRender's own resolved values.
+type renderInputs struct {
+	track      *fitactivity.Track
+	tl         panel.Timeline
+	w, h       int
+	layoutName string
+	theme      panel.Theme
+	smoothing  panel.Smoothing
+	highlights []panel.Highlight
+	labels     []panel.Label
 }
 
 // runVideo encodes the whole render to a video file.
-func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity string, w, h int, layoutName, themeName string, smoothing panel.Smoothing, highlights []panel.Highlight) error {
+func runVideo(cmd *cobra.Command, r *render.Renderer, activity string, in renderInputs) error {
 	out, err := outputPath(activity, renderOpts.output, renderOpts.outputDir, ".mp4")
 	if err != nil {
 		return err
 	}
 
 	sink, err := encode.OpenVideo(cmd.Context(), encode.Config{
-		OutputPath: out, Width: w, Height: h, FPS: tl.FPS(), CRF: renderOpts.crf,
+		OutputPath: out, Width: in.w, Height: in.h, FPS: in.tl.FPS(), CRF: renderOpts.crf,
 	})
 	if err != nil {
 		return err
@@ -269,7 +339,7 @@ func runVideo(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activit
 	// The path goes to stdout so it can be piped; everything else is
 	// commentary and goes to stderr.
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
-	writeRenderSummary(cmd, r, tl, w, h, layoutName, themeName, smoothing, highlights)
+	writeRenderSummary(cmd, r, in)
 	return nil
 }
 
@@ -407,7 +477,7 @@ func baseSpeedupNote(s float64, hasHighlights bool) string {
 // the pixels and false in the user's understanding of them: they see a
 // dashboard with no power reading and have no way to tell whether their file
 // lacks power, or fitdash does.
-func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, w, h int, layoutName, themeName string, smoothing panel.Smoothing, highlights []panel.Highlight) {
+func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs) {
 	if renderOpts.quiet {
 		return
 	}
@@ -423,11 +493,12 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timelin
 	// baseSpeedupNote, with the full base-plus-highlights decomposition
 	// following in writeHighlightSummary below.
 	fmt.Fprintf(out, "%d frames, %s of activity in %s of video%s, %s fps, %dx%d\n",
-		tl.Frames(), panel.FormatClock(tl.ActivityDuration()), panel.FormatClock(tl.Duration()),
-		baseSpeedupNote(tl.BaseSpeedup(), len(highlights) > 0), strconv.FormatFloat(tl.FPS(), 'f', -1, 64), w, h)
+		in.tl.Frames(), panel.FormatClock(in.tl.ActivityDuration()), panel.FormatClock(in.tl.Duration()),
+		baseSpeedupNote(in.tl.BaseSpeedup(), len(in.highlights) > 0), strconv.FormatFloat(in.tl.FPS(), 'f', -1, 64), in.w, in.h)
 
-	writePanelSummary(cmd, r, tl, layoutName, themeName, smoothing)
-	writeHighlightSummary(cmd, tl, highlights, smoothing)
+	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
+	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme)
+	writeLabelSummary(cmd, in.labels, renderOpts.highlightTransition)
 }
 
 // writePanelSummary reports the arrangement and, crucially, which panels were
@@ -460,11 +531,11 @@ func smoothingNote(s panel.Smoothing, tl panel.Timeline) string {
 	return s.Window.Round(time.Second).String()
 }
 
-// highlightPanelName is the highlight panel's own Name(), used below to split
-// it out of the ordinary "carries no such data" decline heading. Read from
-// the panel itself rather than restated as a string literal, so the two
-// cannot drift apart the way a hand-copied name could.
-var highlightPanelName = panel.HighlightPanel{}.Name()
+// markerPanelName is the marker panel's own Name(), used below to split it
+// out of the ordinary "carries no such data" decline heading. Read from the
+// panel itself rather than restated as a string literal, so the two cannot
+// drift apart the way a hand-copied name could.
+var markerPanelName = panel.MarkerPanel{}.Name()
 
 func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, layoutName, themeName string, smoothing panel.Smoothing) {
 	if renderOpts.quiet {
@@ -478,15 +549,15 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline
 	fmt.Fprintf(out, "layout %s, theme %s, smoothing %s\n", layoutName, themeName, smoothingNote(smoothing, tl))
 	fmt.Fprintf(out, "panels: %s\n", strings.Join(drew, ", "))
 
-	// Two decline reasons, not one. The highlight panel declines because no
-	// --highlight was given at all -- a fact about the FLAGS -- and printing
-	// its name under "this activity carries no such data" would tell the
-	// user their FIT file lacks something no FIT file has ever carried. Every
-	// other panel's decline IS a fact about the activity, so it keeps the
-	// original heading.
+	// Two decline reasons, not one. The marker panel declines because
+	// neither --highlight nor --label was given at all -- a fact about the
+	// FLAGS -- and printing its name under "this activity carries no such
+	// data" would tell the user their FIT file lacks something no FIT file
+	// has ever carried. Every other panel's decline IS a fact about the
+	// activity, so it keeps the original heading.
 	var dataDeclined, configDeclined []string
 	for _, name := range r.Declined() {
-		if name == highlightPanelName {
+		if name == markerPanelName {
 			configDeclined = append(configDeclined, name)
 			continue
 		}
@@ -496,15 +567,17 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline
 		fmt.Fprintf(out, "declined (this activity carries no such data): %s\n", strings.Join(dataDeclined, ", "))
 	}
 	if len(configDeclined) > 0 {
-		fmt.Fprintf(out, "declined (no --highlight given): %s\n", strings.Join(configDeclined, ", "))
+		fmt.Fprintf(out, "declined (no --highlight or --label given): %s\n", strings.Join(configDeclined, ", "))
 	}
 }
 
 // writeHighlightSummary reports the base/highlight decomposition, one line
-// per highlight naming its own pace, and a warning for each of the three
+// per highlight naming its own pace, a warning for each of the three
 // surprises resolveHighlights marks as "adjusted, and reported" rather than
-// fatal: a clipped end, a highlight forced down to one frame, and one lying
-// wholly inside a paused stretch.
+// fatal (a clipped end, a highlight forced down to one frame, one lying
+// wholly inside a paused stretch), and -- for a highlight with its own
+// background= -- the resolved colour and a legibility warning against
+// theme.
 //
 // Printed only when at least one highlight was configured, so an ordinary
 // render without --highlight prints none of this -- keeping its summary
@@ -515,11 +588,29 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline
 // highlightSmoothingNote -- see smoothingNote's doc comment for why that
 // figure moved out of the plain "smoothing auto" line once a render could
 // carry more than one window.
-func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, highlights []panel.Highlight, smoothing panel.Smoothing) {
+//
+// track is here for exactly one thing: reporting a highlight whose span has
+// no GPS fix anywhere near it, so RoutePanel could not mark it on the map
+// (see route.SpanIndices). track may be nil in a test exercising the rest of
+// this table, in which case route.FromTrack(nil, ...) returns no points and
+// that check is silently skipped -- correct, since a nil track carries no
+// route to report against, not a bug in the check.
+func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, highlights []panel.Highlight, smoothing panel.Smoothing, theme panel.Theme) {
 	if renderOpts.quiet || len(highlights) == 0 {
 		return
 	}
 	out := cmd.ErrOrStderr()
+
+	// The SAME thinned list RoutePanel itself draws the outline from, and
+	// the SAME route.SpanIndices call its Prepare uses to resolve a
+	// highlight's mark -- re-deriving the predicate here, even loosely,
+	// would risk this line disagreeing with what the panel actually drew.
+	// Fewer than two points means RoutePanel.Accepts already declined and
+	// there is no route for any highlight to be reported against at all
+	// (see the plan's own "activity has no route at all: nothing to
+	// decide" case).
+	routePts := route.FromTrack(track, route.DefaultMaxPoints)
+	canMarkRoute := len(routePts) >= 2
 
 	// The base figure is what the WHOLE activity would have rendered to at
 	// the base rate alone, with no highlight re-pacing anything -- exactly
@@ -555,7 +646,94 @@ func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, highlights []p
 			fmt.Fprintf(out, "highlight %s lies inside a paused stretch; the dashboard is frozen through it\n",
 				highlightSummaryName(h))
 		}
+		if h.HasBackground {
+			fmt.Fprintf(out, "highlight %s background %s\n", highlightSummaryName(h), formatHexColor(h.Background))
+			for _, warning := range backgroundContrastWarnings(theme, h.Background) {
+				fmt.Fprintf(out, "highlight %s background %s\n", highlightSummaryName(h), warning)
+			}
+		}
+		if canMarkRoute {
+			start := tl.Start()
+			if _, _, ok := route.SpanIndices(routePts, start.Add(h.From), start.Add(h.To)); !ok {
+				fmt.Fprintf(out, "highlight %s has no GPS fixes; it is not marked on the route\n", highlightSummaryName(h))
+			}
+		}
 	}
+}
+
+// formatHexColor renders c the same way a user would have typed it in
+// background=, so the summary's resolved-colour line reads back what was
+// asked for rather than some other spelling of the same value.
+func formatHexColor(c color.NRGBA) string {
+	return fmt.Sprintf("#%02X%02X%02X", c.R, c.G, c.B)
+}
+
+// chromeContrastFloor is the ABSOLUTE floor a highlight's own background=
+// must clear against Dim and Absent -- deliberately NOT WCAG 2's 4.5:1,
+// which governs body text, and neither role is read like a paragraph: Dim
+// is chrome the eye should not land on, and Absent only has to be tellable
+// from a live reading (see Theme's own doc comment on both). A ratio of
+// 1.0 means the background has collided with that role's own colour and the
+// role has become genuinely invisible against it -- the only failure that
+// is unambiguous at this end of the scale.
+//
+// 1.5 is anchored to what this project already ships, not invented: the
+// weakest pairing either shipped theme itself relies on is 1.679:1 (the
+// light theme's own Background against its own Absent), so any floor at or
+// above that would condemn this program's own palette on every render, the
+// same "warns about itself" failure the first version of this check had.
+// 1.5 sits just under that measured floor -- close enough to catch a
+// background that has effectively become one of the text roles (both land
+// at exactly 1.0), while accepting every palette this project ships and
+// every ordinary colour, including an unremarkable dark navy, that a user
+// might reasonably type.
+//
+// Two earlier attempts at this check are worth naming so neither is
+// rediscovered: an absolute 4.5:1 against Dim and Absent is unsatisfiable
+// (no colour clears all three roles, and both shipped themes fail it
+// against their OWN background); a check relative to the theme's own
+// background is satisfiable but rejects nearly every distinguishable colour
+// under the dark theme specifically, because that theme's Background
+// already sits close to the darkest luminance achievable and almost any
+// lighter colour necessarily scores worse against the recessive roles than
+// it does. Both warn on ordinary input, which is the noise problem this
+// floor exists to avoid.
+const chromeContrastFloor = 1.5
+
+// backgroundContrastWarnings names the ways bg -- a highlight's own
+// background= -- is less legible than it should be against theme, one
+// sentence per problem found, or nil when it earns none. Checked at full
+// weight only: the endpoint is where text sits longest over the wash, and
+// sweeping every intermediate ramp frame would be a threshold on a
+// threshold.
+//
+// Foreground and the chrome roles (Dim, Absent) are checked against
+// DIFFERENT numbers, and that asymmetry is deliberate rather than an
+// inconsistency to smooth back into one rule: Foreground is genuinely body
+// text -- the readings this dashboard exists to show -- so it gets WCAG 2's
+// own published 4.5:1. Dim and Absent are not body text; they are DESIGNED
+// to be recessive, so they get chromeContrastFloor instead -- see its own
+// doc comment for why 1.5 is the anchored number and why an absolute 4.5:1
+// or a check relative to the theme's own background both fail here.
+func backgroundContrastWarnings(theme panel.Theme, bg color.NRGBA) []string {
+	var warnings []string
+	if ratio := panel.ContrastRatio(bg, theme.Foreground); ratio < 4.5 {
+		warnings = append(warnings, fmt.Sprintf(
+			"contrast against foreground is %.1f:1, below the WCAG 2 threshold of 4.5:1", ratio))
+	}
+	for _, role := range []struct {
+		name string
+		col  color.Color
+	}{
+		{"dim", theme.Dim},
+		{"absent", theme.Absent},
+	} {
+		if ratio := panel.ContrastRatio(bg, role.col); ratio < chromeContrastFloor {
+			warnings = append(warnings, fmt.Sprintf(
+				"contrast against %s is %.1f:1, below the floor of %v:1", role.name, ratio, chromeContrastFloor))
+		}
+	}
+	return warnings
 }
 
 // highlightSmoothingNote appends this highlight's own auto-smoothing window
@@ -620,13 +798,82 @@ func highlightSummaryName(h panel.Highlight) string {
 	return fmt.Sprintf("%s-%s", panel.FormatClock(h.From), panel.FormatClock(h.To))
 }
 
+// writeLabelSummary reports each configured label's own on-screen span, and
+// the three warnings resolveLabels marks as "adjusted, and reported" rather
+// than fatal: a span truncated because the next label's own began before it
+// would otherwise have ended, the LAST label's own span clamped because its
+// video= would otherwise have run past the render's final frame, and a span
+// too short for its own fade ever to reach full opacity.
+//
+// The first two share resolveLabels' one Truncated field rather than a
+// second one, and are told apart here by POSITION alone: only the last
+// label in the (At-sorted) slice can ever be clamped to the render's own
+// end, and the overlap loop never touches that last index -- see
+// the comment beside that clamp in resolveLabels for the proof -- so a Truncated label at
+// any other position was cut short by its neighbour, and a Truncated last
+// label was cut short by the render's own end. Nothing here re-derives
+// resolveLabels' arithmetic to reach that conclusion, only its ordering.
+//
+// Printed only when at least one --label was configured, the same
+// discipline writeHighlightSummary follows, so an ordinary render without
+// --label prints none of this and its summary stays identical to one from
+// before this feature existed.
+//
+// transition is renderOpts.highlightTransition, not a separate
+// --label-transition: the same flag governs a label's own fade (see its
+// own help text), so there is exactly one number to check a label's video=
+// against.
+//
+// The opacity warning's reasoning: LabelAt's ramp (via the shared
+// rampWeight) takes the MIN of a label's entrance ramp and its exit ramp,
+// which is correct -- a name should not be fully visible before it has
+// finished appearing, nor after it has started disappearing -- but it means
+// a span shorter than twice the transition never lets both ramps reach 1 at
+// once. The result is arithmetically right and looks like a bug: a name
+// sitting at a fraction of full opacity for the whole time it is on screen,
+// with nothing on screen saying why. Reported here for the same reason
+// resolveHighlights reports a highlight forced down to one frame.
+//
+// The check is against l.Video, not against whatever --label asked for:
+// resolveLabels already narrows Video to what the label actually received
+// by the time it reaches here, for EITHER truncation cause above, so this
+// warning fires (or stays silent) on the real on-screen span rather than on
+// a duration the label never got.
+func writeLabelSummary(cmd *cobra.Command, labels []panel.Label, transition time.Duration) {
+	if renderOpts.quiet || len(labels) == 0 {
+		return
+	}
+	out := cmd.ErrOrStderr()
+
+	lines := make([]string, len(labels))
+	for i, l := range labels {
+		lines[i] = fmt.Sprintf("%s %s -> %s", labelSummaryName(l), panel.FormatClock(l.At), l.Video.Round(time.Millisecond))
+	}
+	fmt.Fprintf(out, "labels: %s\n", strings.Join(lines, ", "))
+
+	for i, l := range labels {
+		switch {
+		case l.Truncated && i == len(labels)-1:
+			fmt.Fprintf(out, "label %s clipped to %s so it ends at the render's last frame\n",
+				labelSummaryName(l), l.Video.Round(time.Millisecond))
+		case l.Truncated:
+			fmt.Fprintf(out, "label %s truncated to %s so it ends where the next label begins\n",
+				labelSummaryName(l), l.Video.Round(time.Millisecond))
+		}
+		if transition > 0 && l.Video < 2*transition {
+			fmt.Fprintf(out, "label %s is on screen for %s, shorter than twice --highlight-transition (%s); its name never reaches full opacity\n",
+				labelSummaryName(l), l.Video.Round(time.Millisecond), transition)
+		}
+	}
+}
+
 // runFrames writes selected frames as PNGs instead of encoding.
 //
 // It runs the IDENTICAL render path -- only the sink differs -- which is what
 // makes the fast visual loop a trustworthy proxy for the real render rather
 // than a second implementation free to disagree with it.
-func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activity, layoutName, themeName string, smoothing panel.Smoothing, highlights []panel.Highlight) error {
-	indices, err := frameIndices(tl, renderOpts.frameAt, renderOpts.frameAtVideo, highlights)
+func runFrames(cmd *cobra.Command, r *render.Renderer, in renderInputs) error {
+	indices, err := frameIndices(in.tl, renderOpts.frameAt, renderOpts.frameAtVideo, in.highlights, in.labels)
 	if err != nil {
 		return err
 	}
@@ -650,12 +897,13 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activi
 	for _, p := range sink.Written() {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
-	writePanelSummary(cmd, r, tl, layoutName, themeName, smoothing)
+	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	// The fast visual loop is where a transition actually gets looked at
 	// (see --frame-at-video), so it gets the same base/highlight
 	// decomposition and warnings the video path prints -- otherwise the one
 	// command built for checking a highlight would say nothing about it.
-	writeHighlightSummary(cmd, tl, highlights, smoothing)
+	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme)
+	writeLabelSummary(cmd, in.labels, renderOpts.highlightTransition)
 	return nil
 }
 
@@ -663,19 +911,22 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, activi
 // anything --frame-at or --frame-at-video named.
 //
 // The landmarks are the first, the quarters, the last, and -- when any
-// highlight is configured -- each one's own first and last frame. Frame 0 and
-// the last frame are there because panels that accumulate -- a progress bar,
-// a covered route, a splits list -- are wrong at the boundaries far more
-// often than in the middle, and frame 0 in particular hits every "nothing has
-// happened yet" branch at once. A highlight's own boundaries are there for
-// the same reason: that is exactly where a panel gets a transition wrong,
-// and a highlight creates two new boundaries the quarters will not land near
-// on a long render.
-func frameIndices(tl panel.Timeline, at, atVideo []time.Duration, highlights []panel.Highlight) ([]int, error) {
+// highlight or label is configured -- each one's own first and last frame.
+// Frame 0 and the last frame are there because panels that accumulate -- a
+// progress bar, a covered route, a splits list -- are wrong at the
+// boundaries far more often than in the middle, and frame 0 in particular
+// hits every "nothing has happened yet" branch at once. A highlight's or a
+// label's own boundaries are there for the same reason: that is exactly
+// where a panel gets a transition wrong, and each one creates two new
+// boundaries the quarters will not land near on a long render.
+func frameIndices(tl panel.Timeline, at, atVideo []time.Duration, highlights []panel.Highlight, labels []panel.Label) ([]int, error) {
 	n := tl.Frames()
 	out := []int{0, n / 4, n / 2, (3 * n) / 4, n - 1}
 	for _, h := range highlights {
 		out = append(out, highlightLandmarkFrames(tl, h)...)
+	}
+	for _, l := range labels {
+		out = append(out, labelLandmarkFrames(l)...)
 	}
 	for _, d := range at {
 		// Timeline.IndexAt CLAMPS, which is right for its own callers and

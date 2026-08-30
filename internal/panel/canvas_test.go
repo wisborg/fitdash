@@ -3,6 +3,7 @@ package panel
 import (
 	"image"
 	"image/color"
+	"math"
 	"testing"
 )
 
@@ -162,6 +163,40 @@ func TestCanvas_PolylineDrawsAndIgnoresDegenerateInput(t *testing.T) {
 	}
 }
 
+// TestContrastRatio_MatchesWCAGWorkedExamples pins the formula against values
+// that can be checked independently of this codebase rather than against
+// whatever the implementation currently returns.
+//
+// Pure black against pure white is WCAG 2's own edge case: luminance is
+// exactly 0 and exactly 1, so the ratio is (1+0.05)/(0+0.05) = 21, the
+// maximum the scale defines. Mid-grey (#808080) against white is a value
+// commonly cited as the threshold example in WCAG discussions -- computed
+// independently here (sRGB channel 128/255, linearized, weighted 0.2126/
+// 0.7152/0.0722) it comes to (0.21586+0.05)/(0+0.05)... precisely
+// 3.9494396480491156, which this test rounds to two decimals so a rounding
+// difference in the last few bits of float64 arithmetic does not make an
+// otherwise-correct implementation fail.
+func TestContrastRatio_MatchesWCAGWorkedExamples(t *testing.T) {
+	black := color.RGBA{R: 0, G: 0, B: 0, A: 0xFF}
+	white := color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+	if got, want := ContrastRatio(black, white), 21.0; math.Abs(got-want) > 0.001 {
+		t.Errorf("ContrastRatio(black, white) = %v, want %v", got, want)
+	}
+	// Order must not matter: the ratio is defined as (lighter+0.05)/(darker+0.05).
+	if got, want := ContrastRatio(white, black), 21.0; math.Abs(got-want) > 0.001 {
+		t.Errorf("ContrastRatio(white, black) = %v, want %v -- order should not matter", got, want)
+	}
+
+	gray := color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xFF}
+	if got, want := ContrastRatio(gray, white), 3.9494396480491156; math.Abs(got-want) > 0.01 {
+		t.Errorf("ContrastRatio(gray128, white) = %v, want ~%v", got, want)
+	}
+
+	if got := ContrastRatio(white, white); math.Abs(got-1) > 0.001 {
+		t.Errorf("ContrastRatio of identical colours = %v, want 1", got)
+	}
+}
+
 // TestThemesAreLegible pins the property the whole absent-data policy rests on
 // visually, for EVERY shipped palette rather than only the default.
 //
@@ -176,6 +211,12 @@ func TestCanvas_PolylineDrawsAndIgnoresDegenerateInput(t *testing.T) {
 // light grey chrome on white, which disappears -- so every role has to be
 // picked again for its background, and this is what says whether it was done
 // carefully.
+//
+// Foreground against Background is checked separately, against
+// ContrastRatio and WCAG 2's own 4.5:1 threshold, rather than folded into the
+// squared-distance loop below: it is the one pair with a published,
+// defensible number, and pinning it against an invented floor -- as this
+// test used to -- would say less than what is actually available.
 func TestThemesAreLegible(t *testing.T) {
 	dist := func(a, b color.Color) float64 {
 		ar, ag, ab, _ := a.RGBA()
@@ -186,6 +227,13 @@ func TestThemesAreLegible(t *testing.T) {
 	// A generous floor: these are palette roles, not a contrast standard.
 	const minSeparation = 0.02
 
+	// The one pair with a published, defensible number rather than a floor
+	// invented here -- see ContrastRatio's own doc comment. Checked
+	// separately from the squared-distance loop below, which pins every
+	// OTHER role pair against a floor its own comment admits is not a
+	// contrast standard.
+	const minContrast = 4.5
+
 	themes := Themes()
 	if len(themes) < 2 {
 		t.Fatal("Themes() offers fewer than two palettes; this test would only be checking the default")
@@ -195,6 +243,10 @@ func TestThemesAreLegible(t *testing.T) {
 			if th.Name == "" {
 				t.Error("a theme with no name cannot be selected by --theme")
 			}
+			if r := ContrastRatio(th.Foreground, th.Background); r < minContrast {
+				t.Errorf("foreground/background contrast is %.2f:1, below the WCAG 2 threshold of %v:1 for normal text",
+					r, minContrast)
+			}
 			for _, c := range []struct {
 				name string
 				a, b color.Color
@@ -202,7 +254,6 @@ func TestThemesAreLegible(t *testing.T) {
 				{"absent vs foreground", th.Absent, th.Foreground},
 				{"absent vs background", th.Absent, th.Background},
 				{"absent vs dim", th.Absent, th.Dim},
-				{"foreground vs background", th.Foreground, th.Background},
 				{"dim vs background", th.Dim, th.Background},
 				{"accent vs background", th.Accent, th.Background},
 				{"accent vs foreground", th.Accent, th.Foreground},

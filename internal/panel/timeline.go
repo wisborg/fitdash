@@ -593,13 +593,28 @@ func (t Timeline) IntervalAt(i int, transition time.Duration) (index int, weight
 	if seg.highlight == NoHighlight {
 		return NoHighlight, 0
 	}
+	return seg.highlight, rampWeight(i, seg.i0, seg.n, t.fps, transition)
+}
+
+// rampWeight is the 0->1->0 transition arithmetic IntervalAt applies to a
+// highlight and LabelAt applies to a label, pulled out into one place so the
+// two ramps cannot drift a frame apart by drifting into two hand-maintained
+// copies of the same five lines -- exactly the duplicated-primitive shape
+// this project's own review process exists to catch.
+//
+// i0 and n are the owning segment's (or label's) own first frame and frame
+// count; see IntervalAt's own doc comment for what the ramp means, why it
+// runs in VIDEO time via fps rather than activity time, and why transition
+// <= 0 is a hard cut: weight is 1 for every frame in [i0, i0+n) and neither
+// caller reaches this function for a frame outside that range at all.
+func rampWeight(i, i0, n int, fps float64, transition time.Duration) float64 {
 	if transition <= 0 {
-		return seg.highlight, 1
+		return 1
 	}
 
 	trans := transition.Seconds()
-	since := float64(i-seg.i0) / t.fps
-	until := float64(seg.i0+seg.n-i) / t.fps
+	since := float64(i-i0) / fps
+	until := float64(i0+n-i) / fps
 	w := since / trans
 	if u := until / trans; u < w {
 		w = u
@@ -609,7 +624,7 @@ func (t Timeline) IntervalAt(i int, transition time.Duration) (index int, weight
 	} else if w < 0 {
 		w = 0
 	}
-	return seg.highlight, w
+	return w
 }
 
 // Smoothing is how much a gauge reading is averaged over, deferred rather

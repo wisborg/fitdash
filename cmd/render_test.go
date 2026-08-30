@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"image/color"
 	"io"
 	"os"
 	"path/filepath"
@@ -110,7 +111,7 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 	}
 	n := tl.Frames() // 3000
 
-	got, err := frameIndices(tl, nil, nil, nil)
+	got, err := frameIndices(tl, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 
 	// --frame-at resolves through the timeline, so it is the same arithmetic
 	// the render itself uses. 50 seconds at 30 fps is frame 1500.
-	got, err = frameIndices(tl, []time.Duration{50 * time.Second}, nil, nil)
+	got, err = frameIndices(tl, []time.Duration{50 * time.Second}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestFrameIndices_HonoursFrameAtVideo(t *testing.T) {
 	// 5s of VIDEO at 30fps is frame 150 -- and, at a 10x speedup, a
 	// completely different frame from what --frame-at 5s would have named
 	// (--frame-at 5s of ACTIVITY time is frame 15).
-	got, err := frameIndices(tl, nil, []time.Duration{5 * time.Second}, nil)
+	got, err := frameIndices(tl, nil, []time.Duration{5 * time.Second}, nil, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
@@ -161,16 +162,16 @@ func TestFrameIndices_HonoursFrameAtVideo(t *testing.T) {
 		t.Errorf("--frame-at-video 5s resolved to frame %d, want 150", last)
 	}
 
-	if _, err := frameIndices(tl, nil, []time.Duration{-time.Second}, nil); err == nil {
+	if _, err := frameIndices(tl, nil, []time.Duration{-time.Second}, nil, nil); err == nil {
 		t.Error("frameIndices accepted a negative --frame-at-video offset")
 	}
-	if _, err := frameIndices(tl, nil, []time.Duration{11 * time.Second}, nil); err == nil {
+	if _, err := frameIndices(tl, nil, []time.Duration{11 * time.Second}, nil, nil); err == nil {
 		t.Error("frameIndices accepted a --frame-at-video offset past the end of the video")
 	} else if !strings.Contains(err.Error(), "0:00:10") {
 		t.Errorf("the error should say how long the video runs; got: %v", err)
 	}
 	// The video's own last instant is a legitimate thing to ask for.
-	if _, err := frameIndices(tl, nil, []time.Duration{10 * time.Second}, nil); err != nil {
+	if _, err := frameIndices(tl, nil, []time.Duration{10 * time.Second}, nil, nil); err != nil {
 		t.Errorf("frameIndices rejected the video's final instant: %v", err)
 	}
 }
@@ -188,7 +189,7 @@ func TestFrameIndices_IncludesEveryHighlightsFirstAndLastFrame(t *testing.T) {
 	}
 	got, err := frameIndices(tl, nil, nil, []panel.Highlight{
 		{From: 20 * time.Second, To: 30 * time.Second, RateFactor: 5},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
@@ -222,18 +223,18 @@ func TestFrameIndices_RejectsAnOffsetPastTheActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := frameIndices(tl, []time.Duration{40 * time.Minute}, nil, nil); err == nil {
+	if _, err := frameIndices(tl, []time.Duration{40 * time.Minute}, nil, nil, nil); err == nil {
 		t.Fatal("frameIndices accepted an offset past the end of the activity")
 	} else if !strings.Contains(err.Error(), "0:25:00") {
 		t.Errorf("the error should say how long the activity runs; got: %v", err)
 	}
-	if _, err := frameIndices(tl, []time.Duration{-time.Minute}, nil, nil); err == nil {
+	if _, err := frameIndices(tl, []time.Duration{-time.Minute}, nil, nil, nil); err == nil {
 		t.Error("frameIndices accepted a negative offset")
 	}
 
 	// The boundary is inclusive: the very last instant of the activity is a
 	// legitimate thing to ask for.
-	if _, err := frameIndices(tl, []time.Duration{25 * time.Minute}, nil, nil); err != nil {
+	if _, err := frameIndices(tl, []time.Duration{25 * time.Minute}, nil, nil, nil); err != nil {
 		t.Errorf("frameIndices rejected the activity's final instant: %v", err)
 	}
 
@@ -243,7 +244,7 @@ func TestFrameIndices_RejectsAnOffsetPastTheActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := frameIndices(fast, []time.Duration{20 * time.Minute}, nil, nil); err != nil {
+	if _, err := frameIndices(fast, []time.Duration{20 * time.Minute}, nil, nil, nil); err != nil {
 		t.Errorf("a 20m offset was rejected on a 25m activity rendered as a 1m video: %v", err)
 	}
 }
@@ -638,7 +639,7 @@ func TestWriteHighlightSummary_DecomposesBaseAndHighlightsAndListsEach(t *testin
 	c := &cobra.Command{}
 	c.SetErr(&buf)
 
-	writeHighlightSummary(c, tl, []panel.Highlight{highlight}, panel.Smoothing{})
+	writeHighlightSummary(c, tl, nil, []panel.Highlight{highlight}, panel.Smoothing{}, panel.DefaultTheme())
 
 	out := buf.String()
 	if !strings.Contains(out, "0:00:30 base + 0:00:09 of highlights = 0:00:39 of video") {
@@ -677,7 +678,7 @@ func TestWriteHighlightSummary_WarnsOnClippedOneFrameAndPaused(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, highlights, panel.Smoothing{})
+	writeHighlightSummary(c, tl, nil, highlights, panel.Smoothing{}, panel.DefaultTheme())
 
 	out := buf.String()
 	for _, want := range []string{
@@ -688,6 +689,163 @@ func TestWriteHighlightSummary_WarnsOnClippedOneFrameAndPaused(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary is missing %q; got:\n%s", want, out)
 		}
+	}
+}
+
+// TestWriteHighlightSummary_ReportsResolvedColourAndContrastWarnings pins
+// the two things a background= adds to the summary: the resolved colour,
+// unconditionally, and a legibility warning ONLY when the colour actually
+// earns one -- against the real shipped dark theme, not a synthetic stand-in,
+// because the whole point of the relative check (see
+// backgroundContrastWarnings) is that it must be satisfiable against a
+// theme this program actually ships.
+//
+// The three cases are chosen so that each isolates one outcome, and the
+// first of them is the one that would have caught both earlier versions of
+// this check (see chromeContrastFloor's own doc comment for what they were
+// and why they failed).
+//
+// "Reasonable" is #1B2A4A, an unremarkable dark navy and exactly the sort
+// of colour a user reaching for background= would type. It measures 12.7:1
+// against Foreground, 2.8:1 against Dim and 1.6:1 against Absent, so it
+// clears WCAG 2's 4.5:1 where that applies and sits above chromeContrastFloor
+// where that applies. It must earn NO warning of any kind. Under the two
+// rejected rules it warned -- which is the whole reason it is pinned here.
+//
+// "TooLight" is pure white. It moves FURTHER from Dim and Absent than the
+// theme's own near-black Background does (5.0:1 and 8.8:1), so the chrome
+// half of the check stays silent, while Foreground -- itself near-white --
+// collapses to 1.1:1. An isolated exercise of the ABSOLUTE half.
+//
+// "Collided" is DarkTheme's own Absent, 0x4A4A54, set as a background. It
+// measures exactly 1.0:1 against Absent, because it IS Absent: the
+// placeholder colour has become genuinely invisible against the wash. This
+// is the single failure chromeContrastFloor exists to catch, and it clears
+// 4.5:1 against Foreground with real margin (7.8:1) and 1.5:1 against Dim
+// with real margin too (1.7:1), so it exercises the chrome half -- against
+// absent alone -- with both other checks silent, and with room to spare on
+// each. An earlier version of this fixture used the theme's own Dim
+// instead, which collides with Dim exactly as this collides with Absent,
+// but happens to measure only 4.51:1 against Foreground -- 0.01 over the
+// 4.5:1 threshold this test asserts it clears, which is not a margin a test
+// should depend on staying on the right side of. Absent gives the same
+// exercise of the same code path with an order of magnitude more room.
+func TestWriteHighlightSummary_ReportsResolvedColourAndContrastWarnings(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	theme := panel.DefaultTheme() // the shipped dark theme, not a stand-in
+	highlights := []panel.Highlight{
+		{Name: "Reasonable", From: 0, To: 5 * time.Second, HasBackground: true, Background: color.NRGBA{R: 0x1B, G: 0x2A, B: 0x4A, A: 0xFF}},
+		{Name: "TooLight", From: 10 * time.Second, To: 15 * time.Second, HasBackground: true, Background: color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}},
+		{Name: "Collided", From: 20 * time.Second, To: 25 * time.Second, HasBackground: true, Background: color.NRGBA{R: 0x4A, G: 0x4A, B: 0x54, A: 0xFF}},
+	}
+	tl, err := panel.NewSegmentedTimeline(time.Now(), time.Minute, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewSegmentedTimeline: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeHighlightSummary(c, tl, nil, highlights, panel.Smoothing{}, theme)
+
+	out := buf.String()
+	for _, want := range []string{
+		`highlight "Reasonable" background #1B2A4A`,
+		`highlight "TooLight" background #FFFFFF`,
+		`highlight "Collided" background #4A4A54`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary is missing the resolved colour line %q; got:\n%s", want, out)
+		}
+	}
+
+	// The load-bearing one: an ordinary dark navy must earn no warning at
+	// all. Both rejected versions of this check warned here, and a rule that
+	// fires on every colour a user would plausibly type is noise that trains
+	// them to ignore the whole summary.
+	if strings.Contains(out, `"Reasonable" background contrast`) {
+		t.Errorf("an ordinary dark navy was warned about; the check has become noise again. got:\n%s", out)
+	}
+
+	// White: the absolute half fires, the chrome half stays silent.
+	if !strings.Contains(out, `highlight "TooLight" background contrast against foreground is 1.1:1, below the WCAG 2 threshold of 4.5:1`) {
+		t.Errorf("summary is missing the absolute foreground warning for a near-white background under the dark theme; got:\n%s", out)
+	}
+	for _, role := range []string{"dim", "absent"} {
+		if strings.Contains(out, `"TooLight" background contrast against `+role) {
+			t.Errorf("white was warned about against %s, but it moves further from both than the theme's own background does; got:\n%s", role, out)
+		}
+	}
+
+	// The theme's own Absent as a background: the chrome half fires against
+	// absent at exactly 1.0:1, and stays silent against dim (1.7:1, clears
+	// the 1.5:1 floor) and against foreground (7.8:1, clears 4.5:1 with
+	// real margin).
+	if !strings.Contains(out, `highlight "Collided" background contrast against absent is 1.0:1, below the floor of 1.5:1`) {
+		t.Errorf("a background equal to the theme's own Absent did not warn; this is the failure the floor exists to catch. got:\n%s", out)
+	}
+	if strings.Contains(out, `"Collided" background contrast against foreground`) {
+		t.Errorf("the Absent-coloured background was warned about against foreground, which it clears at 7.8:1; got:\n%s", out)
+	}
+	if strings.Contains(out, `"Collided" background contrast against dim`) {
+		t.Errorf("the Absent-coloured background was warned about against dim, which it clears at 1.7:1; got:\n%s", out)
+	}
+}
+
+// TestWriteHighlightSummary_ReportsAnUnmarkableHighlight pins the summary's
+// half of the third row in the plan's absent-data table for route marking: a
+// highlight whose span has no GPS fix anywhere near it cannot be drawn on the
+// map at all -- there is no placeholder available where the missing thing IS
+// the location -- so the honest analogue of "decline and announce" is this
+// line.
+//
+// It goes through the SAME route.FromTrack(track, route.DefaultMaxPoints) and
+// route.SpanIndices RoutePanel's own Prepare uses (internal/panel/route.go),
+// never a second copy of the predicate -- which is why this test's fixture is
+// a track with a real, permanent GPS dropout rather than a synthetic call
+// into route.SpanIndices directly: it is proving the CALL SITE agrees with
+// the panel, not the function in isolation (already covered by
+// internal/route's own table test).
+func TestWriteHighlightSummary_ReportsAnUnmarkableHighlight(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 100)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{
+			Time: start.Add(time.Duration(i) * time.Second),
+			// GPS only for the first half of the activity -- a dropout that
+			// never comes back, which is the real way a highlight placed
+			// later in the activity ends up with nothing to mark.
+			HasGPS: i < 50,
+			Lat:    55 + float64(i)*1e-5, Lon: 12 + float64(i)*1e-5,
+		}
+	}
+	track := &fitactivity.Track{Samples: samples}
+
+	highlights := []panel.Highlight{
+		{Name: "Covered", From: 10 * time.Second, To: 20 * time.Second},
+		{Name: "Lost signal", From: 80 * time.Second, To: 90 * time.Second},
+	}
+	tl, err := panel.NewSegmentedTimeline(start, 99*time.Second, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewSegmentedTimeline: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme())
+
+	out := buf.String()
+	if strings.Contains(out, `"Covered" has no GPS fixes`) {
+		t.Errorf("a highlight entirely inside the GPS-covered stretch was reported as unmarkable; got:\n%s", out)
+	}
+	if !strings.Contains(out, `highlight "Lost signal" has no GPS fixes; it is not marked on the route`) {
+		t.Errorf("summary is missing the unmarkable-highlight line for a highlight past the last GPS fix; got:\n%s", out)
 	}
 }
 
@@ -705,7 +863,7 @@ func TestWriteHighlightSummary_PrintsNothingWithNoHighlights(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, nil, panel.Smoothing{})
+	writeHighlightSummary(c, tl, nil, nil, panel.Smoothing{}, panel.DefaultTheme())
 	if buf.Len() != 0 {
 		t.Errorf("writeHighlightSummary printed something with no highlights configured: %q", buf.String())
 	}
@@ -784,7 +942,7 @@ func TestWritePanelSummary_SplitsTheHighlightDeclineFromTheActivityDataOne(t *te
 	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
 		{Panel: summaryAccepter("clock")},
 		{Panel: summaryDecliner("power")},
-		{Panel: panel.HighlightPanel{}},
+		{Panel: panel.MarkerPanel{}},
 	}}}
 	r, err := render.New(ctx, layout, panel.DefaultTheme())
 	if err != nil {
@@ -797,17 +955,21 @@ func TestWritePanelSummary_SplitsTheHighlightDeclineFromTheActivityDataOne(t *te
 	writePanelSummary(c, r, ctx.Timeline, layout.Name, "dark", panel.Smoothing{})
 
 	out := buf.String()
-	// The activity-data heading names ONLY power -- never highlight, and
-	// never both together under this heading, which is exactly the bug this
-	// step fixes: `declined (...carries no such data): power, highlight`.
+	// The activity-data heading names ONLY power -- never the marker panel,
+	// and never both together under this heading, which is exactly the bug
+	// this step fixes: `declined (...carries no such data): power, markers`.
 	if !strings.Contains(out, "declined (this activity carries no such data): power") {
 		t.Errorf("the activity-data decline heading is missing or wrong; got:\n%s", out)
 	}
-	if strings.Contains(out, "no such data): power, highlight") || strings.Contains(out, "no such data): highlight") {
-		t.Fatalf("the highlight panel's decline was folded into the activity-data heading; got:\n%s", out)
+	if strings.Contains(out, "no such data): power, markers") || strings.Contains(out, "no such data): markers") {
+		t.Fatalf("the marker panel's decline was folded into the activity-data heading; got:\n%s", out)
 	}
-	if !strings.Contains(out, "declined (no --highlight given): highlight") {
-		t.Errorf("the highlight panel's decline is missing its own configuration heading; got:\n%s", out)
+	// The configuration heading names BOTH flags that could have placed this
+	// panel, not just --highlight: once --label can place it too, a heading
+	// naming only one of them tells a user reaching for labels that the
+	// wrong flag is missing.
+	if !strings.Contains(out, "declined (no --highlight or --label given): markers") {
+		t.Errorf("the marker panel's decline is missing its own configuration heading; got:\n%s", out)
 	}
 }
 
@@ -822,7 +984,7 @@ func TestWritePanelSummary_ReportsNoHighlightDeclineWhenHighlightsAreConfigured(
 	ctx := summaryTestContext(t, highlights)
 	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
 		{Panel: summaryAccepter("clock")},
-		{Panel: panel.HighlightPanel{}},
+		{Panel: panel.MarkerPanel{}},
 	}}}
 	r, err := render.New(ctx, layout, panel.DefaultTheme())
 	if err != nil {

@@ -53,6 +53,24 @@ type Renderer struct {
 	// here is what keeps that a fact about one formula instead of two that
 	// could silently drift apart.
 	marginPx float64
+
+	// washColors is each ctx.Highlights entry's own wash colour, resolved
+	// ONCE here rather than re-derived per frame: a highlight's own
+	// background= when it has one, or the theme's derived tint otherwise --
+	// see washColorFor. The uncoloured case is deliberately not a branch a
+	// caller has to know about: every highlight, coloured or not, gets an
+	// entry.
+	washColors []color.NRGBA
+
+	// washBases is the colour-keyed table of static wash bases Run builds
+	// eagerly, one full frame per DISTINCT colour among washColors, before
+	// its own loop starts -- see Run and washBaseFor. Nil under any style
+	// other than HighlightStyleWash, and nil until Run has built it: Render,
+	// the simple comparison path, never reads this field at all, and
+	// recomputes its own base per call instead (see renderBase) -- see that
+	// method's own doc comment for why that is deliberate rather than an
+	// oversight.
+	washBases map[color.NRGBA]*image.RGBA
 }
 
 // New prepares every panel the layout places for this activity.
@@ -117,7 +135,29 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		}
 		r.painters = append(r.painters, painter)
 	}
+
+	// Resolved once here, regardless of --highlight-style: cheap (a handful
+	// of colour conversions, no image drawn), and resolving it unconditionally
+	// is what keeps "a highlight with no background= just uses the theme's own
+	// tint" from being a branch anywhere else -- see washColorFor.
+	if n := len(ctx.Highlights); n > 0 {
+		r.washColors = make([]color.NRGBA, n)
+		for i, h := range ctx.Highlights {
+			r.washColors[i] = resolveWashColor(h, theme)
+		}
+	}
 	return r, nil
+}
+
+// resolveWashColor is a highlight's own background= when it has one, or
+// washTheme(theme)'s derived tint otherwise -- the uncoloured case folded
+// into the same colour resolution rather than a special value some caller
+// has to check for.
+func resolveWashColor(h panel.Highlight, theme panel.Theme) color.NRGBA {
+	if h.HasBackground {
+		return h.Background
+	}
+	return color.NRGBAModel.Convert(washTheme(theme).Background).(color.NRGBA)
 }
 
 // Frames is the number of frames in the render.
@@ -140,6 +180,7 @@ func (r *Renderer) Declined() []string { return r.declined }
 func (r *Renderer) Frame(i int) panel.Frame {
 	at := r.ctx.Timeline.At(i)
 	interval, weight := r.ctx.Timeline.IntervalAt(i, r.ctx.HighlightTransition)
+	label, labelWeight := panel.LabelAt(r.ctx.Labels, i, r.ctx.Timeline.FPS(), r.ctx.HighlightTransition)
 	f := panel.Frame{
 		Index:   i,
 		At:      at,
@@ -151,6 +192,9 @@ func (r *Renderer) Frame(i int) panel.Frame {
 
 		Interval:       interval,
 		IntervalWeight: weight,
+
+		Label:       label,
+		LabelWeight: labelWeight,
 	}
 	if s, ok := r.ctx.Track.AtWithGap(at, maxGap); ok {
 		// Smoothing is applied only where there IS a reading. Deep in a
@@ -225,6 +269,40 @@ func (r *Renderer) renderStaticThemed(img *image.RGBA, theme panel.Theme) error 
 // avoidance with a second full-frame buffer instead.
 func (r *Renderer) renderStaticWash(img *image.RGBA) error {
 	return r.renderStaticThemed(img, washTheme(r.theme))
+}
+
+// renderStaticForColor draws the same static content as RenderStatic, with
+// Background overridden to col and every other role left at r.theme's own --
+// the general form renderStaticWash's own restriction is a special case of.
+// Used to build each distinct entry in Run's colour-keyed wash-base table
+// (see washBaseFor), and by renderBase to recompute a coloured highlight's
+// own base per call rather than reading that table.
+func (r *Renderer) renderStaticForColor(img *image.RGBA, col color.NRGBA) error {
+	theme := r.theme
+	theme.Background = col
+	return r.renderStaticThemed(img, theme)
+}
+
+// washColorFor is the colour interval's own highlight washes to under
+// --highlight-style wash: its background= when it set one, or the theme's
+// derived tint otherwise. Resolved once in New (see washColors); this is
+// just the accessor.
+func (r *Renderer) washColorFor(interval int) color.NRGBA {
+	return r.washColors[interval]
+}
+
+// washBaseFor is Run's own colour-keyed table lookup: the full static base
+// for washColorFor(interval), built eagerly by Run before its loop starts
+// (see Run) so the per-frame cost is a copy, never a re-render.
+//
+// It returns nil when Run has not built the table -- under any style other
+// than wash, or before Run runs at all -- which is deliberate: Render, the
+// simple comparison path, must never call this. It recomputes its own base
+// per call instead (see renderBase), which is what keeps
+// TestRenderer_StaticPlusDynamicEqualsRenderExactly_HighlightWash a real
+// test of the table rather than a comparison of the table with itself.
+func (r *Renderer) washBaseFor(interval int) *image.RGBA {
+	return r.washBases[r.washColorFor(interval)]
 }
 
 // highlightWashStrength is how far the wash style's alternate background
@@ -383,11 +461,18 @@ func (r *Renderer) Render(img *image.RGBA, f panel.Frame) error {
 
 // renderBase fills img with the static base frame f is drawn onto: the plain
 // static layer, or -- under --highlight-style wash, for a frame inside a
-// highlight -- that layer blended toward the washed one by
-// Frame.IntervalWeight. This is what Run's own loop does with its two
-// precomputed bases (see Run), spelled out per call instead of per render so
-// this path and that one apply the exact same rule and can be compared frame
-// for frame.
+// highlight -- that layer blended toward THAT HIGHLIGHT'S OWN colour by
+// Frame.IntervalWeight (see washColorFor). This is what Run's own loop does
+// with its precomputed, colour-keyed table of bases (see Run and
+// washBaseFor), spelled out per call instead of per render so this path and
+// that one apply the exact same rule and can be compared frame for frame.
+//
+// It calls washColorFor -- a cheap lookup, resolved once in New -- but
+// deliberately never washBaseFor: recomputing the coloured base on every call
+// rather than reading Run's table is the cost of Render staying the "simple
+// path" its own name promises, and it is what keeps
+// TestRenderer_StaticPlusDynamicEqualsRenderExactly_HighlightWash a real test
+// of the table rather than a comparison of the table with itself.
 func (r *Renderer) renderBase(img *image.RGBA, f panel.Frame) error {
 	if err := r.RenderStatic(img); err != nil {
 		return err
@@ -396,7 +481,7 @@ func (r *Renderer) renderBase(img *image.RGBA, f panel.Frame) error {
 		return nil
 	}
 	wash := image.NewRGBA(img.Bounds())
-	if err := r.renderStaticWash(wash); err != nil {
+	if err := r.renderStaticForColor(wash, r.washColorFor(f.Interval)); err != nil {
 		return err
 	}
 	blendBases(img, img, wash, f.IntervalWeight)
@@ -421,15 +506,28 @@ func Run(ctx context.Context, r *Renderer, sink encode.Sink, progress func(i, n 
 		return err
 	}
 
-	// The wash style's second static base -- see renderStaticWash -- built
-	// once here, never per frame, and only when the style asks for it: an
-	// ordinary border or none render allocates no second buffer and blends
-	// nothing, which is the "opt-in" half of shipping wash at all.
-	var washBase *image.RGBA
+	// The wash style's colour-keyed table of static bases -- see
+	// r.washBases and washBaseFor -- built eagerly here, ONE PER DISTINCT
+	// COLOUR among r.washColors, never per frame, and only when the style
+	// asks for it: an ordinary border or none render allocates no second
+	// buffer and blends nothing, which is the "opt-in" half of shipping
+	// wash at all.
+	//
+	// One base per distinct colour rather than one per highlight: two
+	// highlights naming the same colour (including two uncoloured ones, which
+	// share washTheme's own derived tint) share one buffer, and the loop
+	// below never has to know which highlight is active, only which colour.
 	if r.ctx.HighlightStyle == panel.HighlightStyleWash {
-		washBase = image.NewRGBA(image.Rect(0, 0, r.ctx.Width, r.ctx.Height))
-		if err := r.renderStaticWash(washBase); err != nil {
-			return err
+		r.washBases = make(map[color.NRGBA]*image.RGBA, len(r.washColors))
+		for _, col := range r.washColors {
+			if _, ok := r.washBases[col]; ok {
+				continue
+			}
+			wb := image.NewRGBA(image.Rect(0, 0, r.ctx.Width, r.ctx.Height))
+			if err := r.renderStaticForColor(wb, col); err != nil {
+				return err
+			}
+			r.washBases[col] = wb
 		}
 	}
 
@@ -462,11 +560,13 @@ func Run(ctx context.Context, r *Renderer, sink encode.Sink, progress func(i, n 
 		// the entire reason the static layer exists, and at 45,000 frames the
 		// difference between a copy and re-rasterizing every axis and label is
 		// the difference between a render and an afternoon. Under wash, inside
-		// a highlight, the base is blended toward washBase by IntervalWeight
-		// first -- see blendBases and renderBase, which apply exactly the same
-		// rule so this loop and Render agree frame for frame.
-		if washBase != nil && f.Interval != panel.NoHighlight {
-			blendBases(buf, base, washBase, f.IntervalWeight)
+		// a highlight, the base is blended toward that highlight's OWN wash
+		// base -- r.washBaseFor(f.Interval), the table entry for its own
+		// resolved colour -- by IntervalWeight first. See blendBases and
+		// renderBase, which apply exactly the same rule so this loop and
+		// Render agree frame for frame.
+		if r.washBases != nil && f.Interval != panel.NoHighlight {
+			blendBases(buf, base, r.washBaseFor(f.Interval), f.IntervalWeight)
 		} else {
 			draw.Draw(buf, buf.Bounds(), base, image.Point{}, draw.Src)
 		}

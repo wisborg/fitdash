@@ -1,6 +1,9 @@
 package panel
 
-import "time"
+import (
+	"image/color"
+	"time"
+)
 
 // NoHighlight is the value Frame.Interval takes for a frame that belongs to
 // no highlight, and the value a Timeline segment carries when it is not a
@@ -65,6 +68,26 @@ type Highlight struct {
 	// correct and will look like a bug unless it is reported. See
 	// resolveHighlights.
 	PausedThroughout bool
+
+	// Background is the exact colour this highlight's own background=
+	// resolved to, meaningful only under --highlight-style wash -- every
+	// other style refuses background= outright (see cmd/highlight.go's
+	// resolveHighlights) rather than silently ignoring it or repurposing it
+	// as a border colour.
+	//
+	// Stored as a concrete color.NRGBA rather than the color.Color
+	// interface for two reasons, one idiomatic and one load-bearing: this
+	// project's presence-flag rule (see HasBackground), and because
+	// internal/render keys its colour-indexed table of static wash bases on
+	// this value -- color.Color is an interface with no comparability
+	// guarantee, and a map key needs one.
+	Background color.NRGBA
+
+	// HasBackground records whether Background was set at all. A zero
+	// color.NRGBA (transparent black) is a legitimate colour a user could
+	// type, so it cannot double as "unset" -- the same absence-is-not-zero
+	// rule every sensor reading in this project already follows.
+	HasBackground bool
 }
 
 // Rate resolves this highlight's own compression factor given the render's
@@ -89,8 +112,8 @@ func (h Highlight) Rate(base float64) float64 {
 }
 
 // --highlight-style's legal values. Exported so the CLI's own validation and
-// a future HighlightPanel or border overlay compare against one set of
-// strings rather than each defining its own.
+// a future MarkerPanel or border overlay compare against one set of strings
+// rather than each defining its own.
 const (
 	// HighlightStyleBorder marks a highlight with an accent border in the
 	// frame's margin plus the highlight strip. The default: it touches no
@@ -98,10 +121,14 @@ const (
 	// on why a Painter cannot change the background colour).
 	HighlightStyleBorder = "border"
 
-	// HighlightStyleWash additionally tints the whole background -- two
-	// static bases blended per frame by Frame.IntervalWeight, opt-in because
-	// it is the one style that can break the static/dynamic invariant every
-	// other panel in this project is built around.
+	// HighlightStyleWash additionally tints the whole background -- one
+	// static base per distinct colour, blended per frame by
+	// Frame.IntervalWeight, opt-in because it is the one style that can
+	// break the static/dynamic invariant every other panel in this project
+	// is built around. The colour is a highlight's own background= when it
+	// has one, or the theme's own derived tint otherwise -- see
+	// internal/render's washColorFor. Only this style gives background= any
+	// meaning at all; every other style refuses it.
 	HighlightStyleWash = "wash"
 
 	// HighlightStyleNone re-paces the highlighted stretches without marking

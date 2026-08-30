@@ -74,14 +74,14 @@ func LandscapeLayout() Layout {
 				}},
 			}},
 			{Panel: ElevationPanel{}, Weight: 1, Pad: 0.01},
-			// HighlightPanel declines outright with no --highlight
-			// configured (see its own Accepts), and Resolve prunes a
-			// declining leaf BEFORE dividing space among its siblings --
-			// so this row costs an ordinary render nothing: the rows
-			// above it get exactly the boxes they would have gotten had
-			// this line never been added. See
+			// MarkerPanel declines outright with neither --highlight
+			// nor --label configured (see its own Accepts), and Resolve
+			// prunes a declining leaf BEFORE dividing space among its
+			// siblings -- so this row costs an ordinary render nothing:
+			// the rows above it get exactly the boxes they would have
+			// gotten had this line never been added. See
 			// highlight_panel_test.go's pixel-identical test.
-			{Panel: HighlightPanel{}, Weight: 1, Pad: 0.01},
+			{Panel: MarkerPanel{}, Weight: 1, Pad: 0.01},
 		}},
 	}
 }
@@ -112,11 +112,11 @@ func PortraitLayout() Layout {
 				{Panel: Cadence(), Pad: 0.01},
 			}},
 			{Panel: ElevationPanel{}, Weight: 2, Pad: 0.01},
-			// See LandscapeLayout's own comment beside HighlightPanel: it
+			// See LandscapeLayout's own comment beside MarkerPanel: it
 			// declines and Resolve prunes it before the sibling rows'
 			// space is divided, so this row costs an ordinary render
 			// nothing.
-			{Panel: HighlightPanel{}, Weight: 1, Pad: 0.01},
+			{Panel: MarkerPanel{}, Weight: 1, Pad: 0.01},
 		}},
 	}
 }

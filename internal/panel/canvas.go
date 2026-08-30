@@ -122,6 +122,46 @@ func SelectTheme(name string) (Theme, error) {
 	return Theme{}, fmt.Errorf("panel: unknown theme %q; use %s", name, strings.Join(names, " or "))
 }
 
+// ContrastRatio is the WCAG 2 contrast ratio between a and b, in the range
+// [1, 21] -- 1 for identical colours, 21 for pure black against pure white.
+//
+// This is the one legibility number in this package that is not a judgement
+// call the way highlightWashStrength or highlightRestAlpha are: 4.5:1 is
+// WCAG 2's own published threshold for normal text, defensible because it is
+// not this project's own invention. TestThemesAreLegible uses it to check
+// every shipped theme's Foreground against its Background, and
+// cmd/highlight.go's --highlight background= warning uses it to check a
+// user-typed colour against Theme.Foreground, Theme.Dim and Theme.Absent.
+func ContrastRatio(a, b color.Color) float64 {
+	la, lb := relativeLuminance(a), relativeLuminance(b)
+	if la < lb {
+		la, lb = lb, la
+	}
+	return (la + 0.05) / (lb + 0.05)
+}
+
+// relativeLuminance is WCAG 2's formula: each sRGB channel is linearized
+// (undoing the gamma curve a display applies), then combined with the
+// standard luminance weights -- green dominates human perception of
+// brightness and blue barely registers, which is why the weights are not
+// equal.
+func relativeLuminance(c color.Color) float64 {
+	nc := color.NRGBAModel.Convert(c).(color.NRGBA)
+	r := linearizeSRGB(float64(nc.R) / 255)
+	g := linearizeSRGB(float64(nc.G) / 255)
+	b := linearizeSRGB(float64(nc.B) / 255)
+	return 0.2126*r + 0.7152*g + 0.0722*b
+}
+
+// linearizeSRGB undoes sRGB's gamma encoding for one channel, per WCAG 2's
+// own definition of relative luminance.
+func linearizeSRGB(c float64) float64 {
+	if c <= 0.03928 {
+		return c / 12.92
+	}
+	return math.Pow((c+0.055)/1.055, 2.4)
+}
+
 // FaceCache holds rasterized font faces, keyed by pixel size.
 //
 // Building a face is expensive and a render asks for the same handful of sizes

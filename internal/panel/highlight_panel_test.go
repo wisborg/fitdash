@@ -22,7 +22,7 @@ var highlightEpoch = time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 
 // highlightTestContext builds a Context over a 100-second, 30fps timeline
 // carrying the given highlights -- no Track and no Timer, because
-// HighlightPanel's own doc comment states the reason: it never reads a
+// MarkerPanel's own doc comment states the reason: it never reads a
 // Sample, so nothing here needs one. Tests that DO need a real activity (the
 // pixel-identical regression, below) build their own Context.
 func highlightTestContext(t *testing.T, w, h int, highlights []Highlight) (*Canvas, *image.RGBA, *Context) {
@@ -51,45 +51,102 @@ func highlightTestContext(t *testing.T, w, h int, highlights []Highlight) (*Canv
 	return c, img, ctx
 }
 
-// --- Accepts: the "no --highlight at all" policy ---------------------------
-
-// TestHighlightPanel_DeclinesWithNoHighlightsConfigured pins the policy from
-// the plan's absent-data table: no --highlight given at all is a fact about
-// the FLAGS, and the panel declines outright rather than drawing an empty
-// strip.
-func TestHighlightPanel_DeclinesWithNoHighlightsConfigured(t *testing.T) {
-	if (HighlightPanel{}).Accepts(&Context{}) {
-		t.Error("accepted a Context with a nil Highlights slice")
+// markerTestContext is highlightTestContext's sibling for tests that need
+// --label as well as, or instead of, --highlight. labels must already carry
+// resolved FirstFrame/LastFrame, exactly as cmd/label.go's resolveLabels
+// would hand them to a real Context -- this helper does not re-derive them,
+// the same discipline highlightTestContext follows for Highlight.From/To
+// already being activity-time offsets rather than something resolved here.
+func markerTestContext(t *testing.T, w, h int, highlights []Highlight, labels []Label) (*Canvas, *image.RGBA, *Context) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatalf("NewFaceCache: %v", err)
 	}
-	if (HighlightPanel{}).Accepts(&Context{Highlights: []Highlight{}}) {
-		t.Error("accepted a Context with an empty (non-nil) Highlights slice")
+	unit := float64(w)
+	if h < w {
+		unit = float64(h)
+	}
+	c, err := NewCanvas(img, unit*0.05, DefaultTheme(), faces)
+	if err != nil {
+		t.Fatalf("NewCanvas: %v", err)
+	}
+	tl, err := NewSegmentedTimeline(highlightEpoch, 100*time.Second, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewSegmentedTimeline: %v", err)
+	}
+	ctx := &Context{
+		Width: w, Height: h, FontScale: 0.05, Fonts: faces,
+		Timeline: tl, Highlights: highlights, Labels: labels,
+	}
+	return c, img, ctx
+}
+
+// --- Accepts: "is there anything on the timeline to show at all" -----------
+
+// TestMarkerPanel_DeclinesWithNeitherHighlightsNorLabelsConfigured pins the
+// policy from the plan's absent-data table: no --highlight AND no --label
+// given at all is a fact about the FLAGS, and the panel declines outright
+// rather than drawing an empty strip. Accepts asks exactly one question --
+// this covers every combination of "nil" and "empty, non-nil" across BOTH
+// slices, so a regression that only zero-checked one of the two would still
+// be caught.
+func TestMarkerPanel_DeclinesWithNeitherHighlightsNorLabelsConfigured(t *testing.T) {
+	cases := []struct {
+		name string
+		ctx  Context
+	}{
+		{"both nil", Context{}},
+		{"both empty, non-nil", Context{Highlights: []Highlight{}, Labels: []Label{}}},
+		{"highlights empty, labels nil", Context{Highlights: []Highlight{}}},
+		{"highlights nil, labels empty", Context{Labels: []Label{}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if (MarkerPanel{}).Accepts(&c.ctx) {
+				t.Error("accepted a Context with neither a highlight nor a label configured")
+			}
+		})
 	}
 }
 
-// TestHighlightPanel_AcceptsWhenHighlightsAreConfigured is the other half:
-// once even one highlight exists, the panel has real, invariant content
-// (the ribbon and its block) and must be placed.
-func TestHighlightPanel_AcceptsWhenHighlightsAreConfigured(t *testing.T) {
+// TestMarkerPanel_AcceptsWhenHighlightsAreConfigured is one half of the
+// "anything at all" question: once even one highlight exists, the panel has
+// real, invariant content (the ribbon and its block) and must be placed.
+func TestMarkerPanel_AcceptsWhenHighlightsAreConfigured(t *testing.T) {
 	highlights := []Highlight{{Name: "Hill", From: time.Minute, To: 2 * time.Minute}}
-	if !(HighlightPanel{}).Accepts(&Context{Highlights: highlights}) {
+	if !(MarkerPanel{}).Accepts(&Context{Highlights: highlights}) {
 		t.Error("declined despite a configured highlight")
+	}
+}
+
+// TestMarkerPanel_AcceptsWhenOnlyLabelsAreConfigured is the other half, and
+// the one the rename exists for: a labels-only render (no --highlight given
+// at all) must still be placed, because a label's tick is real, invariant
+// content of its own -- not a highlight, but still something on the
+// timeline to show.
+func TestMarkerPanel_AcceptsWhenOnlyLabelsAreConfigured(t *testing.T) {
+	labels := []Label{{Name: "Lighthouse", At: time.Minute, Video: 3 * time.Second, FirstFrame: 10, LastFrame: 19}}
+	if !(MarkerPanel{}).Accepts(&Context{Labels: labels}) {
+		t.Error("declined despite a configured label, with no highlight at all")
 	}
 }
 
 // --- did it actually draw ---------------------------------------------------
 
-// TestHighlightPanel_StaticDrawsTheRibbonAndDynamicDrawsThePlayhead is the
+// TestMarkerPanel_StaticDrawsTheRibbonAndDynamicDrawsThePlayhead is the
 // "did it draw" test every panel needs: Draw returns nothing, so a guard
 // that early-returned or a colour equal to the background would pass a test
 // that only checks for a nil error.
-func TestHighlightPanel_StaticDrawsTheRibbonAndDynamicDrawsThePlayhead(t *testing.T) {
+func TestMarkerPanel_StaticDrawsTheRibbonAndDynamicDrawsThePlayhead(t *testing.T) {
 	highlights := []Highlight{
 		{Name: "Hill climb", From: 10 * time.Second, To: 20 * time.Second},
 		{Name: "Sprint", From: 40 * time.Second, To: 41 * time.Second},
 	}
 	c, img, ctx := highlightTestContext(t, 400, 200, highlights)
 	box := Box{X: 20, Y: 20, W: 360, H: 160}
-	p := HighlightPanel{}.Prepare(ctx, box)
+	p := MarkerPanel{}.Prepare(ctx, box)
 
 	c.Fill(c.Theme.Background)
 	p.Static(c)
@@ -118,17 +175,17 @@ func TestHighlightPanel_StaticDrawsTheRibbonAndDynamicDrawsThePlayhead(t *testin
 
 // --- the "no name" policy ---------------------------------------------------
 
-// TestHighlightPanel_NoNameHighlightDrawsNoPlaceholderInTheNameArea pins the
+// TestMarkerPanel_NoNameHighlightDrawsNoPlaceholderInTheNameArea pins the
 // plan's most easily-gotten-wrong absent-data rule: a highlight with no name
 // shows NOTHING in the name area, not ReadoutPlaceholder or any other "--".
 // The block lighting up is itself the honest statement that a highlight is
 // active.
-func TestHighlightPanel_NoNameHighlightDrawsNoPlaceholderInTheNameArea(t *testing.T) {
+func TestMarkerPanel_NoNameHighlightDrawsNoPlaceholderInTheNameArea(t *testing.T) {
 	highlights := []Highlight{{Name: "", From: 10 * time.Second, To: 20 * time.Second}}
 	c, img, ctx := highlightTestContext(t, 400, 200, highlights)
 	box := Box{X: 0, Y: 0, W: 400, H: 200}
-	p := HighlightPanel{}.Prepare(ctx, box)
-	pp := p.(*highlightPainter)
+	p := MarkerPanel{}.Prepare(ctx, box)
+	pp := p.(*markerPainter)
 
 	c.Fill(c.Theme.Background)
 	p.Static(c)
@@ -146,16 +203,16 @@ func TestHighlightPanel_NoNameHighlightDrawsNoPlaceholderInTheNameArea(t *testin
 	}
 }
 
-// TestHighlightPanel_NamedHighlightFadesInWithIntervalWeight checks the
+// TestMarkerPanel_NamedHighlightFadesInWithIntervalWeight checks the
 // entrance ramp actually depends on Frame.IntervalWeight, and that at
 // weight 0 nothing is visible yet -- the "fades in" half of the plan's
 // description, as distinct from a hard cut.
-func TestHighlightPanel_NamedHighlightFadesInWithIntervalWeight(t *testing.T) {
+func TestMarkerPanel_NamedHighlightFadesInWithIntervalWeight(t *testing.T) {
 	highlights := []Highlight{{Name: "Hill climb", From: 10 * time.Second, To: 20 * time.Second}}
 	c, img, ctx := highlightTestContext(t, 400, 200, highlights)
 	box := Box{X: 0, Y: 0, W: 400, H: 200}
-	p := HighlightPanel{}.Prepare(ctx, box)
-	pp := p.(*highlightPainter)
+	p := MarkerPanel{}.Prepare(ctx, box)
+	pp := p.(*markerPainter)
 	nameBand := Box{X: box.X, Y: pp.nameY - pp.namePx, W: box.W, H: pp.namePx * 2}
 
 	render := func(weight float64) int {
@@ -173,10 +230,10 @@ func TestHighlightPanel_NamedHighlightFadesInWithIntervalWeight(t *testing.T) {
 	}
 }
 
-// TestHighlightPanel_BlockBrightensMonotonicallyTowardHighlightColour is the
+// TestMarkerPanel_BlockBrightensMonotonicallyTowardHighlightColour is the
 // pixel-level test the block itself never had: both
-// TestHighlightPanel_NoNameHighlightDrawsNoPlaceholderInTheNameArea and
-// TestHighlightPanel_NamedHighlightFadesInWithIntervalWeight sample only the
+// TestMarkerPanel_NoNameHighlightDrawsNoPlaceholderInTheNameArea and
+// TestMarkerPanel_NamedHighlightFadesInWithIntervalWeight sample only the
 // NAME band, so a regression that drew the block at highlightRestAlpha
 // forever -- Dynamic brightening the name but never the block it sits over
 // -- would pass every test in this file. Sampling the block's own pixel and
@@ -192,12 +249,12 @@ func TestHighlightPanel_NamedHighlightFadesInWithIntervalWeight(t *testing.T) {
 // must strictly decrease at every step, and at weight 1 (alpha exactly 1,
 // fully opaque) it must land on Theme.Highlight exactly, with no background
 // showing through at all.
-func TestHighlightPanel_BlockBrightensMonotonicallyTowardHighlightColour(t *testing.T) {
+func TestMarkerPanel_BlockBrightensMonotonicallyTowardHighlightColour(t *testing.T) {
 	highlights := []Highlight{{Name: "Hill", From: 10 * time.Second, To: 90 * time.Second}}
 	c, img, ctx := highlightTestContext(t, 400, 200, highlights)
 	box := Box{X: 0, Y: 0, W: 400, H: 200}
-	p := HighlightPanel{}.Prepare(ctx, box)
-	pp := p.(*highlightPainter)
+	p := MarkerPanel{}.Prepare(ctx, box)
+	pp := p.(*markerPainter)
 
 	block := pp.blocks[0]
 	x, y := int(block.X+block.W/2), int(block.Y+block.H/2)
@@ -239,13 +296,13 @@ func TestHighlightPanel_BlockBrightensMonotonicallyTowardHighlightColour(t *test
 
 // --- sizing: the longest name, not the active one ---------------------------
 
-// TestHighlightPanel_NameSizeUsesTheLongestNameRegardlessOfOrder pins the
+// TestMarkerPanel_NameSizeUsesTheLongestNameRegardlessOfOrder pins the
 // template rule from the plan: sized once, in Prepare, against the longest
 // name across every highlight -- never per-highlight, which would resize
 // the text as the render moved from one highlight to the next. Checking
 // argv order rather than just "long present vs not" is what actually tells
 // "longest" apart from "first" or "last".
-func TestHighlightPanel_NameSizeUsesTheLongestNameRegardlessOfOrder(t *testing.T) {
+func TestMarkerPanel_NameSizeUsesTheLongestNameRegardlessOfOrder(t *testing.T) {
 	const short = "A"
 	const long = "A very long highlight name indeed"
 	box := Box{X: 0, Y: 0, W: 300, H: 150}
@@ -258,7 +315,7 @@ func TestHighlightPanel_NameSizeUsesTheLongestNameRegardlessOfOrder(t *testing.T
 			from += 2 * time.Second
 		}
 		_, _, ctx := highlightTestContext(t, 300, 150, hs)
-		p := HighlightPanel{}.Prepare(ctx, box).(*highlightPainter)
+		p := MarkerPanel{}.Prepare(ctx, box).(*markerPainter)
 		return p.namePx
 	}
 
@@ -294,17 +351,17 @@ func TestFrameFraction_MatchesIndexAtOverFrames(t *testing.T) {
 	}
 }
 
-// TestHighlightPanel_BlocksSitInsideTheRibbonInFromOrder checks the blocks
+// TestMarkerPanel_BlocksSitInsideTheRibbonInFromOrder checks the blocks
 // this panel derives from Context.Highlights: within the ribbon it was given,
 // and in the same order as the (already-sorted) highlights they represent.
-func TestHighlightPanel_BlocksSitInsideTheRibbonInFromOrder(t *testing.T) {
+func TestMarkerPanel_BlocksSitInsideTheRibbonInFromOrder(t *testing.T) {
 	highlights := []Highlight{
 		{Name: "First", From: 10 * time.Second, To: 15 * time.Second},
 		{Name: "Second", From: 60 * time.Second, To: 65 * time.Second},
 	}
 	_, _, ctx := highlightTestContext(t, 400, 200, highlights)
 	box := Box{X: 10, Y: 10, W: 380, H: 180}
-	p := HighlightPanel{}.Prepare(ctx, box).(*highlightPainter)
+	p := MarkerPanel{}.Prepare(ctx, box).(*markerPainter)
 
 	if len(p.blocks) != 2 {
 		t.Fatalf("got %d blocks, want 2", len(p.blocks))
@@ -320,17 +377,17 @@ func TestHighlightPanel_BlocksSitInsideTheRibbonInFromOrder(t *testing.T) {
 	}
 }
 
-// TestHighlightPanel_ATinyHighlightStillGetsAVisibleBlock covers the same
+// TestMarkerPanel_ATinyHighlightStillGetsAVisibleBlock covers the same
 // class of failure Timeline's own zero-frame trap exists for: a highlight
 // short enough that its exact proportional width would round away to
 // nothing. A named highlight occupying no visible space in the strip that
 // exists to show it is the same silent failure as a highlight that occupies
 // no video at all.
-func TestHighlightPanel_ATinyHighlightStillGetsAVisibleBlock(t *testing.T) {
+func TestMarkerPanel_ATinyHighlightStillGetsAVisibleBlock(t *testing.T) {
 	highlights := []Highlight{{Name: "Blip", From: 50 * time.Second, To: 50*time.Second + 20*time.Millisecond}}
 	_, _, ctx := highlightTestContext(t, 400, 200, highlights)
 	box := Box{X: 0, Y: 0, W: 400, H: 200}
-	p := HighlightPanel{}.Prepare(ctx, box).(*highlightPainter)
+	p := MarkerPanel{}.Prepare(ctx, box).(*markerPainter)
 
 	want := minBlockFraction * p.ribbon.H
 	if got := p.blocks[0].W; got < want-0.5 {
@@ -340,15 +397,15 @@ func TestHighlightPanel_ATinyHighlightStillGetsAVisibleBlock(t *testing.T) {
 
 // --- the playhead moves ------------------------------------------------------
 
-// TestHighlightPanel_PlayheadMovesAcrossFrames guards the failure a single
+// TestMarkerPanel_PlayheadMovesAcrossFrames guards the failure a single
 // "did it draw" snapshot cannot see: a panel that draws the same thing every
 // frame. The static layer would still be right and the video would be the
 // right length, but the strip would never show where the render actually is.
-func TestHighlightPanel_PlayheadMovesAcrossFrames(t *testing.T) {
+func TestMarkerPanel_PlayheadMovesAcrossFrames(t *testing.T) {
 	highlights := []Highlight{{Name: "Hill", From: 10 * time.Second, To: 20 * time.Second}}
 	c, img, ctx := highlightTestContext(t, 400, 200, highlights)
 	box := Box{X: 0, Y: 0, W: 400, H: 200}
-	p := HighlightPanel{}.Prepare(ctx, box)
+	p := MarkerPanel{}.Prepare(ctx, box)
 
 	render := func(i int) []byte {
 		c.Fill(c.Theme.Background)
@@ -371,11 +428,11 @@ func TestHighlightPanel_PlayheadMovesAcrossFrames(t *testing.T) {
 
 // --- fitting every box shape -------------------------------------------------
 
-// TestHighlightPanel_FitsEveryBoxShape is the resolution and aspect-ratio
+// TestMarkerPanel_FitsEveryBoxShape is the resolution and aspect-ratio
 // check every panel needs: a Box is a rectangle this panel must fit, not an
 // anchor it can grow away from, so its ink must stay inside boxes of very
 // different shapes, including the narrow one a portrait layout produces.
-func TestHighlightPanel_FitsEveryBoxShape(t *testing.T) {
+func TestMarkerPanel_FitsEveryBoxShape(t *testing.T) {
 	highlights := []Highlight{
 		{Name: "Hill climb", From: 10 * time.Second, To: 20 * time.Second},
 		{Name: "", From: 60 * time.Second, To: 61 * time.Second},
@@ -415,7 +472,7 @@ func TestHighlightPanel_FitsEveryBoxShape(t *testing.T) {
 				Timeline: tl, Highlights: highlights,
 			}
 
-			p := HighlightPanel{}.Prepare(ctx, s.box)
+			p := MarkerPanel{}.Prepare(ctx, s.box)
 			c.Fill(c.Theme.Background)
 			p.Static(c)
 			p.Dynamic(c, Frame{Index: tl.Frames() / 3, Interval: 0, IntervalWeight: 0.6})
@@ -432,11 +489,322 @@ func TestHighlightPanel_FitsEveryBoxShape(t *testing.T) {
 	}
 }
 
+// --- labels: ticks, their own name area, and no cutting --------------------
+
+// TestMarkerPanel_TicksDrawWithNoHighlightsConfigured is the gate the plan
+// asks for by name: a labels-only render (no --highlight at all) must
+// accept (see TestMarkerPanel_AcceptsWhenOnlyLabelsAreConfigured) AND its
+// ticks must actually read as ink -- not merely a bare ribbon. Static draws
+// the tick unconditionally, so this is real content on every frame of such
+// a render, never a box waiting for a highlight that will not come.
+func TestMarkerPanel_TicksDrawWithNoHighlightsConfigured(t *testing.T) {
+	labels := []Label{{Name: "Lighthouse", At: 20 * time.Second, Video: 3 * time.Second, FirstFrame: 600, LastFrame: 689}}
+	c, img, ctx := markerTestContext(t, 400, 200, nil, labels)
+	box := Box{X: 20, Y: 20, W: 360, H: 160}
+	p := MarkerPanel{}.Prepare(ctx, box)
+	pp := p.(*markerPainter)
+	if len(pp.tickX) != 1 {
+		t.Fatalf("got %d ticks, want 1", len(pp.tickX))
+	}
+
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+
+	if n := inkCount(img, box, c.Theme); n == 0 {
+		t.Fatal("Static drew nothing for a labels-only render; the ribbon and the tick are its whole content")
+	}
+	tickBand := Box{
+		X: pp.tickX[0] - pp.tickW, Y: pp.ribbon.Y - pp.tickExtend,
+		W: 2 * pp.tickW, H: pp.tickExtend,
+	}
+	if n := inkCount(img, tickBand, c.Theme); n == 0 {
+		t.Error("no ink directly above the ribbon at the label's own tick position")
+	}
+	// The tick extends ABOVE the ribbon only -- a band of the same height
+	// sitting BELOW the ribbon's own bottom edge (outside the ribbon
+	// rectangle entirely, so this is not the ribbon's own ink) must show
+	// nothing. With no highlights configured there are no blocks and
+	// Static draws no playhead, so this band is bare background unless the
+	// tick itself bled downward through or past the ribbon, which the
+	// plan's shape distinction (unlike the playhead, which spans both
+	// sides) forbids. Started a couple of pixels past the ribbon's exact
+	// edge, not AT it, so the ribbon rectangle's own antialiasing fringe
+	// is not mistaken for a leaking tick.
+	belowRibbon := Box{X: pp.tickX[0] - pp.tickW, Y: pp.ribbon.Y + pp.ribbon.H + 2, W: 2 * pp.tickW, H: pp.tickExtend}
+	if n := inkCount(img, belowRibbon, c.Theme); n != 0 {
+		t.Errorf("tick ink found %v pixel-units below the ribbon; the tick must extend ABOVE the ribbon only", n)
+	}
+}
+
+// TestMarkerPanel_LabelNameFadesWithLabelWeight is Frame.LabelWeight's own
+// version of TestMarkerPanel_NamedHighlightFadesInWithIntervalWeight: the
+// label's name must genuinely ramp on Frame.LabelWeight rather than cut in,
+// so weight 0 shows nothing yet and weight 1 shows real ink.
+func TestMarkerPanel_LabelNameFadesWithLabelWeight(t *testing.T) {
+	labels := []Label{{Name: "Lighthouse", At: 20 * time.Second, Video: 3 * time.Second, FirstFrame: 600, LastFrame: 689}}
+	c, img, ctx := markerTestContext(t, 400, 200, nil, labels)
+	box := Box{X: 0, Y: 0, W: 400, H: 200}
+	p := MarkerPanel{}.Prepare(ctx, box)
+	pp := p.(*markerPainter)
+	// Sized a little SHORTER than the label name row's own real footprint
+	// (roughly one labelNamePx tall, centred on labelNameY -- see
+	// FaceCache.Measure, whose reported glyph height is close to the
+	// requested px) rather than this file's older highlight-name tests'
+	// doubled band: the label row sits close enough to the ribbon (see
+	// Prepare's own reasoning beside labelNameY) that a doubled band would
+	// reach into the ribbon's own always-on ink, and even the full
+	// labelNamePx band clips the ribbon's antialiasing fringe. 0.8x keeps
+	// clear of the ribbon while still comfortably covering real glyph ink.
+	nameBand := Box{X: box.X, Y: pp.labelNameY - pp.labelNamePx*0.4, W: box.W, H: pp.labelNamePx * 0.8}
+
+	render := func(weight float64) int {
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		p.Dynamic(c, Frame{Index: 645, Interval: NoHighlight, Label: 0, LabelWeight: weight})
+		return inkCount(img, nameBand, c.Theme)
+	}
+
+	if got := render(0); got != 0 {
+		t.Errorf("at label weight 0 the label name row already has %d pixels of ink; it should not have started fading in yet", got)
+	}
+	if got := render(1); got == 0 {
+		t.Error("at label weight 1 the label name row has no ink at all")
+	}
+}
+
+// TestMarkerPanel_LabelOverlappingAnActiveHighlightShowsBothNamesUnmoved is
+// the plan's own scenario for why the two get separate areas: a frame where
+// a highlight is fully active AND a label is fully on screen at once must
+// show BOTH names, at their own fixed Y (nameY for the highlight, a
+// distinct labelNameY for the label) -- neither one contending for, or
+// popping the other out of, a shared area.
+func TestMarkerPanel_LabelOverlappingAnActiveHighlightShowsBothNamesUnmoved(t *testing.T) {
+	highlights := []Highlight{{Name: "Hill climb", From: 10 * time.Second, To: 90 * time.Second}}
+	labels := []Label{{Name: "Lighthouse", At: 20 * time.Second, Video: 3 * time.Second, FirstFrame: 600, LastFrame: 689}}
+	c, img, ctx := markerTestContext(t, 400, 200, highlights, labels)
+	box := Box{X: 0, Y: 0, W: 400, H: 200}
+	p := MarkerPanel{}.Prepare(ctx, box)
+	pp := p.(*markerPainter)
+
+	if pp.nameY == pp.labelNameY {
+		t.Fatal("the highlight name and the label name share one Y position; they must have their own areas")
+	}
+	highlightBand := Box{X: box.X, Y: pp.nameY - pp.namePx, W: box.W, H: pp.namePx * 2}
+	labelBand := Box{X: box.X, Y: pp.labelNameY - pp.labelNamePx, W: box.W, H: pp.labelNamePx * 2}
+
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	p.Dynamic(c, Frame{Index: 645, Interval: 0, IntervalWeight: 1, Label: 0, LabelWeight: 1})
+
+	if n := inkCount(img, highlightBand, c.Theme); n == 0 {
+		t.Error("the highlight's own name area has no ink while a label overlaps it; the highlight name must not be pushed out")
+	}
+	if n := inkCount(img, labelBand, c.Theme); n == 0 {
+		t.Error("the label's own name area has no ink while it overlaps an active highlight")
+	}
+}
+
+// TestMarkerPanel_LabelNameAnchorsOverItsOwnTick is F5's regression test: a
+// label's name must be centred over its OWN tick, exactly the way a
+// highlight's name is centred over the midpoint of its own block -- not
+// centred in the panel, which is invisible with a single label configured
+// and, with several, leaves every name with no visible relationship to any
+// tick at all, defeating the point of drawing ticks.
+func TestMarkerPanel_LabelNameAnchorsOverItsOwnTick(t *testing.T) {
+	labels := []Label{
+		{Name: "A", At: 5 * time.Second, Video: 2 * time.Second, FirstFrame: 150, LastFrame: 209},
+		{Name: "B", At: 45 * time.Second, Video: 2 * time.Second, FirstFrame: 1350, LastFrame: 1409},
+		{Name: "C", At: 85 * time.Second, Video: 2 * time.Second, FirstFrame: 2550, LastFrame: 2609},
+	}
+	_, _, ctx := markerTestContext(t, 1200, 200, nil, labels)
+	box := Box{X: 0, Y: 0, W: 1200, H: 200}
+	p := MarkerPanel{}.Prepare(ctx, box).(*markerPainter)
+
+	if len(p.labelAnchorX) != len(labels) {
+		t.Fatalf("got %d label anchors, want %d", len(p.labelAnchorX), len(labels))
+	}
+	for i := range labels {
+		// Short, equal-length names spread well clear of either edge of a
+		// wide box: none of the three ticks is close enough for the edge
+		// clamp to move the anchor off it, so anchor and tick must coincide
+		// exactly.
+		if got, want := p.labelAnchorX[i], p.tickX[i]; got != want {
+			t.Errorf("label %d (%q) anchored at %.1f, want it over its own tick at %.1f",
+				i, labels[i].Name, got, want)
+		}
+	}
+	// The bug this pins collapsed every label's anchor onto the panel's
+	// centreX regardless of where its tick fell, which this also would have
+	// caught even without comparing to tickX above.
+	if p.labelAnchorX[0] == p.labelAnchorX[1] || p.labelAnchorX[1] == p.labelAnchorX[2] {
+		t.Errorf("label anchors are %v; three labels at different times must anchor at three different positions", p.labelAnchorX)
+	}
+}
+
+// TestMarkerPanel_LabelNameAnchorClampsNearTheEdge is the label-name
+// counterpart of the highlight name's own edge clamp: a label whose tick
+// falls right at the start of the ribbon must still print its whole name
+// inside the box, the same guarantee Prepare already gives a highlight's
+// name near either end.
+func TestMarkerPanel_LabelNameAnchorClampsNearTheEdge(t *testing.T) {
+	labels := []Label{{Name: "A rather long label name", At: 0, Video: 2 * time.Second, FirstFrame: 0, LastFrame: 59}}
+	_, _, ctx := markerTestContext(t, 400, 200, nil, labels)
+	box := Box{X: 0, Y: 0, W: 400, H: 200}
+	p := MarkerPanel{}.Prepare(ctx, box).(*markerPainter)
+
+	if len(p.labelAnchorX) != 1 {
+		t.Fatalf("got %d label anchors, want 1", len(p.labelAnchorX))
+	}
+	// The tick sits at the ribbon's own left edge; anchoring the name
+	// exactly over it would print half the name to the left of the box.
+	if p.labelAnchorX[0] <= p.tickX[0] {
+		t.Errorf("label anchored at %.1f, tick at %.1f; a name this long at the very start of the ribbon "+
+			"must be clamped inward, not left centred on (or before) its own tick", p.labelAnchorX[0], p.tickX[0])
+	}
+	if p.labelAnchorX[0] < box.X || p.labelAnchorX[0] > box.X+box.W {
+		t.Errorf("label anchor %.1f falls outside the panel's own box [%.1f, %.1f]", p.labelAnchorX[0], box.X, box.X+box.W)
+	}
+}
+
+// --- the playhead must clear the label name row -----------------------------
+
+// TestMarkerPanel_PlayheadClearsTheLabelNameRowAcrossEveryBoxShape is the
+// geometric half of the playhead/label-row regression coverage: Prepare
+// deliberately makes the playhead ASYMMETRIC (headExtendBelow shorter than
+// headExtend) so its downward tip stops clear of the label name row -- see
+// Prepare's own long comment beside headExtendBelow, which spells out that a
+// SYMMETRIC playhead already happened once and would draw an accent line
+// through every label's name.
+//
+// No existing test asserted the MARGIN itself. TestMarkerPanel_LabelNameFadesWithLabelWeight
+// and its neighbours all sample a band chosen to avoid the danger zone
+// rather than measure the clearance next to it, so a regression back to a
+// symmetric playhead would still pass every one of them -- this is written
+// specifically to close that gap.
+//
+// The margin is computed independently of Prepare's own internal fractions:
+// this reads back only the fields Prepare exports on the Painter (ribbon,
+// headExtendBelow, labelNameY, labelNamePx) plus an ACTUAL glyph-height
+// measurement from the font cache, rather than re-deriving the 0.05/0.07
+// figures from Prepare's own doc comment, which would only prove the
+// arithmetic agrees with itself rather than that real ink clears real ink.
+//
+// labelNamePx is deliberately left at its default, UNSHRUNK size -- no
+// --label is configured here -- rather than the size a real long name would
+// be fit to: Prepare's own comment notes that shrinking only moves the
+// row's top edge DOWN, away from the playhead, so the unshrunk size is the
+// TIGHTEST clearance this panel ever has to hold, and the one worth
+// checking at every shape.
+func TestMarkerPanel_PlayheadClearsTheLabelNameRowAcrossEveryBoxShape(t *testing.T) {
+	highlights := []Highlight{{Name: "Hill climb", From: 10 * time.Second, To: 20 * time.Second}}
+	shapes := []struct {
+		name           string
+		frameW, frameH int
+		box            Box
+	}{
+		{"1080p, a wide strip", 1920, 1080, Box{X: 40, Y: 900, W: 1840, H: 140}},
+		{"4K, the same layout", 3840, 2160, Box{X: 80, Y: 1800, W: 3680, H: 280}},
+		{"portrait, a short strip", 1080, 1920, Box{X: 30, Y: 1750, W: 1020, H: 140}},
+		{"a very narrow column", 1080, 1920, Box{X: 30, Y: 1750, W: 220, H: 140}},
+		{"a small box", 640, 360, Box{X: 10, Y: 300, W: 600, H: 50}},
+	}
+	for _, s := range shapes {
+		t.Run(s.name, func(t *testing.T) {
+			tl, err := NewSegmentedTimeline(highlightEpoch, 100*time.Second, 30, 1, highlights)
+			if err != nil {
+				t.Fatalf("NewSegmentedTimeline: %v", err)
+			}
+			faces, err := NewFaceCache()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := &Context{
+				Width: s.frameW, Height: s.frameH, FontScale: 0.05, Fonts: faces,
+				Timeline: tl, Highlights: highlights,
+			}
+			p := MarkerPanel{}.Prepare(ctx, s.box).(*markerPainter)
+			if !p.ok {
+				t.Fatal("precondition: Prepare bailed out; the fixture is wrong")
+			}
+
+			// "Ap" carries both an ascender and a descender, so the measured
+			// height is the real worst-case glyph extent rather than a
+			// string that happens to sit entirely above the baseline.
+			_, glyphH, err := faces.Measure("Ap", p.labelNamePx)
+			if err != nil {
+				t.Fatalf("Measure: %v", err)
+			}
+			playheadBottom := p.ribbon.Y + p.ribbon.H + p.headExtendBelow
+			labelTop := p.labelNameY - glyphH/2
+
+			if margin := labelTop - playheadBottom; margin <= 0 {
+				t.Errorf("playhead's own bottom tip (y=%.2f) reaches at or past the label name row's own top (y=%.2f); "+
+					"margin = %.2f, want a positive margin at every box shape", playheadBottom, labelTop, margin)
+			}
+		})
+	}
+}
+
+// TestMarkerPanel_PlayheadDoesNotBleedIntoAnOnScreenLabelName is the pixel
+// counterpart of the geometric test above: it proves the margin holds in
+// drawn ink, not only in the coordinates Prepare computed to produce it.
+//
+// The playhead and the active label's own tick are placed at EXACTLY the
+// same x -- the label's FirstFrame is set to the very frame index the
+// playhead is drawn at, so both positions derive from the identical
+// fraction of the ribbon -- which is the single worst frame for this
+// collision: any bleed lands squarely inside the label's own glyph box
+// rather than beside it.
+//
+// The glyph box is MEASURED, not guessed: FaceCache.Measure at the
+// painter's own labelNamePx, centred on the painter's own labelAnchorX and
+// labelNameY -- the exact box Canvas.Text paints into with ax=ay=0.5.
+//
+// PROVED LOAD-BEARING while writing this test: temporarily setting
+// headExtendBelow to the same value as headExtend in Prepare (restoring the
+// pre-fix symmetric playhead) made this test fail with a nonzero
+// accent-pixel count inside the glyph box; reverted immediately after
+// confirming it, with no production code left changed.
+func TestMarkerPanel_PlayheadDoesNotBleedIntoAnOnScreenLabelName(t *testing.T) {
+	const frames = 3000 // 100s at 30fps, matching markerTestContext's own Timeline
+	const mid = frames / 2
+	labels := []Label{{Name: "Lighthouse", At: 0, Video: time.Second, FirstFrame: mid, LastFrame: mid + 29}}
+	c, img, ctx := markerTestContext(t, 1920, 1080, nil, labels)
+	box := Box{X: 40, Y: 900, W: 1840, H: 140}
+	p := MarkerPanel{}.Prepare(ctx, box).(*markerPainter)
+	if !p.ok {
+		t.Fatal("precondition: Prepare bailed out")
+	}
+	if p.frames != frames {
+		t.Fatalf("precondition: painter carries %d frames, want %d -- the fixture is wrong", p.frames, frames)
+	}
+
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	p.Dynamic(c, Frame{Index: mid, Interval: NoHighlight, Label: 0, LabelWeight: 1})
+
+	w, h, err := ctx.Fonts.Measure(labels[0].Name, p.labelNamePx)
+	if err != nil {
+		t.Fatalf("Measure: %v", err)
+	}
+	glyphBox := Box{X: p.labelAnchorX[0] - w/2, Y: p.labelNameY - h/2, W: w, H: h}
+
+	if got := countNearInBox(img, glyphBox, c.Theme.Accent, 12); got != 0 {
+		t.Errorf("%d accent-coloured pixels inside the label's own glyph box; the playhead bled into the name it must clear", got)
+	}
+	// And the label's own name DID draw somewhere in there, or a margin so
+	// generous the playhead could never reach it would trivially pass this
+	// test by drawing nothing worth colliding with at all.
+	if got := countNearInBox(img, glyphBox, c.Theme.Foreground, 40); got == 0 {
+		t.Fatal("no foreground ink in the label's own glyph box either; the fixture drew no name to test the margin against")
+	}
+}
+
 // --- the pixel-identical regression -----------------------------------------
 
 // oldLandscapeLayout and oldPortraitLayout are a FROZEN copy of
 // LandscapeLayout and PortraitLayout exactly as they stood before
-// HighlightPanel's row was added -- not a helper that could drift with a
+// MarkerPanel's row was added -- not a helper that could drift with a
 // future edit, a fixed historical snapshot this test diffs the real
 // functions against. See TestNoHighlightRenderIsPixelIdenticalToBeforeThisFeature.
 func oldLandscapeLayout() Layout {
@@ -539,18 +907,23 @@ func renderFullFrame(t *testing.T, ctx *Context, layout Layout, i int) *image.RG
 	return img
 }
 
-// TestNoHighlightRenderIsPixelIdenticalToBeforeThisFeature is the strongest
-// claim the plan asks for: adding HighlightPanel's row to both layouts must
-// not move a single pixel of a render that configures no --highlight.
+// TestNoHighlightOrLabelRenderIsPixelIdenticalToBeforeThisFeature is the
+// strongest claim the plan asks for: adding MarkerPanel's row to both
+// layouts must not move a single pixel of a render that configures neither
+// --highlight nor --label. Extended from the highlight-only original to
+// cover Labels too -- a regression that zero-checked only Highlights in
+// Accepts, or that gave MarkerPanel an empty-but-non-nil Labels slice by
+// mistake somewhere upstream, would have passed the old version of this
+// test and failed this one.
 //
 // It works BECAUSE of where the row sits and how Resolve prunes: Accepts
-// declines with no highlights configured, and Layout.Resolve removes a
-// declined leaf from the tree BEFORE any box is divided -- so the surviving
-// rows' weight fractions are computed exactly as if this leaf had never
-// existed (see Layout.Resolve's own doc comment). This test pins that
-// mechanism against a frozen copy of the layouts as they stood immediately
-// before this feature, rather than trusting the argument on its own.
-func TestNoHighlightRenderIsPixelIdenticalToBeforeThisFeature(t *testing.T) {
+// declines with neither configured, and Layout.Resolve removes a declined
+// leaf from the tree BEFORE any box is divided -- so the surviving rows'
+// weight fractions are computed exactly as if this leaf had never existed
+// (see Layout.Resolve's own doc comment). This test pins that mechanism
+// against a frozen copy of the layouts as they stood immediately before
+// this feature, rather than trusting the argument on its own.
+func TestNoHighlightOrLabelRenderIsPixelIdenticalToBeforeThisFeature(t *testing.T) {
 	opts := fittest.DefaultOptions()
 	opts.Count = 300
 	path := filepath.Join(t.TempDir(), "activity.fit")
@@ -585,15 +958,17 @@ func TestNoHighlightRenderIsPixelIdenticalToBeforeThisFeature(t *testing.T) {
 			ctx := &Context{
 				Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
 				Width: c.w, Height: c.h, FontScale: 0.05, Fonts: faces,
-				// The point of the test: no --highlight was given.
+				// The point of the test: no --highlight and no --label
+				// were given.
 				Highlights: nil,
+				Labels:     nil,
 			}
 			for _, i := range []int{0, tl.Frames() / 2, tl.Frames() - 1} {
 				got := renderFullFrame(t, ctx, c.newL, i)
 				want := renderFullFrame(t, ctx, c.oldL, i)
 				if !bytes.Equal(got.Pix, want.Pix) {
-					t.Errorf("frame %d: rendering %s WITH HighlightPanel's row differs from rendering it without one; "+
-						"a render with no --highlight must be pixel-identical to before this feature existed",
+					t.Errorf("frame %d: rendering %s WITH MarkerPanel's row differs from rendering it without one; "+
+						"a render with no --highlight and no --label must be pixel-identical to before this feature existed",
 						i, c.name)
 				}
 			}
