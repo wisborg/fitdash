@@ -315,6 +315,31 @@ func (c *Canvas) Polyline(xs, ys []float64, width float64, col color.Color) {
 	c.dc.Stroke()
 }
 
+// Polygon fills the closed area bounded by the given points, which must be
+// the same length. Fewer than three points draws nothing -- two points have
+// no interior, and a degenerate call (a profile with no span, say) should
+// cost nothing rather than fill a sliver by accident.
+//
+// Mirrors Polyline's guards rather than composing on top of it: a filled
+// area and a stroked path are different primitives (Fill versus Stroke on
+// the same path), not one built from repeated calls to the other. A column
+// of 1px Rects was considered and rejected -- it needs no new primitive, but
+// costs on the order of a plot's pixel width in draw calls every frame, and
+// hides "fill the area under a curve" inside whichever panel wants it
+// instead of putting it where drawing primitives live.
+func (c *Canvas) Polygon(xs, ys []float64, col color.Color) {
+	if len(xs) != len(ys) || len(xs) < 3 {
+		return
+	}
+	c.dc.SetColor(col)
+	c.dc.MoveTo(xs[0], ys[0])
+	for i := 1; i < len(xs); i++ {
+		c.dc.LineTo(xs[i], ys[i])
+	}
+	c.dc.ClosePath()
+	c.dc.Fill()
+}
+
 // Circle fills a disc of radius r centred at (x, y).
 func (c *Canvas) Circle(x, y, r float64, col color.Color) {
 	if r <= 0 {

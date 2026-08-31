@@ -53,18 +53,41 @@ func LandscapeLayout() Layout {
 		Name:      "landscape",
 		Margin:    0.03,
 		FontScale: 0.05,
-		// The elevation profile gets a full-width strip along the bottom
-		// rather than a share of the readout column. It is a wide graph by
-		// nature -- a distance axis with two labels at its ends -- and in a
-		// narrow box those labels grow toward each other until they collide.
+		// This band shows the elevation profile, or the distance readout in
+		// its place if there is no profile -- an Alt slot (layout.go), not a
+		// Row: since the fill under the profile became this project's own
+		// distance indicator (see elevation.go), the profile and the readout
+		// never draw in the same frame, so there is nothing left for a Row's
+		// weights to divide between them. See layout.go's Alt doc comment for
+		// the mechanism and the one gap it leaves in the decline summary, and
+		// docs/architecture.md's "one band, two candidates" section for the
+		// full design.
+		//
+		// This is still a layout-level grouping, not a composite panel: an Alt
+		// slot holding the two existing panels unmodified. A panel that drew
+		// both would be the first in the project to sub-divide its own box,
+		// and it would report one Name() in the summary where another panel's
+		// data is actually shown -- hiding a declined profile behind a panel
+		// that claims it drew.
+		//
+		// Alt over a shared predicate -- a strip-variant of Distance whose own
+		// Accepts also calls ElevationPanel{}.Accepts -- is deliberate, not
+		// merely the cheaper option skipped: Accepts is a pure function of
+		// Context and cannot see Resolve's own keep filter, so the deferred
+		// --no-elevation flag would remove the profile by keep AND leave that
+		// variant's own Accepts declining, pruning the whole band and deleting
+		// distance from the render -- exactly the outcome this change exists
+		// to prevent. Under Alt, keep(elevation) returning false simply falls
+		// through to the next candidate, which does the right thing for free.
+		//
+		// Each candidate keeps its own ordinary leaf Pad. There is no more
+		// "daylight between two halves" to defend here -- the two never share
+		// a frame for a pad to separate them within.
 		Root: Slot{Dir: Col, Children: []Slot{
 			{Dir: Row, Weight: 4, Children: []Slot{
 				{Dir: Col, Weight: 3, Children: []Slot{
 					{Panel: RoutePanel{}, Weight: 3, Pad: 0.01},
-					{Dir: Row, Weight: 2, Children: []Slot{
-						{Panel: ElapsedPanel{}, Weight: 3, Pad: 0.01},
-						{Panel: Distance(), Weight: 2, Pad: 0.01},
-					}},
+					{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
 				}},
 				{Dir: Col, Weight: 1, Children: []Slot{
 					{Panel: HeartRate(), Pad: 0.01},
@@ -73,7 +96,10 @@ func LandscapeLayout() Layout {
 					{Panel: Cadence(), Pad: 0.01},
 				}},
 			}},
-			{Panel: ElevationPanel{}, Weight: 1, Pad: 0.01},
+			{Dir: Alt, Weight: 1, Children: []Slot{
+				{Panel: ElevationPanel{}, Pad: 0.01},
+				{Panel: Distance(), Pad: 0.01},
+			}},
 			// MarkerPanel declines outright with neither --highlight
 			// nor --label configured (see its own Accepts), and Resolve
 			// prunes a declining leaf BEFORE dividing space among its
@@ -99,10 +125,7 @@ func PortraitLayout() Layout {
 		FontScale: 0.05,
 		Root: Slot{Dir: Col, Children: []Slot{
 			{Panel: RoutePanel{}, Weight: 4, Pad: 0.01},
-			{Dir: Row, Weight: 2, Children: []Slot{
-				{Panel: ElapsedPanel{}, Weight: 3, Pad: 0.01},
-				{Panel: Distance(), Weight: 2, Pad: 0.01},
-			}},
+			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
 			{Dir: Row, Weight: 2, Children: []Slot{
 				{Panel: HeartRate(), Pad: 0.01},
 				{Panel: Pace(), Pad: 0.01},
@@ -111,7 +134,18 @@ func PortraitLayout() Layout {
 				{Panel: Power(), Pad: 0.01},
 				{Panel: Cadence(), Pad: 0.01},
 			}},
-			{Panel: ElevationPanel{}, Weight: 2, Pad: 0.01},
+			// This band shows the elevation profile, or the distance readout
+			// in its place if there is no profile, exactly as
+			// LandscapeLayout's own Alt slot does -- see that function's
+			// comment for the mechanism (an Alt slot, not a Row, because the
+			// two never draw in the same frame once the fill under the
+			// profile became this project's own distance indicator) and for
+			// why --no-elevation needs it to be Alt rather than a shared
+			// predicate on Distance's own Accepts.
+			{Dir: Alt, Weight: 2, Children: []Slot{
+				{Panel: ElevationPanel{}, Pad: 0.01},
+				{Panel: Distance(), Pad: 0.01},
+			}},
 			// See LandscapeLayout's own comment beside MarkerPanel: it
 			// declines and Resolve prunes it before the sibling rows'
 			// space is divided, so this row costs an ordinary render

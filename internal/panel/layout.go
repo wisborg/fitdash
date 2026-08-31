@@ -46,13 +46,45 @@ const (
 	Row Dir = iota
 	// Col places children top to bottom, dividing the height.
 	Col
+	// Alt does not divide its box at all: the first child that survives
+	// the keep filter takes the WHOLE box, and the rest are not asked.
+	//
+	// This exists for a box whose candidates are mutually exclusive
+	// rather than complementary -- the elevation profile and the distance
+	// readout, in layouts.go, are the case it was built for, and the
+	// design note there explains why a shared predicate on the losing
+	// candidate's own Accepts was rejected in favour of this. Because
+	// pruning (see pruneSlot) removes a rejected leaf before any box is
+	// divided, Alt needs no separate placement logic: once pruned to its
+	// one survivor, the ordinary proportional division in placeSlot hands
+	// that survivor everything, exactly as any other single-child split
+	// would.
+	//
+	// A weight on an Alt child would do nothing -- there is never more
+	// than one survivor to divide space between -- so Validate rejects
+	// one rather than silently ignoring it.
+	//
+	// The gap this leaves: when an earlier candidate wins, the keep
+	// filter is never asked about a later one, so that candidate appears
+	// in neither Resolve's placements nor a caller's "declined" report
+	// (see cmd/render.go's summary). Nothing is hidden from the frame --
+	// the surviving candidate drew, and drew the thing the later one would
+	// have shown -- but a reader grepping a decline summary for the later
+	// candidate's name finds nothing. Closing it needs a new "superseded"
+	// callback the engine does not have today; not worth adding for the
+	// one slot that needs it.
+	Alt
 )
 
 func (d Dir) String() string {
-	if d == Col {
+	switch d {
+	case Col:
 		return "col"
+	case Alt:
+		return "alt"
+	default:
+		return "row"
 	}
-	return "row"
 }
 
 // Slot is a node in a layout: either a leaf holding one Panel, or a split
@@ -154,7 +186,16 @@ func validateSlot(s Slot, layout, path string) error {
 		return fmt.Errorf("panel: layout %q: %s holds neither a panel nor any children", layout, path)
 	default:
 		for i, c := range s.Children {
-			if err := validateSlot(c, layout, fmt.Sprintf("%s.%s[%d]", path, s.Dir, i)); err != nil {
+			childPath := fmt.Sprintf("%s.%s[%d]", path, s.Dir, i)
+			if s.Dir == Alt && c.Weight != 0 {
+				// An Alt slot never divides space between children -- the
+				// first survivor takes all of it -- so a weight here does
+				// nothing and would mislead a reader exactly as the dead
+				// 4:1 weights this slot replaced would have.
+				return fmt.Errorf("panel: layout %q: %s has a weight of %v, but a weight on an alt child does nothing",
+					layout, childPath, c.Weight)
+			}
+			if err := validateSlot(c, layout, childPath); err != nil {
 				return err
 			}
 		}
@@ -215,6 +256,20 @@ func (l Layout) Resolve(w, h int, keep func(Panel) bool) ([]Placed, error) {
 func pruneSlot(s Slot, keep func(Panel) bool) (Slot, bool) {
 	if s.isLeaf() {
 		return s, keep(s.Panel)
+	}
+	if s.Dir == Alt {
+		// The first child that survives (recursively pruned, so an Alt
+		// candidate that is itself a split works too) takes the slot
+		// whole; later candidates are never even asked. See the Alt doc
+		// comment for why this, rather than a shared predicate on the
+		// losing candidate, is the mechanism.
+		for _, c := range s.Children {
+			if pc, ok := pruneSlot(c, keep); ok {
+				s.Children = []Slot{pc}
+				return s, true
+			}
+		}
+		return Slot{}, false
 	}
 	kept := make([]Slot, 0, len(s.Children))
 	for _, c := range s.Children {

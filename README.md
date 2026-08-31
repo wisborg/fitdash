@@ -11,9 +11,14 @@ fitdash activity.fit --video-duration 3m
 
 Eight panels ship today: the route, an elapsed/active clock, distance, heart rate, pace,
 power, cadence, and an elevation profile — plus a ninth, the marker strip, which appears
-only when `--highlight` or `--label` gives it something to mark. Panels that have no data in
-a given activity decline, and the layout closes up around them — an indoor ride simply has
-no route panel, and the summary says so by name rather than leaving an unexplained gap.
+only when `--highlight` or `--label` gives it something to mark. The distance readout is
+conditional in its own way: the area under the elevation profile fills as the activity
+progresses and is itself the distance indicator, so the readout is drawn only on an
+activity that has no profile to fill — a rowing machine, or a course flat enough that
+there is no trace to draw — and it takes the band the profile would have had. Panels that
+have no data in a given activity decline, and the layout closes up around them: an indoor
+ride simply has no route panel, and the summary says so by name rather than leaving an
+unexplained gap.
 
 `--layout` picks the arrangement (`auto`, which follows the frame's shape, or `landscape`
 or `portrait` forced) and `--theme` the palette (`dark` or `light`).

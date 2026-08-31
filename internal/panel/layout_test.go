@@ -331,6 +331,149 @@ func TestResolve_SingleSurvivorTakesTheWholeBox(t *testing.T) {
 	}
 }
 
+// --- Alt: the ordered-alternatives slot -------------------------------------
+
+// TestResolve_AltTakesTheFirstSurvivorWhole pins the mechanism's basic claim:
+// an Alt slot does not divide its box among its children the way a Row or Col
+// would -- the first child that survives keep gets the WHOLE box, and the
+// later ones are not even asked. altKeep below would place "b" if it were
+// ever consulted (it is not rejected), so a regression that divided the box
+// between "a" and "b", or that asked keep("b") at all, would show up as
+// either a narrower "a" or a placed "b".
+func TestResolve_AltTakesTheFirstSurvivorWhole(t *testing.T) {
+	asked := map[string]bool{}
+	l := Layout{
+		Name:      "test",
+		FontScale: 0.03,
+		Root: Slot{Dir: Row, Children: []Slot{
+			leaf("other", 0),
+			{Dir: Alt, Children: []Slot{leaf("a", 0), leaf("b", 0)}},
+		}},
+	}
+	keep := func(p Panel) bool {
+		asked[p.Name()] = true
+		return true
+	}
+	placed, err := l.Resolve(1000, 400, keep)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := names(placed); len(got) != 2 || got[0] != "other" || got[1] != "a" {
+		t.Fatalf("placed %v, want [other a] -- \"a\" is the first Alt candidate and survives, so it alone represents the slot", got)
+	}
+	if asked["b"] {
+		t.Error("keep was asked about \"b\", the second Alt candidate; Alt must not consult a later candidate once an earlier one survives")
+	}
+	a := boxOf(t, placed, "a")
+	if !closeTo(a.W, 500) {
+		t.Errorf("\"a\" is %g wide, want 500 (half of 1000, the Alt slot's own share as the row's other equal-weight child) -- "+
+			"an Alt slot must not divide its OWN box among its children", a.W)
+	}
+	assertTiles(t, placed, Box{W: 1000, H: 400})
+}
+
+// TestResolve_AltFallsThroughToALaterSurvivor is the fallback half of the
+// same claim: when the first candidate declines, the SECOND one takes the
+// slot whole, not a share of it -- this is the behaviour --no-elevation
+// depends on (see layouts.go's Alt comment): rejecting the first candidate by
+// name must hand the whole band to the second, not merely remove the first
+// from a shared division.
+func TestResolve_AltFallsThroughToALaterSurvivor(t *testing.T) {
+	l := Layout{
+		Name:      "test",
+		FontScale: 0.03,
+		Root:      Slot{Dir: Alt, Children: []Slot{leaf("first", 0), leaf("second", 0)}},
+	}
+	keep := func(p Panel) bool { return p.Name() != "first" }
+	placed, err := l.Resolve(800, 300, keep)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := names(placed); len(got) != 1 || got[0] != "second" {
+		t.Fatalf("placed %v, want [second]", got)
+	}
+	if b := boxOf(t, placed, "second"); !closeTo(b.W, 800) || !closeTo(b.H, 300) {
+		t.Errorf("\"second\" box is %+v, want the whole 800x300 -- a surviving later candidate takes the slot whole, not a share of it", b)
+	}
+}
+
+// TestResolve_AltWithNoSurvivorsPrunesLikeAnyOtherSplit checks an Alt slot
+// where every candidate declines behaves exactly as a Row or Col in the same
+// position would: it vanishes and its siblings grow into its space, rather
+// than reserving a box nothing draws in.
+func TestResolve_AltWithNoSurvivorsPrunesLikeAnyOtherSplit(t *testing.T) {
+	l := Layout{
+		Name:      "test",
+		FontScale: 0.03,
+		Root: Slot{Dir: Row, Children: []Slot{
+			leaf("keep", 0),
+			{Dir: Alt, Children: []Slot{leaf("gone1", 0), leaf("gone2", 0)}},
+		}},
+	}
+	keep := func(p Panel) bool { return p.Name() == "keep" }
+	placed, err := l.Resolve(1000, 500, keep)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(placed) != 1 {
+		t.Fatalf("placed %v, want only [keep]", names(placed))
+	}
+	if b := boxOf(t, placed, "keep"); !closeTo(b.W, 1000) {
+		t.Errorf("keep is %g wide, want the whole 1000 -- an Alt slot with no survivors must not reserve space", b.W)
+	}
+}
+
+// TestResolve_SingleCandidateAltBehavesAsALeaf checks the degenerate case of
+// one candidate: it must simply take the box, exactly as a bare leaf would,
+// with no observable difference from removing the Alt wrapper entirely.
+func TestResolve_SingleCandidateAltBehavesAsALeaf(t *testing.T) {
+	l := Layout{
+		Name:      "test",
+		FontScale: 0.03,
+		Root:      Slot{Dir: Alt, Children: []Slot{leaf("only", 0)}},
+	}
+	placed, err := l.Resolve(640, 480, nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(placed) != 1 {
+		t.Fatalf("placed %v, want [only]", names(placed))
+	}
+	if b := boxOf(t, placed, "only"); !closeTo(b.W, 640) || !closeTo(b.H, 480) {
+		t.Errorf("\"only\" box is %+v, want the whole 640x480", b)
+	}
+}
+
+// TestLayout_ValidateRejectsAWeightedAltChild pins the one Validate rule Alt
+// adds: a weight on an Alt child does nothing (an Alt slot never divides
+// space between its children) and would mislead a reader exactly as the dead
+// 4:1 weights this slot replaced in layouts.go would have, so it is refused
+// rather than silently ignored.
+func TestLayout_ValidateRejectsAWeightedAltChild(t *testing.T) {
+	l := Layout{
+		Name:      "t",
+		FontScale: 0.03,
+		Root:      Slot{Dir: Alt, Children: []Slot{leaf("a", 2), leaf("b", 0)}},
+	}
+	if err := l.Validate(); err == nil {
+		t.Error("Validate accepted an Alt child with a non-zero weight")
+	}
+	if _, err := l.Resolve(1000, 1000, nil); err == nil {
+		t.Error("Resolve accepted an Alt child with a non-zero weight")
+	}
+
+	// A weight of exactly zero (the "unset" value, per weightOf) is fine: it
+	// is indistinguishable from a weight nobody spelled at all.
+	ok := Layout{
+		Name:      "t",
+		FontScale: 0.03,
+		Root:      Slot{Dir: Alt, Children: []Slot{leaf("a", 0), leaf("b", 0)}},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("Validate rejected an Alt slot whose children carry no weight at all: %v", err)
+	}
+}
+
 // TestResolve_EverythingDeclinedPlacesNothing covers the degenerate case
 // without an error: an activity that carries nothing any panel can show is a
 // real input, and the caller decides what to do about an empty frame.
@@ -489,4 +632,133 @@ func TestResolve_NestedSplitsTileExactly(t *testing.T) {
 		t.Fatalf("placed %v, want seven panels", names(placed))
 	}
 	assertTiles(t, placed, Box{W: 1913, H: 1071})
+}
+
+// --- the merged strip's decline table, over the REAL trees -----------------
+
+// namesRejecting builds a Resolve keep predicate from the panel names it
+// should reject, so a test case reads as the set of things an activity does
+// NOT carry rather than as a closure.
+func namesRejecting(names ...string) func(Panel) bool {
+	reject := make(map[string]bool, len(names))
+	for _, n := range names {
+		reject[n] = true
+	}
+	return func(p Panel) bool { return !reject[p.Name()] }
+}
+
+// TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle
+// covers the bottom strip's decline table (the elevation/distance merge's
+// design doc, section D) against the REAL LandscapeLayout and PortraitLayout
+// trees -- never a synthetic fixture -- at three frame sizes, with a keep
+// predicate that rejects by Panel.Name() the way an activity's own Accepts
+// answers would.
+//
+// This is the cheapest possible way to cover arrangements nobody will ever
+// look at: Resolve takes an arbitrary keep function, so a combination
+// fittest cannot produce today -- no elevation, no distance; both are
+// derived from the same synthetic track and there is no switch to omit
+// either (see fittest.Options) -- is exercised at the LAYOUT level with no
+// FIT fixture and no pixel drawn.
+//
+// The property under test is the one pruneSlot's own doc comment promises:
+// a declining leaf is removed BEFORE its siblings' space is divided, so no
+// combination should ever leave an empty box or a rectangle nothing claims.
+// "Positive" and "no two overlap" are checked directly on the boxes Resolve
+// actually returns. "Tiles its parent" is checked by reconstructing each
+// leaf's PRE-PAD allocation: every leaf in both real trees carries the SAME
+// Pad (0.01; see layouts.go, including both children of the bottom strip's
+// Alt slot), so expanding a leaf's final box back out by that pad recovers
+// exactly the rectangle its enclosing split handed it, and the reconstructed
+// rectangles must then tile the margin-inset frame exactly -- checked with
+// the same assertTiles helper the zero-pad synthetic fixtures above already
+// use. A real gap (a box some pruning step forgot to grow into) would show up
+// here as reconstructed area short of the frame; real overlap would show up
+// as two reconstructed boxes overlapping by more than a shared boundary.
+//
+// wantDistance pins WHICH of the bottom strip's two Alt candidates actually
+// drew, in the case that geometry alone cannot distinguish: the strip's total
+// area is identical whether the profile or the readout took it, so a
+// regression that put them back in a Row beside each other -- restoring the
+// second distance indicator this branch removed -- would satisfy every
+// geometric assertion below and still be wrong. "All present" must show the
+// elevation profile and NOT the readout (elevation is the first Alt
+// candidate and, given a real track, always accepts here); "no elevation"
+// must show the readout, since the Alt slot falls through to it. The other
+// cases follow the same rule mechanically once elevation's own presence in
+// the keep predicate is known.
+func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(t *testing.T) {
+	const leafPad = 0.01
+
+	cases := []struct {
+		name         string
+		keep         func(Panel) bool
+		wantDistance bool // whether the "distance" panel itself must be among placed
+	}{
+		{"all present", nil, false},
+		{"no GPS (indoor ride)", namesRejecting("route"), false},
+		{"no elevation, distance present", namesRejecting("elevation"), true},
+		// Elevation cannot survive without distance in reality (its own
+		// Accepts requires Carries(MetricDistance)), so an activity with
+		// no distance also has no elevation. Both are rejected explicitly
+		// here, so neither Alt candidate survives and distance is absent
+		// exactly as it would be from a real activity with no distance.
+		{"no distance", namesRejecting("distance", "elevation"), false},
+		{"no highlights and no labels", namesRejecting("markers"), false},
+		{"no GPS + no elevation + no power (rower)", namesRejecting("route", "elevation", "power"), true},
+		{"distance only, nothing else", namesRejecting(
+			"route", "heart-rate", "pace", "power", "cadence", "elevation", "markers"), true},
+	}
+
+	sizes := []struct {
+		name string
+		w, h int
+	}{
+		{"1080p", 1920, 1080},
+		{"4K", 3840, 2160},
+		{"portrait", 1080, 1920},
+	}
+
+	for _, l := range []Layout{LandscapeLayout(), PortraitLayout()} {
+		for _, s := range sizes {
+			for _, c := range cases {
+				t.Run(l.Name+"/"+s.name+"/"+c.name, func(t *testing.T) {
+					placed, err := l.Resolve(s.w, s.h, c.keep)
+					if err != nil {
+						t.Fatalf("Resolve: %v", err)
+					}
+					if len(placed) == 0 {
+						t.Fatal("nothing placed -- ElapsedPanel accepts unconditionally, so every combination here keeps at least one panel")
+					}
+
+					gotDistance := false
+					for _, p := range placed {
+						if p.Panel.Name() == "distance" {
+							gotDistance = true
+						}
+					}
+					if gotDistance != c.wantDistance {
+						t.Errorf("distance placed = %v, want %v -- the bottom strip's Alt slot must show exactly "+
+							"one of the elevation profile or the distance readout, never both and never neither "+
+							"when at least one candidate survives keep", gotDistance, c.wantDistance)
+					}
+
+					// Positive, disjoint, exactly as drawn.
+					assertNoOverlap(t, placed)
+
+					// Undo each leaf's own pad to recover what its
+					// enclosing split actually allocated it, and check
+					// those allocations tile the margin-inset frame with
+					// no gap and no overlap.
+					unit := math.Min(float64(s.w), float64(s.h))
+					expanded := make([]Placed, len(placed))
+					for i, p := range placed {
+						expanded[i] = Placed{Panel: p.Panel, Box: p.Box.inset(-leafPad * unit)}
+					}
+					frame := Box{W: float64(s.w), H: float64(s.h)}.inset(l.MarginPx(s.w, s.h))
+					assertTiles(t, expanded, frame)
+				})
+			}
+		}
+	}
 }

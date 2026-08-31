@@ -951,11 +951,30 @@ func TestMarkerPanel_TickClearsTheLabelNameRowAcrossEveryBoxShape(t *testing.T) 
 
 // --- the pixel-identical regression -----------------------------------------
 
-// oldLandscapeLayout and oldPortraitLayout are a FROZEN copy of
-// LandscapeLayout and PortraitLayout exactly as they stood before
-// MarkerPanel's row was added -- not a helper that could drift with a
-// future edit, a fixed historical snapshot this test diffs the real
-// functions against. See TestNoHighlightRenderIsPixelIdenticalToBeforeThisFeature.
+// oldLandscapeLayout and oldPortraitLayout are NOT a historical snapshot
+// frozen at some past commit -- they are an independently-written statement
+// of "the current LandscapeLayout/PortraitLayout minus the marker row",
+// written by hand from the same source the real functions are, and they
+// must be updated deliberately whenever those functions' shape changes.
+// (An earlier version of this comment claimed they were a fixed snapshot
+// that would never need to change; that claim did not survive the
+// elevation/distance merge and was wrong to make in the first place --
+// deriving these by pruning MarkerPanel out of the real layout at test time
+// would make TestNoHighlightOrLabelRenderIsPixelIdenticalToBeforeThisFeature
+// compare the real Resolve call with itself and assert nothing.)
+//
+// Keeping these as literals, rather than a derivation, is what makes that
+// test non-trivial: it is a second, independent statement of the tree that
+// the real functions are checked against, so a change that silently altered
+// the marker row's own weight or a sibling's box would still be caught.
+// See TestNoHighlightOrLabelRenderIsPixelIdenticalToBeforeThisFeature.
+//
+// This is the first change to exercise the "update deliberately" rule the
+// comment above states: the elevation/distance row changed from a Row with
+// 4:1/3:1 weights to an Alt slot with none, because the two panels no longer
+// draw in the same frame (see layouts.go). The marker row's own weight is
+// untouched by that change, which is exactly what the pixel-identical test
+// below still needs to hold.
 func oldLandscapeLayout() Layout {
 	return Layout{
 		Name:      "landscape",
@@ -965,10 +984,7 @@ func oldLandscapeLayout() Layout {
 			{Dir: Row, Weight: 4, Children: []Slot{
 				{Dir: Col, Weight: 3, Children: []Slot{
 					{Panel: RoutePanel{}, Weight: 3, Pad: 0.01},
-					{Dir: Row, Weight: 2, Children: []Slot{
-						{Panel: ElapsedPanel{}, Weight: 3, Pad: 0.01},
-						{Panel: Distance(), Weight: 2, Pad: 0.01},
-					}},
+					{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
 				}},
 				{Dir: Col, Weight: 1, Children: []Slot{
 					{Panel: HeartRate(), Pad: 0.01},
@@ -977,7 +993,10 @@ func oldLandscapeLayout() Layout {
 					{Panel: Cadence(), Pad: 0.01},
 				}},
 			}},
-			{Panel: ElevationPanel{}, Weight: 1, Pad: 0.01},
+			{Dir: Alt, Weight: 1, Children: []Slot{
+				{Panel: ElevationPanel{}, Pad: 0.01},
+				{Panel: Distance(), Pad: 0.01},
+			}},
 		}},
 	}
 }
@@ -989,10 +1008,7 @@ func oldPortraitLayout() Layout {
 		FontScale: 0.05,
 		Root: Slot{Dir: Col, Children: []Slot{
 			{Panel: RoutePanel{}, Weight: 4, Pad: 0.01},
-			{Dir: Row, Weight: 2, Children: []Slot{
-				{Panel: ElapsedPanel{}, Weight: 3, Pad: 0.01},
-				{Panel: Distance(), Weight: 2, Pad: 0.01},
-			}},
+			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
 			{Dir: Row, Weight: 2, Children: []Slot{
 				{Panel: HeartRate(), Pad: 0.01},
 				{Panel: Pace(), Pad: 0.01},
@@ -1001,7 +1017,10 @@ func oldPortraitLayout() Layout {
 				{Panel: Power(), Pad: 0.01},
 				{Panel: Cadence(), Pad: 0.01},
 			}},
-			{Panel: ElevationPanel{}, Weight: 2, Pad: 0.01},
+			{Dir: Alt, Weight: 2, Children: []Slot{
+				{Panel: ElevationPanel{}, Pad: 0.01},
+				{Panel: Distance(), Pad: 0.01},
+			}},
 		}},
 	}
 }

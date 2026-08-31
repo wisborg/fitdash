@@ -171,6 +171,129 @@ The price of the tree is that a panel cannot be placed at an arbitrary spot; it 
 expresses nested rows and columns. That is acceptable for a dashboard, and a free-placement
 escape hatch can be added later without disturbing it.
 
+### One band, two candidates: the elevation profile or the distance readout
+
+One full-width band runs across the bottom of both trees, in the row directly above the
+marker strip, and it shows **either** the elevation profile **or** the live distance
+readout — never both, and never neither while the activity carries the data for one of
+them. The profile used to have that band to itself and the readout used to sit beside the
+clock. Both moved for the same reason: **the filled area under the profile's trace is now
+this project's distance indicator**, so a separate readout drawn anywhere on the frame is
+the same quantity said twice.
+
+The fill runs from the trace's own start to the playhead, and its leading edge is the
+position. That is why the full-height playhead rule the panel used to draw is gone: the
+edge of the fill marks the same x, and drawing both left a bright stub hanging above the
+trace through the empty upper part of the plot, reading as an object in its own right
+rather than as the fill's boundary. The dot on the trace stays, because it answers a
+different question — *which elevation* the activity is at, not how far along it is — and
+because it is the mark the route panel already uses for "you are here". If the leading
+edge ever reads as mushy, the remedy is to stroke that edge, not to bring the rule back.
+
+Three changes to the profile itself follow from the fill, and each of them looks
+gratuitous until it is read as part of it:
+
+- **The plot gained a floor and a baseline rule.** `yForElevation` now spans
+  `floorElev..maxElev`, where `floorElev` sits below the recorded minimum by
+  `elevationFloorHeadroom` — a fraction of the elevation *range*, never a constant number
+  of metres, which would give a 100 m climb a floor 1% below it and a 5 m one a floor 20%
+  below. A literal zero was rejected: it squashes a high-altitude activity into the top
+  few percent of the plot, and an activity recorded at the coast dips below sea level, so
+  part of its trace would fall through the baseline. The floor is not an elevation anybody
+  measured, so **it carries no label** — a label there would name a reading that does not
+  exist. The baseline itself is real ink drawn in `Static`, which gives the fill a defined
+  bottom at frame 0, before any distance has been read, and is what makes a single
+  exported PNG of the panel legible.
+- **The distance axis starts at zero**, not at the model's own `StartDistance`. The
+  elevation model keeps only samples carrying *both* distance and altitude, and a
+  barometer commonly takes a few metres to settle after the distance stream has already
+  started, so the model's first point can land some way along the activity. Starting the
+  axis there would have quietly claimed the activity began where the barometer woke up.
+  The gap between zero and the first altitude reading is drawn instead, as described under
+  absent data below. The axis's two dim end labels are now the only distance *numbers* on
+  the frame, and they state the scale rather than the position — the fill states the
+  position, which is the division of labour the readout beside them made redundant.
+- **Both axes are now placed through the same mapping the trace uses.** Both distance
+  labels come from `xForDistance` and both elevation labels from `yForElevation`, so a
+  label cannot name one value while pointing at another. That was already this panel's
+  design principle on the x axis — it is the panel that would otherwise have walked into
+  videofx's axis-origin trap — and the floor is what made it necessary on the y axis too:
+  the low label used to be placed at the plot's bottom edge, which stopped being
+  `yForElevation(minElev)` the moment a floor existed below the minimum.
+
+**One honest caveat about the fill, because it is the thing a viewer can over-read.** Its
+horizontal extent is distance and nothing else, but its *height* is terrain: a hilly
+stretch fills more area than a flat stretch of the same length. Read as a progress bar it
+is exact; read as a measure of effort or of work done it is misleading, and no arrangement
+of colours fixes that. The alternative — a rectangle of constant height, whose area really
+would be proportional to distance — throws away the profile, which is the panel's other
+job. This is why the fill is a restrained faded-`Foreground` wash that the `Dim` trace
+stays legible through, rather than something that competes with the trace for attention.
+
+**The mechanism is an ordered alternatives slot, `Dir: Alt`.** An `Alt` slot does not
+divide its box: the first child that survives the `keep` filter takes the whole of it, and
+the later children are never asked. The band is one such slot holding the two existing
+panels, in order — the profile, then the readout — and it reads at the call site as the
+sentence it implements. `Validate` rejects a non-zero `Weight` on an `Alt` child, because
+there is never more than one survivor to divide space between and a weight there would
+mislead a reader exactly as a ratio between two mutually exclusive children would.
+`placeSlot` needs nothing: pruning happens before any box is divided, so by the time
+placement runs the slot has exactly one child and the ordinary proportional division hands
+it everything. `internal/render` needs nothing either — the tripwire stays shut.
+
+**The cheaper alternative, and why it is a trap rather than merely a tie.** `Readout`
+already has a `carries` hook, so a strip variant of the distance readout whose predicate
+is "distance is carried *and* the elevation panel declines" is a few lines and adds no
+mechanism. It does not even re-derive anything: it would call the one existing rule,
+`ElevationPanel.Accepts`, exactly once. It fails on something else entirely. `Accepts` is
+a pure function of the render `Context`, and the `keep` filter belongs to `Resolve` — an
+accept test cannot see it. So a future `--no-elevation`, which is meant to be one line in
+a `keep` filter rejecting the profile by name, would remove the profile *and* leave that
+variant declining on its own account, since the elevation panel still accepts the
+activity. The band would prune and distance would vanish from the render entirely: the
+feature the arrangement exists to make possible would be broken by the arrangement.
+Under `Alt` the same flag composes correctly and stays one line — `keep` rejects the
+profile, the slot falls through, and the readout takes the band.
+
+**It is still a layout grouping, not a composite panel**, and that is a separate decision
+from the one above. A single panel drawing a profile with a readout in the corner would be
+the first in this project to sub-divide its own box, which is what the slot tree exists
+for; and it would report one `Name()` in the render summary while showing another panel's
+data, so an activity with no elevation would show the composite as *drawn* and never
+mention that the profile was omitted — honest pixels behind a dishonest summary, which is
+the failure the decline summary exists to prevent.
+
+**The gap the slot leaves, named rather than hidden.** When the profile wins, `keep` is
+never asked about the readout, so distance appears in **neither** the drawn list nor the
+declined list of the render summary. Nothing is being concealed — the profile drew, and
+the profile is what shows distance — but someone who greps that summary for "distance"
+finds nothing at all, which is a worse experience than either answer. Closing it needs a
+third outcome in the engine, "superseded", reported to the caller alongside placed and
+declined; that is more machinery than one slot justifies, and it should be revisited the
+day a second `Alt` appears. Until then it is written down here and in `Alt`'s own doc
+comment so it is a known cost rather than a surprise.
+
+**What makes the ordering safe.** Putting the profile first can only lose a display if
+there is an activity the profile accepts and the readout does not, and there is not:
+`ElevationPanel.Accepts` requires `Carries(MetricDistance)` alongside
+`Carries(MetricElevation)`, because it needs a distance axis to plot against.
+`TestElevationPanel_AcceptsImpliesDistanceReadoutAccepts` pins that implication rather
+than a branch defending against its failure, and it fails loudly the day someone relaxes
+`Accepts`. **A branch for an unreachable case is untested code wearing the shape of a
+considered one:** nothing exercises it, nothing fails when it rots, and the next reader
+cannot tell whether it guards a case that happens or a case that cannot.
+
+The profile also declines on a flat or zero-span model, which is new since the fill became
+the only distance indicator. A flat activity has a model and would have taken the band,
+drawing two identical elevation labels and no fill — distance shown nowhere, the
+unexplained hole arrived at from a new direction. Declining hands the band to the readout,
+which is the honest outcome, and the `Alt` slot is what makes that fall-through free.
+`TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle` covers the
+combinations over the *real* trees at three frame sizes with a `keep` that rejects by
+panel name, and it asserts not only that the boxes still tile but **which** panels were
+placed — geometry alone would have passed just as happily with the readout drawn beside
+the profile, which is the arrangement this section exists to say is gone.
+
 ### The marker strip carries no caption
 
 The marker strip's invariant content is the ribbon, each highlight's block and each label's
@@ -235,6 +358,62 @@ if f.Sample.HasHeartRate {
 The partial case falls out of the same branch: `AtWithGap` sets a field only when both
 bracketing samples carry it, so a strap that dropped on one side yields
 `HasHeartRate == false` with GPS still present.
+
+### When the placeholder is an area
+
+The `--` above is the easy shape of a placeholder: there is text, and absence replaces it
+with different text in `Theme.Absent`. The elevation profile's distance fill is the same
+decision taken where there is no text to swap out, and it is worth writing down because
+the shape of the answer changed while the rule did not.
+
+**A distance dropout washes the whole axis in the absent colour**, at the fill's own
+opacity, and nothing else about the panel changes: the trace, the baseline rule and every
+label keep drawing, because they are all still true. What is missing is a *position* on
+the profile, not the profile. Both of the answers that look more natural are wrong:
+
+- **Drawing nothing is not neutral.** An empty plot is pixel-identical to a fill of zero
+  length, which says the activity is back at the start line — a confident lie told in
+  pixels the viewer cannot inspect, and simultaneously indistinguishable from the panel
+  having crashed. Absence has to be marked *positively* or it is indistinguishable from a
+  claim.
+- **Holding the previous frame's fill is not merely discouraged, it is unavailable.**
+  `Dynamic` must not mutate its `Painter`, so there is no last-frame extent to hold on to;
+  the panel contract forbids the wrong answer before anyone gets the chance to choose it.
+  That rule was written for parallel frame rendering, and this is the first place it pays
+  for itself in honesty instead.
+
+Washing the axis says "the extent of your progress is unknown" without inventing an
+extent, which is exactly what the readout it replaced said with `--`, in the fill's own
+vocabulary rather than a new one.
+
+**How far that distinguishability is actually guaranteed is worth stating precisely,
+because the obvious claim is too strong.** `Theme.Absent` is contractually distinct from
+`Foreground` and `Background`, and the absent wash derives its own alpha — separately from
+the covered fill's — so that it clears the same 1.5:1 floor against the background that
+`cmd/render.go` already enforces on a user's `background=`. That much holds for every
+shipped theme, and a test measures it rather than asserting it.
+
+What does **not** hold is the tempting extension of it: that the two fills must therefore
+stay distinguishable from each other whatever the background beneath them. Under
+`--highlight-style wash` the background is whatever the user typed, and a wash set at or
+near `Theme.Absent` collapses the difference entirely — the dropout then renders
+indistinguishable from a fill of zero. That case is not defended here; it is what the
+`background=` contrast warning exists to tell the user, and this panel relies on that
+warning rather than re-deriving the check. Saying "distinguishable by the theme contract
+rather than by luck" without that qualification would be a guarantee this design does not
+make.
+
+**The structurally missing stretch uses the same treatment as the momentary one**, and
+that is deliberate. The elevation model keeps only samples carrying both distance and
+altitude, so the metres between distance zero and the first altitude reading — a barometer
+settling after the distance stream has started — are real distance with no terrain
+attached to them, permanently rather than for one frame. That region draws in the same
+absent wash, advancing with distance so the opening of an activity never reads as no
+movement at all, but as a plain full-height band rather than a shape under a curve,
+because there is no curve there to follow and this project does not invent one. It carries
+no position dot for the same reason. A reader who sees the absent colour learns "no
+terrain data here", which is the fact that matters; *which* of the two mechanisms produced
+it is not something the pixels should be trying to say.
 
 ### One rule for absence
 

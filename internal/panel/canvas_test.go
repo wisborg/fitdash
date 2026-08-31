@@ -163,6 +163,47 @@ func TestCanvas_PolylineDrawsAndIgnoresDegenerateInput(t *testing.T) {
 	}
 }
 
+// TestCanvas_PolygonFillsAndIgnoresDegenerateInput mirrors
+// TestCanvas_PolylineDrawsAndIgnoresDegenerateInput: a known triangle fills
+// pixels inside it and none outside, and the same guards that protect
+// Polyline protect Polygon.
+func TestCanvas_PolygonFillsAndIgnoresDegenerateInput(t *testing.T) {
+	c, img := newTestCanvas(t, 100, 100)
+	c.Fill(c.Theme.Background)
+
+	// A right triangle with legs on the frame's edges: (10,10), (90,10),
+	// (10,90). Its centroid at (36.67, 36.67) must be filled; a point well
+	// outside it, near the frame's opposite corner, must not be.
+	c.Polygon([]float64{10, 90, 10}, []float64{10, 10, 90}, c.Theme.Accent)
+	if inkIn(img, Box{W: 100, H: 100}, c.Theme.Background) == 0 {
+		t.Fatal("Polygon drew nothing")
+	}
+	want := color.RGBAModel.Convert(c.Theme.Accent).(color.RGBA)
+	if got := img.RGBAAt(30, 30); got != want {
+		t.Errorf("pixel (30,30), inside the triangle, is %v, want the fill colour %v", got, want)
+	}
+	if inkIn(img, Box{X: 91, Y: 91, W: 9, H: 9}, c.Theme.Background) != 0 {
+		t.Error("Polygon painted outside the triangle, near the frame's far corner")
+	}
+
+	c.Fill(c.Theme.Background)
+	for _, bad := range []struct {
+		name   string
+		xs, ys []float64
+	}{
+		{"two points is not an area", []float64{10, 90}, []float64{10, 90}},
+		{"one point", []float64{10}, []float64{10}},
+		{"no points", nil, nil},
+		{"mismatched lengths", []float64{1, 2, 3}, []float64{1, 2}},
+	} {
+		c.Polygon(bad.xs, bad.ys, c.Theme.Accent)
+		if inkIn(img, Box{W: 100, H: 100}, c.Theme.Background) != 0 {
+			t.Errorf("%s: Polygon drew something", bad.name)
+			c.Fill(c.Theme.Background)
+		}
+	}
+}
+
 // TestContrastRatio_MatchesWCAGWorkedExamples pins the formula against values
 // that can be checked independently of this codebase rather than against
 // whatever the implementation currently returns.
