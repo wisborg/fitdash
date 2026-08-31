@@ -8,6 +8,31 @@ import (
 // LayoutAuto names the arrangement chosen from the frame's own shape.
 const LayoutAuto = "auto"
 
+// --bottom-band's legal values -- which of the bottom strip's two Alt
+// candidates (below) the user gets, rather than which the activity happens
+// to carry. Exported so the CLI's own validation and Context.BottomBand
+// compare against one pair of strings rather than each defining its own, the
+// same reason --highlight-style's values live beside Highlight rather than in
+// cmd.
+const (
+	// BottomBandProfile is the default: the elevation profile, filled to the
+	// playhead, exactly as before this flag existed. An activity that carries
+	// no elevation still falls back to the distance readout under this value
+	// -- ElevationPanel's own Accepts declines and the Alt slot falls through
+	// -- so this flag adds a second way to reach that fallback rather than
+	// replacing it.
+	BottomBandProfile = "profile"
+
+	// BottomBandDistance omits the profile outright, so the readout takes the
+	// band even on an activity that DOES carry elevation. See New's keep
+	// filter in internal/render, which is where this is actually enforced:
+	// rejecting ElevationPanel by name before its own Accepts is ever asked,
+	// exactly the one-line keep-filter rejection this Alt slot's own doc
+	// comment (and docs/architecture.md's "one band, two candidates") was
+	// built to make possible.
+	BottomBandDistance = "distance"
+)
+
 // Layouts are the arrangements --layout can choose, besides auto.
 func Layouts() []Layout { return []Layout{LandscapeLayout(), PortraitLayout()} }
 
@@ -73,12 +98,14 @@ func LandscapeLayout() Layout {
 		// Alt over a shared predicate -- a strip-variant of Distance whose own
 		// Accepts also calls ElevationPanel{}.Accepts -- is deliberate, not
 		// merely the cheaper option skipped: Accepts is a pure function of
-		// Context and cannot see Resolve's own keep filter, so the deferred
-		// --no-elevation flag would remove the profile by keep AND leave that
-		// variant's own Accepts declining, pruning the whole band and deleting
-		// distance from the render -- exactly the outcome this change exists
-		// to prevent. Under Alt, keep(elevation) returning false simply falls
-		// through to the next candidate, which does the right thing for free.
+		// Context and cannot see Resolve's own keep filter, so a
+		// --bottom-band=distance flag built that way would remove the profile
+		// by keep AND leave that variant's own Accepts declining, pruning the
+		// whole band and deleting distance from the render -- exactly the
+		// outcome this change exists to prevent. Under Alt, keep(elevation)
+		// returning false simply falls through to the next candidate, which
+		// does the right thing for free -- and is exactly what --bottom-band
+		// (see New's keep filter in internal/render) actually does.
 		//
 		// Each candidate keeps its own ordinary leaf Pad. There is no more
 		// "daylight between two halves" to defend here -- the two never share
@@ -140,7 +167,7 @@ func PortraitLayout() Layout {
 			// comment for the mechanism (an Alt slot, not a Row, because the
 			// two never draw in the same frame once the fill under the
 			// profile became this project's own distance indicator) and for
-			// why --no-elevation needs it to be Alt rather than a shared
+			// why --bottom-band needs it to be Alt rather than a shared
 			// predicate on Distance's own Accepts.
 			{Dir: Alt, Weight: 2, Children: []Slot{
 				{Panel: ElevationPanel{}, Pad: 0.01},

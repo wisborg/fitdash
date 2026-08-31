@@ -904,6 +904,70 @@ func TestNew_DecliningPanelIsPrunedAndAnnounced(t *testing.T) {
 	}
 }
 
+// TestNew_BottomBandDistanceOmitsElevationWithoutConsultingAccepts is the
+// render-layer half of --bottom-band=distance: panel/layout_test.go already
+// proves Resolve composes correctly when "elevation" is rejected by name,
+// but that test cannot see WHY a panel was rejected, only that it was. This
+// checks the reason: with Context.BottomBand set to BottomBandDistance, a
+// panel named exactly like ElevationPanel -- one that would ACCEPT, standing
+// in for an activity that genuinely carries elevation -- is removed anyway,
+// and is reported through Omitted(), never through Declined().
+//
+// That split matters on its own terms, not just as bookkeeping: Declined()
+// existing for this panel would tell cmd's writePanelSummary (and, through
+// it, a user) that the activity carries no elevation, which this test's own
+// fixture proves false by construction (accept: true). Omitted() is the only
+// list that can truthfully carry this name.
+func TestNew_BottomBandDistanceOmitsElevationWithoutConsultingAccepts(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 300, 100, 10)
+	ctx.BottomBand = panel.BottomBandDistance
+
+	r, err := New(ctx, oneMarkerLayout(
+		markerPanel{name: elevationPanelName, accept: true},
+		markerPanel{name: "keeps", accept: true},
+	), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, p := range r.Placed() {
+		if p.Panel.Name() == elevationPanelName {
+			t.Error("--bottom-band distance did not remove the elevation panel from the placements")
+		}
+	}
+	if got := r.Declined(); len(got) != 0 {
+		t.Errorf("Declined() = %v, want none -- a panel omitted by the flag is not a decline", got)
+	}
+	if got := r.Omitted(); len(got) != 1 || got[0] != elevationPanelName {
+		t.Errorf("Omitted() = %v, want [%s]", got, elevationPanelName)
+	}
+}
+
+// TestNew_BottomBandProfileLeavesElevationToItsOwnAccepts pins the default:
+// with Context.BottomBand at its zero value (BottomBandProfile's own
+// behaviour), a panel named like ElevationPanel is placed or declined
+// exactly as its own Accepts says, with nothing appearing in Omitted() --
+// the flag must not touch a render that never asked for --bottom-band
+// distance at all.
+func TestNew_BottomBandProfileLeavesElevationToItsOwnAccepts(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 300, 100, 10)
+	// ctx.BottomBand left at its zero value on purpose: an unset Context
+	// must behave exactly as it did before this flag existed.
+
+	r, err := New(ctx, oneMarkerLayout(
+		markerPanel{name: elevationPanelName, accept: true},
+	), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := len(r.Placed()); got != 1 {
+		t.Fatalf("placed %d panels, want 1 -- the zero-value Context must not omit elevation", got)
+	}
+	if got := r.Omitted(); len(got) != 0 {
+		t.Errorf("Omitted() = %v, want none", got)
+	}
+}
+
 // TestNew_RejectsANilPainter turns a panel bug into a message naming the panel
 // rather than a nil dereference in the middle of a render.
 func TestNew_RejectsANilPainter(t *testing.T) {

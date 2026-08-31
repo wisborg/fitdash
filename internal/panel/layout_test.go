@@ -374,7 +374,7 @@ func TestResolve_AltTakesTheFirstSurvivorWhole(t *testing.T) {
 
 // TestResolve_AltFallsThroughToALaterSurvivor is the fallback half of the
 // same claim: when the first candidate declines, the SECOND one takes the
-// slot whole, not a share of it -- this is the behaviour --no-elevation
+// slot whole, not a share of it -- this is the behaviour --bottom-band
 // depends on (see layouts.go's Alt comment): rejecting the first candidate by
 // name must hand the whole band to the second, not merely remove the first
 // from a shared division.
@@ -687,6 +687,13 @@ func namesRejecting(names ...string) func(Panel) bool {
 // must show the readout, since the Alt slot falls through to it. The other
 // cases follow the same rule mechanically once elevation's own presence in
 // the keep predicate is known.
+//
+// The last case is --bottom-band distance's own coverage at this layer:
+// render.New's keep filter for that flag is nothing more than rejecting
+// "elevation" by name (see internal/render.New), so it is exercised here the
+// same way an activity's own absence is, combined with the marker strip's
+// independent decline to confirm the two compose without either leaking into
+// the other's rectangle.
 func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(t *testing.T) {
 	const leafPad = 0.01
 
@@ -708,6 +715,20 @@ func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(
 		{"no GPS + no elevation + no power (rower)", namesRejecting("route", "elevation", "power"), true},
 		{"distance only, nothing else", namesRejecting(
 			"route", "heart-rate", "pace", "power", "cadence", "elevation", "markers"), true},
+		// --bottom-band distance is render.New's own keep filter rejecting
+		// "elevation" by name (see internal/render's elevationPanelName and
+		// its keep closure in New) -- geometrically identical to "no
+		// elevation, distance present" above, since Resolve cannot tell a
+		// user's flag apart from an activity's own absence, and is not asked
+		// to (see Context.BottomBand's doc comment for why that distinction
+		// belongs to New's keep filter and not to this layer). What this
+		// case adds is the marker strip's OWN independent decline (no
+		// --highlight or --label) alongside it, on an activity that
+		// otherwise carries everything -- proving the two prunings compose
+		// with no interaction: the bottom band still swaps to distance and
+		// the marker row still closes up, and neither one's rectangle
+		// leaks into the other's.
+		{"--bottom-band distance, and no highlights or labels either", namesRejecting("elevation", "markers"), true},
 	}
 
 	sizes := []struct {

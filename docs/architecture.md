@@ -247,13 +247,15 @@ is "distance is carried *and* the elevation panel declines" is a few lines and a
 mechanism. It does not even re-derive anything: it would call the one existing rule,
 `ElevationPanel.Accepts`, exactly once. It fails on something else entirely. `Accepts` is
 a pure function of the render `Context`, and the `keep` filter belongs to `Resolve` — an
-accept test cannot see it. So a future `--no-elevation`, which is meant to be one line in
-a `keep` filter rejecting the profile by name, would remove the profile *and* leave that
-variant declining on its own account, since the elevation panel still accepts the
-activity. The band would prune and distance would vanish from the render entirely: the
-feature the arrangement exists to make possible would be broken by the arrangement.
-Under `Alt` the same flag composes correctly and stays one line — `keep` rejects the
-profile, the slot falls through, and the readout takes the band.
+accept test cannot see it. So `--bottom-band distance`, built that way, would remove the
+profile *and* leave that variant declining on its own account, since the elevation panel
+still accepts the activity. The band would prune and distance would vanish from the render
+entirely: the feature the arrangement exists to make possible would be broken by the
+arrangement. Under `Alt` the same flag composes correctly and stays one line — `keep`
+rejects the profile, the slot falls through, and the readout takes the band. This is not
+hypothetical: `--bottom-band` (`internal/render.New`'s keep filter, gated on
+`Context.BottomBand`) is exactly that one line, added after this section was written and
+left unchanged by it.
 
 **It is still a layout grouping, not a composite panel**, and that is a separate decision
 from the one above. A single panel drawing a profile with a readout in the corner would be

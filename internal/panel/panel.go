@@ -179,6 +179,27 @@ type Context struct {
 	// show, unless a highlight is also configured) and in Prepare, to place
 	// every label's tick and size its name once rather than per frame.
 	Labels []Label
+
+	// BottomBand selects which of the bottom strip's two Alt candidates
+	// (layouts.go) the user gets: BottomBandProfile (the zero value's
+	// behaviour too, so an unset Context renders exactly as it always has)
+	// or BottomBandDistance, which omits the elevation profile outright so
+	// the distance readout takes the band even on an activity that carries
+	// elevation.
+	//
+	// Read by internal/render's keep filter, deliberately NOT by
+	// ElevationPanel's or Readout's own Accepts. Accepts answers whether the
+	// ACTIVITY carries the data; this answers whether the USER asked not to
+	// show it anyway. Folding the two into one method is exactly the trap
+	// docs/architecture.md's "one band, two candidates" section names: a
+	// strip-variant of Distance whose Accepts also called
+	// ElevationPanel.Accepts would have its own Accepts decline right
+	// alongside the profile's, and the Alt slot would prune both, deleting
+	// distance from the render entirely -- the one outcome the Alt
+	// mechanism exists to prevent. Rejecting the profile in the keep filter
+	// instead lets the Alt slot fall through to the readout for free, exactly
+	// as it already does when the activity itself has no elevation.
+	BottomBand string
 }
 
 // BasePx is the layout's base text size in pixels for this frame size.

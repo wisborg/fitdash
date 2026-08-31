@@ -31,6 +31,14 @@ import (
 // depends on the difference being reported instead of smoothed over.
 const maxGap = fitactivity.DefaultMaxGap
 
+// elevationPanelName is ElevationPanel's own Name(), read from the panel
+// itself rather than restated as a string literal here -- the same reason
+// cmd's markerPanelName is read from MarkerPanel{}.Name() -- so a rename in
+// internal/panel cannot silently stop --bottom-band=distance from omitting
+// the right panel. See New's keep filter, the one place this is compared
+// against.
+var elevationPanelName = panel.ElevationPanel{}.Name()
+
 // Renderer draws one activity through one layout.
 type Renderer struct {
 	ctx      *panel.Context
@@ -40,6 +48,7 @@ type Renderer struct {
 	placed   []panel.Placed
 	painters []panel.Painter
 	declined []string
+	omitted  []string
 
 	// marginPx is the layout's own margin, in pixels for this render's frame
 	// size: Layout.MarginPx resolved once here rather than recomputed per
@@ -79,6 +88,16 @@ type Renderer struct {
 // made BEFORE any box is divided, so a panel that declines contributes nothing
 // to its siblings' share and they grow into its space. That is the whole of
 // "the layout closes up"; see panel.Layout.Resolve.
+//
+// One panel can also be removed for a second, unrelated reason:
+// --bottom-band distance (ctx.BottomBand == panel.BottomBandDistance) rejects
+// ElevationPanel by name, and does so WITHOUT ever calling its Accepts. That
+// is deliberate, not an oversight -- Accepts answers "does this activity
+// carry the data", and this rejection is answering "did the user ask not to
+// show it regardless", which must not be conflated with the first question
+// (see Context.BottomBand's own doc comment). Recorded separately too: see
+// omitted below and Renderer.Omitted, which the render summary reports under
+// its own heading rather than folding into Declined.
 func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("render: no context")
@@ -100,8 +119,22 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		return nil, fmt.Errorf("render: context has no font cache")
 	}
 
-	var declined []string
+	var declined, omitted []string
 	keep := func(p panel.Panel) bool {
+		// Checked BEFORE Accepts, and unconditionally -- never mind whether
+		// this activity actually carries elevation. The two questions are
+		// answered by different things (see Context.BottomBand): asking
+		// Accepts first and only overriding a "true" would still be reporting
+		// on the activity, and would report an omission as a "decline" for an
+		// activity that happens to carry the data. Checking first means every
+		// --bottom-band=distance omission is reported the same honest way
+		// regardless of what the activity carries: "the flag removed this",
+		// not "the activity lacks this" -- the latter is never actually
+		// established, so it must never be claimed.
+		if ctx.BottomBand == panel.BottomBandDistance && p.Name() == elevationPanelName {
+			omitted = append(omitted, p.Name())
+			return false
+		}
 		if p.Accepts(ctx) {
 			return true
 		}
@@ -120,7 +153,7 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 
 	r := &Renderer{
 		ctx: ctx, theme: theme, faces: ctx.Fonts,
-		basePx: ctx.BasePx(), placed: placed, declined: declined,
+		basePx: ctx.BasePx(), placed: placed, declined: declined, omitted: omitted,
 		// The same formula Layout.Resolve itself uses to inset its working
 		// frame before dividing anything among the tree -- read through
 		// Layout.MarginPx rather than re-derived here, so the guarantee
@@ -169,6 +202,14 @@ func (r *Renderer) Placed() []panel.Placed { return r.placed }
 // Declined returns the names of panels that had nothing to show, for the
 // render summary.
 func (r *Renderer) Declined() []string { return r.declined }
+
+// Omitted returns the names of panels a user flag removed before Accepts was
+// ever consulted -- distinct from Declined, whose panels genuinely had
+// nothing to show. Today this is --bottom-band distance's own ElevationPanel
+// rejection, and nothing else; see New's keep filter and
+// Context.BottomBand's doc comment for why the two lists must stay separate
+// rather than merging into one "left out" report.
+func (r *Renderer) Omitted() []string { return r.omitted }
 
 // Frame builds the per-frame state for frame i.
 //

@@ -1009,3 +1009,95 @@ func TestWritePanelSummary_ReportsNoHighlightDeclineWhenHighlightsAreConfigured(
 		t.Errorf("nothing declined once --highlight is configured, but the summary printed a decline line; got:\n%s", out)
 	}
 }
+
+// TestWritePanelSummary_ReportsBottomBandOmissionAsAThirdReasonNotADecline is
+// the third heading's own test: a panel removed by --bottom-band distance is
+// neither "this activity carries no such data" (the fixture panel below
+// accepts unconditionally, standing in for an activity that DOES carry
+// elevation) nor "no --highlight or --label given" (that heading is reserved
+// for the marker panel). Folding it into either would tell the reader
+// something false about either the activity or the flags they passed.
+func TestWritePanelSummary_ReportsBottomBandOmissionAsAThirdReasonNotADecline(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := summaryTestContext(t, nil)
+	ctx.BottomBand = panel.BottomBandDistance
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: summaryAccepter("clock")},
+		{Panel: summaryAccepter("elevation")},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writePanelSummary(c, r, ctx.Timeline, layout.Name, "dark", panel.Smoothing{})
+
+	out := buf.String()
+	if !strings.Contains(out, "panels: clock\n") {
+		t.Errorf("elevation should not be among the drawn panels; got:\n%s", out)
+	}
+	if !strings.Contains(out, "omitted (--bottom-band distance): elevation") {
+		t.Errorf("missing the third heading naming the flag-omitted panel; got:\n%s", out)
+	}
+	if strings.Contains(out, "declined") {
+		t.Errorf("a flag-omitted panel must never be reported under either decline heading; got:\n%s", out)
+	}
+}
+
+// TestWritePanelSummary_BottomBandProfileReportsNothingOmitted is the
+// default's own negative case: with BottomBand left at its zero value, an
+// accepting panel named like the elevation panel is placed exactly as any
+// other accepting panel, and the summary's new heading never appears at all
+// -- an ordinary render's summary must read identically to one from before
+// this flag existed.
+func TestWritePanelSummary_BottomBandProfileReportsNothingOmitted(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := summaryTestContext(t, nil) // BottomBand left at its zero value
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: summaryAccepter("clock")},
+		{Panel: summaryAccepter("elevation")},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writePanelSummary(c, r, ctx.Timeline, layout.Name, "dark", panel.Smoothing{})
+
+	out := buf.String()
+	if !strings.Contains(out, "panels: clock, elevation\n") {
+		t.Errorf("both panels should have been placed and drawn; got:\n%s", out)
+	}
+	if strings.Contains(out, "omitted") {
+		t.Errorf("the default --bottom-band must not print the omitted heading at all; got:\n%s", out)
+	}
+}
+
+// TestParseBottomBand_RefusesUnknownValues follows the precedent
+// parseHighlightStyle, parsePowerSource, SelectLayout and SelectTheme all
+// set: a typo in --bottom-band is refused where it was typed, not silently
+// rendered with the default.
+func TestParseBottomBand_RefusesUnknownValues(t *testing.T) {
+	for _, band := range []string{panel.BottomBandProfile, panel.BottomBandDistance} {
+		got, err := parseBottomBand(band)
+		if err != nil {
+			t.Errorf("parseBottomBand(%q): %v", band, err)
+		}
+		if got != band {
+			t.Errorf("parseBottomBand(%q) = %q", band, got)
+		}
+	}
+	if _, err := parseBottomBand("elevation"); err == nil {
+		t.Error("parseBottomBand accepted an unknown value")
+	}
+}

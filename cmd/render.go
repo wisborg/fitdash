@@ -34,6 +34,7 @@ type renderOptions struct {
 	quiet               bool
 	power               string
 	layout              string
+	bottomBand          string
 	theme               string
 	smoothing           string
 	speedup             float64
@@ -94,6 +95,29 @@ func parsePowerSource(mode string) (fitactivity.PowerSource, error) {
 	return src, nil
 }
 
+// bottomBands enumerates --bottom-band's legal values. The values themselves
+// live in panel (BottomBandProfile, BottomBandDistance) because
+// internal/render compares Context.BottomBand against them -- to decide
+// whether to reject ElevationPanel in New's own keep filter -- and a string
+// literal repeated across two packages is one typo away from a value that
+// validates here and silently does nothing there. The SET belongs here
+// because only the CLI's own validation and its error message need it, the
+// same split highlightStyles draws in cmd/highlight.go.
+var bottomBands = []string{panel.BottomBandProfile, panel.BottomBandDistance}
+
+// parseBottomBand validates --bottom-band, refusing an unknown value where
+// the user typed it rather than silently rendering with the default -- the
+// same precedent parsePowerSource, parseHighlightStyle, SelectLayout and
+// SelectTheme all follow: a typo should not cost a whole render.
+func parseBottomBand(band string) (string, error) {
+	for _, b := range bottomBands {
+		if b == band {
+			return band, nil
+		}
+	}
+	return "", fmt.Errorf("render: --bottom-band %q is invalid; use %s", band, strings.Join(bottomBands, ", "))
+}
+
 var renderOpts renderOptions
 
 // bindRenderFlags attaches the render flags to the root command.
@@ -115,6 +139,12 @@ func bindRenderFlags(c *cobra.Command) {
 		"panel arrangement -- \"auto\" (default: a column for a portrait frame, a row-based one otherwise), "+
 			"\"landscape\", or \"portrait\". Naming one overrides the frame's shape, which is occasionally what you want "+
 			"and usually not")
+	f.StringVar(&renderOpts.bottomBand, "bottom-band", panel.BottomBandProfile,
+		"what occupies the bottom band -- \"profile\" (default: the elevation profile, filled to the playhead) "+
+			"or \"distance\" (omit the profile so the standalone distance readout takes the band instead, even "+
+			"on an activity that carries elevation). An activity carrying no elevation falls back to the "+
+			"readout under \"profile\" too, exactly as before this flag existed -- this flag adds a second way "+
+			"to reach that same fallback, not a different one")
 	f.StringVar(&renderOpts.theme, "theme", panel.DefaultTheme().Name,
 		"colour palette -- \"dark\" (default) or \"light\"")
 	f.StringVar(&renderOpts.smoothing, "smoothing", smoothingAuto,
@@ -177,6 +207,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 
 	powerSrc, err := parsePowerSource(renderOpts.power)
+	if err != nil {
+		return err
+	}
+	bottomBand, err := parseBottomBand(renderOpts.bottomBand)
 	if err != nil {
 		return err
 	}
@@ -257,6 +291,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		HighlightStyle:      highlightStyle,
 		HighlightTransition: renderOpts.highlightTransition,
 		Labels:              labels,
+		BottomBand:          bottomBand,
 	}
 	r, err := render.New(rctx, layout, theme)
 	if err != nil {
@@ -568,6 +603,20 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline
 	}
 	if len(configDeclined) > 0 {
 		fmt.Fprintf(out, "declined (no --highlight or --label given): %s\n", strings.Join(configDeclined, ", "))
+	}
+
+	// A THIRD reason, deliberately not a third "declined" heading: nothing
+	// here was missing and no panel refused anything. render.New's keep
+	// filter removed ElevationPanel before its own Accepts was ever asked
+	// (see Renderer.Omitted's own doc comment), so folding this into either
+	// decline heading above would say something false -- either that the
+	// activity lacks elevation, which render.New never actually checked, or
+	// that no flag was given, when one plainly was. "panels: ..." already
+	// shows distance rather than the profile, so this line is not the only
+	// signal; it is the one that survives being read on its own, by someone
+	// who was not the one who typed the command.
+	if omitted := r.Omitted(); len(omitted) > 0 {
+		fmt.Fprintf(out, "omitted (--bottom-band %s): %s\n", panel.BottomBandDistance, strings.Join(omitted, ", "))
 	}
 }
 
