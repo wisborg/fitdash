@@ -67,14 +67,22 @@ func TestParseSize_ReadsWxHAndRefusesTheRest(t *testing.T) {
 // could have passed in a second, and ffmpeg's own -y would clobber without
 // asking. The message has to name the flag that resolves it, or the user is
 // left guessing.
+//
+// The sample filename's date is the 2020-01-02 03:04:05 placeholder every
+// other fixture in this repo counts off, and it is deliberately not a date
+// any real recording carries. A watch names its files after the moment they
+// were recorded, so a realistic-looking date in a test is a real activity's
+// date -- and CLAUDE.md puts dates alongside coordinates in what must never
+// enter a commit. What this test needs from the name is a space in it and a
+// .fit extension to strip; when it happened is not part of the assertion.
 func TestOutputPath_DerivesFromTheActivityAndRefusesToClobber(t *testing.T) {
 	dir := t.TempDir()
 
-	got, err := outputPath("/some/where/2026-08-01 Morning Run.fit", "", dir, ".mp4")
+	got, err := outputPath("/some/where/2020-01-02 Morning Run.fit", "", dir, ".mp4")
 	if err != nil {
 		t.Fatalf("outputPath: %v", err)
 	}
-	if want := filepath.Join(dir, "2026-08-01 Morning Run.mp4"); got != want {
+	if want := filepath.Join(dir, "2020-01-02 Morning Run.mp4"); got != want {
 		t.Errorf("outputPath = %q, want %q", got, want)
 	}
 
@@ -88,7 +96,7 @@ func TestOutputPath_DerivesFromTheActivityAndRefusesToClobber(t *testing.T) {
 	if err := os.WriteFile(got, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = outputPath("/some/where/2026-08-01 Morning Run.fit", "", dir, ".mp4")
+	_, err = outputPath("/some/where/2020-01-02 Morning Run.fit", "", dir, ".mp4")
 	if err == nil {
 		t.Fatal("outputPath overwrote an existing render")
 	}
