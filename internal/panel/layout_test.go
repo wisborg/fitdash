@@ -648,8 +648,8 @@ func namesRejecting(names ...string) func(Panel) bool {
 }
 
 // TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle
-// covers the bottom strip's decline table (the elevation/distance merge's
-// design doc, section D) against the REAL LandscapeLayout and PortraitLayout
+// covers the bottom strip's decline combinations against the REAL
+// LandscapeLayout and PortraitLayout
 // trees -- never a synthetic fixture -- at three frame sizes, with a keep
 // predicate that rejects by Panel.Name() the way an activity's own Accepts
 // answers would.

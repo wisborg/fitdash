@@ -399,7 +399,7 @@ func TestRoutePanel_HighlightMarksItsOwnArcNotTheOppositeOne(t *testing.T) {
 }
 
 // TestRoutePanel_SubStrideHighlightStillMarksTheOutline is the test for the
-// hazard the plan calls the real one, distinct from which list is used: at
+// real hazard here, distinct from which list is used: at
 // DefaultMaxPoints over this fixture's 3000-second length, the outline's own
 // stride is (3000-1)/(500-1) =~ 6.01 seconds between drawn vertices. A
 // highlight shorter than that stride contains no drawn vertex at all, and
@@ -567,8 +567,8 @@ func TestRoutePanel_ShortHighlightMarkMeetsTheMinimumLength(t *testing.T) {
 // (TestRoutePanel_HighlightMarksBeforeTheFirstGPSFix). A highlight landing
 // INSIDE a dropout with fixes on both sides takes a different branch
 // entirely -- route.SpanIndices' "no drawn vertex falls inside the span"
-// bracketing-chord case -- and the plan's own claim is that this needs no
-// special handling at all: FromTrack simply skips the absent samples, so
+// bracketing-chord case -- and it needs no special handling at all:
+// FromTrack simply skips the absent samples, so
 // the span brackets whatever chord is already drawn across the gap.
 func squareTrackWithMidGPSDropout(base time.Time, n, dropFrom, dropTo int) *fitactivity.Track {
 	track := squareTrack(base, n)
@@ -580,8 +580,8 @@ func squareTrackWithMidGPSDropout(base time.Time, n, dropFrom, dropTo int) *fita
 }
 
 // TestRoutePanel_HighlightInsideAMidActivityGPSDropoutMarksTheBracketingChord
-// is the case the plan claims needs no extra code, and which no fixture
-// before this test exercised: a highlight whose whole span falls inside a
+// is the case that needs no extra code, and which no fixture before this
+// test exercised: a highlight whose whole span falls inside a
 // GPS dropout that has REAL fixes on both sides. squareTrackWithLateGPS's
 // own dropout only ever covers the very start of the track, so every
 // existing test that uses it can only ever prove the "before the first
@@ -651,8 +651,8 @@ func TestRoutePanel_HighlightInsideAMidActivityGPSDropoutMarksTheBracketingChord
 
 // TestRoutePanel_UnmarkableHighlightDrawsNoExtraInk is the pixel-level
 // counterpart of cmd/render.go's own "not marked on the route" summary
-// line: the plan's absent-data table says a highlight with no GPS fixes
-// anywhere near it draws NOTHING extra, and the summary says so in words
+// line: a highlight with no GPS fixes anywhere near it draws NOTHING
+// extra, and the summary says so in words
 // instead, because there is no placeholder available on a map. Nothing
 // before this test proved the "nothing extra" half at the pixel level -- a
 // stray pixel from a degenerate polyline call that happened not to panic

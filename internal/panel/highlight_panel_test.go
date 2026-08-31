@@ -86,7 +86,7 @@ func markerTestContext(t *testing.T, w, h int, highlights []Highlight, labels []
 // --- Accepts: "is there anything on the timeline to show at all" -----------
 
 // TestMarkerPanel_DeclinesWithNeitherHighlightsNorLabelsConfigured pins the
-// policy from the plan's absent-data table: no --highlight AND no --label
+// project's absent-data policy for this panel: no --highlight AND no --label
 // given at all is a fact about the FLAGS, and the panel declines outright
 // rather than drawing an empty strip. Accepts asks exactly one question --
 // this covers every combination of "nil" and "empty, non-nil" across BOTH
@@ -158,8 +158,8 @@ func TestMarkerPanel_StaticDrawsTheRibbonAndDynamicDrawsThePlayhead(t *testing.T
 		t.Errorf("Static put %d pixels of ink outside its box", whole-static)
 	}
 
-	// Dynamic with no highlight active: per the plan's table this is NOT a
-	// hole, because the ribbon and the blocks already drew in Static. The
+	// Dynamic with no highlight active. This is NOT a hole, because the
+	// ribbon and the blocks already drew in Static. The
 	// only thing Dynamic itself adds here is the playhead, and it must
 	// still be real ink.
 	c.Fill(c.Theme.Background)
@@ -212,8 +212,7 @@ func TestMarkerPanel_NoNameHighlightDrawsNoPlaceholderInTheNameArea(t *testing.T
 
 // TestMarkerPanel_NamedHighlightFadesInWithIntervalWeight checks the
 // entrance ramp actually depends on Frame.IntervalWeight, and that at
-// weight 0 nothing is visible yet -- the "fades in" half of the plan's
-// description, as distinct from a hard cut.
+// weight 0 nothing is visible yet -- it fades in rather than cutting in.
 func TestMarkerPanel_NamedHighlightFadesInWithIntervalWeight(t *testing.T) {
 	highlights := []Highlight{{Name: "Hill climb", From: 10 * time.Second, To: 20 * time.Second}}
 	c, img, ctx := highlightTestContext(t, 400, 200, highlights)
@@ -309,7 +308,7 @@ func TestMarkerPanel_BlockBrightensMonotonicallyTowardHighlightColour(t *testing
 // --- sizing: the longest name, not the active one ---------------------------
 
 // TestMarkerPanel_NameSizeUsesTheLongestNameRegardlessOfOrder pins the
-// template rule from the plan: sized once, in Prepare, against the longest
+// template rule: sized once, in Prepare, against the longest
 // name across every highlight -- never per-highlight, which would resize
 // the text as the render moved from one highlight to the next. Checking
 // argv order rather than just "long present vs not" is what actually tells
@@ -503,8 +502,8 @@ func TestMarkerPanel_FitsEveryBoxShape(t *testing.T) {
 
 // --- labels: ticks, their own name area, and no cutting --------------------
 
-// TestMarkerPanel_TicksDrawWithNoHighlightsConfigured is the gate the plan
-// asks for by name: a labels-only render (no --highlight at all) must
+// TestMarkerPanel_TicksDrawWithNoHighlightsConfigured pins the labels-only
+// render: with no --highlight at all the panel must
 // accept (see TestMarkerPanel_AcceptsWhenOnlyLabelsAreConfigured) AND its
 // ticks must actually read as ink -- not merely a bare ribbon. Static draws
 // the tick unconditionally, so this is real content on every frame of such
@@ -588,7 +587,7 @@ func TestMarkerPanel_LabelNameFadesWithLabelWeight(t *testing.T) {
 }
 
 // TestMarkerPanel_LabelOverlappingAnActiveHighlightShowsBothNamesUnmoved is
-// the plan's own scenario for why the two get separate areas: a frame where
+// the reason the two get separate areas: a frame where
 // a highlight is fully active AND a label is fully on screen at once must
 // show BOTH names, at their own fixed Y (nameY for the highlight, a
 // distinct labelNameY for the label) -- neither one contending for, or
@@ -888,8 +887,8 @@ func TestMarkerPanel_PlayheadClearsTheLabelNameRowAcrossEveryBoxShape(t *testing
 
 // TestMarkerPanel_TickClearsTheLabelNameRowAcrossEveryBoxShape is the
 // mirror of the test above for the TICK rather than the playhead -- the
-// constraint the plan this implements calls out by name as the one most
-// likely to be skipped, because a tick reads as decoration next to the
+// constraint most likely to be skipped, because a tick reads as decoration
+// next to the
 // playhead's much more visible sweep, and it is easy to reason "the
 // playhead already clears this row, so the shorter tick must too" without
 // writing anything down. That reasoning happens to hold for the constants
@@ -1076,7 +1075,7 @@ func renderFullFrame(t *testing.T, ctx *Context, layout Layout, i int) *image.RG
 }
 
 // TestNoHighlightOrLabelRenderIsPixelIdenticalToBeforeThisFeature is the
-// strongest claim the plan asks for: adding MarkerPanel's row to both
+// strongest claim available for this panel: adding MarkerPanel's row to both
 // layouts must not move a single pixel of a render that configures neither
 // --highlight nor --label. Extended from the highlight-only original to
 // cover Labels too -- a regression that zero-checked only Highlights in

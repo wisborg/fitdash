@@ -17,8 +17,8 @@ import (
 // nothing about what a highlight or a label is about -- that is the rest of
 // the dashboard's job, running at its own pace underneath it. Folding the
 // name into, say, ElapsedPanel would make that panel's Accepts answer
-// unrelated questions (see docs/architecture.md and the plan this
-// implements); giving the strip its own box is also what lets a render with
+// unrelated questions (see docs/architecture.md); giving the strip its own
+// box is also what lets a render with
 // no --highlight and no --label be pixel-identical to one from before this
 // feature existed, because Accepts below just declines and Layout.Resolve
 // closes up around it exactly as it does for any other declining panel.
@@ -92,8 +92,8 @@ const minBlockFraction = 0.5
 // this panel takes off unit or ribbon.H, so the seam scales with the box
 // instead of vanishing at 4K or swallowing a whole block at a small size.
 //
-// Back-to-back reps -- the plan's own example for why touching endpoints
-// (a.To == b.From) are allowed rather than refused as an overlap -- would
+// Back-to-back reps -- the reason touching endpoints (a.To == b.From) are
+// allowed rather than refused as an overlap -- would
 // otherwise abut with nothing but a one-pixel antialiasing seam between
 // them, which reads as one uniform bar rather than two highlights a viewer
 // can count.
@@ -102,8 +102,8 @@ const blockGapFraction = 0.2
 // Prepare lays out the ribbon, every highlight's block, every label's tick,
 // and where the highlight name and the label name will each sit, entirely
 // from ctx.Highlights, ctx.Labels and ctx.Timeline -- all fixed for the
-// whole render, and exactly the inputs the plan this implements names as
-// this panel's static content. Nothing here reads a Frame; the facts that
+// whole render, and exactly this panel's static content. Nothing here reads
+// a Frame; the facts that
 // DO vary per frame (Frame.Interval, Frame.IntervalWeight, Frame.Label,
 // Frame.LabelWeight, Frame.Index) arrive later, in Dynamic, which is what
 // keeps them out of this method by construction rather than by discipline.
@@ -509,7 +509,7 @@ func (p *markerPainter) Static(c *Canvas) {
 // "Configured, none active this frame" is answered by drawing only the
 // playhead here: the ribbon, every block and every tick already drew in
 // Static, so the box is never empty even on a frame with nothing playing --
-// per the plan's absent-data table, that is NOT a hole, it is a timeline
+// which is NOT a hole under this project's absent-data policy: it is a timeline
 // with nothing lit right now. A highlight with no name is answered by
 // skipping the text call entirely: the block lighting up already says a
 // highlight is active, and a "--" here would claim the program failed to

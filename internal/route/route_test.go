@@ -284,8 +284,8 @@ func TestSpanIndices_ResolvesAgainstTheDrawnList(t *testing.T) {
 // only a one-point "polyline" can satisfy. Canvas.Polyline draws nothing for
 // a single point, so a caller that slices pts[i0:i1+1] on i0==i1 gets a
 // segment that puts zero ink on screen while SpanIndices still says ok. That
-// silently drops both the mark AND the "not marked" summary line the plan
-// requires for a genuinely unmarkable highlight -- the worst outcome this
+// silently drops both the mark AND the "not marked" summary line owed to
+// a genuinely unmarkable highlight -- the worst outcome this
 // project names, a hole with nothing said about it.
 //
 // Before the fix this fails: SpanIndices returns i0 == i1 == 5 with ok true.

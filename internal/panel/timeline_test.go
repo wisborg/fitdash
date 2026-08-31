@@ -778,8 +778,8 @@ func TestNewSegmentedTimeline_TouchingHighlightsAndBoundaryHighlightsAreAccepted
 }
 
 // TestTimeline_IntervalAtRampOverlapsWhenTheHighlightIsShort pins the ramp
-// arithmetic against hand-derived numbers, including the case the plan
-// itself calls out: a highlight short enough relative to the transition that
+// arithmetic against hand-derived numbers, including the awkward case: a
+// highlight short enough relative to the transition that
 // the entrance and exit ramps overlap and the weight never reaches 1.
 //
 // Derived by hand: a 20s activity at fps=10, base rate 1, with a highlight

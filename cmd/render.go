@@ -607,8 +607,7 @@ func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitacti
 	// would risk this line disagreeing with what the panel actually drew.
 	// Fewer than two points means RoutePanel.Accepts already declined and
 	// there is no route for any highlight to be reported against at all
-	// (see the plan's own "activity has no route at all: nothing to
-	// decide" case).
+	// -- an activity with no route at all leaves nothing to decide here.
 	routePts := route.FromTrack(track, route.DefaultMaxPoints)
 	canMarkRoute := len(routePts) >= 2
 
@@ -744,8 +743,8 @@ func backgroundContrastWarnings(theme panel.Theme, bg color.NRGBA) []string {
 // stays global (resolveSmoothing never reinterprets it per segment), so it
 // is already the one number writePanelSummary's "smoothing 30s" line
 // reports and restating it five times over in this table would say nothing
-// new. Auto is the case E in the plan exists for: a highlight running its
-// own rate gets its own window (Timeline.AutoSmoothingAt), which is exactly
+// new. Auto is the case this table exists for: a highlight running its own
+// rate gets its own window (Timeline.AutoSmoothingAt), which is exactly
 // the figure that can differ sharply from the base window smoothingNote
 // prints above this table -- that difference is the whole reason the window
 // went per-segment rather than staying one render-wide number.

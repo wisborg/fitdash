@@ -803,8 +803,9 @@ func TestWriteHighlightSummary_ReportsResolvedColourAndContrastWarnings(t *testi
 }
 
 // TestWriteHighlightSummary_ReportsAnUnmarkableHighlight pins the summary's
-// half of the third row in the plan's absent-data table for route marking: a
-// highlight whose span has no GPS fix anywhere near it cannot be drawn on the
+// half of the unmarkable-highlight case in route marking's absent-data
+// policy: a highlight whose span has no GPS fix anywhere near it cannot be
+// drawn on the
 // map at all -- there is no placeholder available where the missing thing IS
 // the location -- so the honest analogue of "decline and announce" is this
 // line.
