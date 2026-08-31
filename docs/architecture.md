@@ -171,6 +171,25 @@ The price of the tree is that a panel cannot be placed at an arbitrary spot; it 
 expresses nested rows and columns. That is acceptable for a dashboard, and a free-placement
 escape hatch can be added later without disturbing it.
 
+### The marker strip carries no caption
+
+The marker strip's invariant content is the ribbon, each highlight's block and each label's
+tick. There is no heading over it: the word `MARKERS` used to be drawn there and has been
+deleted rather than merely switched off. It named the *panel* rather than the thing on
+screen, and a horizontal bar with coloured marks on it and a playhead sweeping across is a
+scrubber, which is legible without a caption in a way the word never made it more so.
+Removing it is also what freed the row the label name now occupies above the ribbon, with
+the highlight name below — three rows in the box's height where there were four, and the
+crowding that produced was the complaint that prompted the change. `Accepts` guarantees at
+least one block or one tick exists, so the box is never a bare bar.
+
+**One caveat, recorded because a reviewer will hit it and reach for the caption.** In a
+*still* frame — `scripts/fd frames`, a thumbnail — nothing is sweeping, and the strip is a
+dim bar with some coloured marks on it and no words at all. It reads as unfinished. It is
+not: the motion is the content, the video is the product, and a single exported PNG of this
+panel will always look sparser than the render it came from. The painter's own `Static`
+comment says the same thing, and this paragraph exists so the two do not come to disagree.
+
 ## Absent data
 
 The two policies map onto the two phases, and the mapping follows from *when* each kind of

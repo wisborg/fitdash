@@ -122,37 +122,44 @@ func (MarkerPanel) Prepare(ctx *Context, box Box) Painter {
 	unit := math.Min(box.W, box.H)
 	inset := unit * 0.02
 
-	p.labelPx = unit * 0.13
 	p.namePx = unit * 0.22
 	p.labelNamePx = unit * 0.16
 	ribbonH := unit * 0.14
 
 	centerY := box.Y + box.H/2
 	p.centerX = box.X + box.W/2
-	p.labelY = centerY - unit*0.38
-	p.nameY = centerY + unit*0.34
-	// The label name sits BETWEEN the ribbon and the highlight name's own
-	// row, not on top of either -- "a second anchor within the same box,
-	// alongside the highlight name" from the plan, deliberately never
-	// taking over the highlight name's row even while both are on screen
-	// at once, so the highlight name never pops out and back mid-highlight
-	// as a label passes over it (see this method's own reasoning below).
-	// 0.15 leaves clear daylight on both sides at every box shape this
-	// panel is tested against (see highlight_panel_test.go's FitsEveryBox
-	// and label tests), and the clearance below the ribbon is measured
-	// against the PLAYHEAD rather than the ribbon: the playhead extends
-	// headExtendBelow past the ribbon's own bottom edge, so the ribbon's
-	// edge at 0.01 is not what this row has to clear. This row's own top
-	// sits at 0.15 less half its labelNamePx, which is 0.07, and
-	// headExtendBelow is sized against that -- see its own comment. Above,
-	// the highlight name row's top edge is around 0.23 (nameY 0.34 less
-	// roughly half its own namePx).
+
+	// Three rows, stacked from scratch rather than nudged off the old
+	// four-row figures (nudging is what produced the crowding this
+	// re-derivation exists to fix): the label name ABOVE the ribbon, the
+	// ribbon itself, and the highlight name BELOW it. The label goes on
+	// top because a label's tick already extends above the ribbon only
+	// (p.tickExtend below) while a highlight's block sits inside the
+	// ribbon with no direction of its own -- putting the label's name
+	// where its tick points makes that relationship visible; the
+	// highlight's block keeps its name reachable through the x-anchoring
+	// (anchorX) computed below regardless of which row it is in.
 	//
-	// A label name long enough for FitSize to shrink labelNamePx only
-	// moves this row's top edge DOWN, away from the playhead, so the
-	// clearance below is a floor rather than a figure that can erode.
-	p.labelNameY = centerY + unit*0.15
-	ribbonCenterY := centerY - unit*0.06
+	// With one row on each side instead of two stacked below, the ribbon
+	// no longer needs to sit off-centre to make room -- each row's own
+	// clearance against the ribbon's ticks and playhead is derived
+	// independently below, against that row's own measured text extent,
+	// rather than against a shared budget the two of them used to fight
+	// over.
+	ribbonCenterY := centerY
+
+	// -0.29 and +0.27 both leave the row's own glyph extent (measured, not
+	// the nominal labelNamePx/namePx -- see the reasoning beside
+	// headExtendBelow) comfortably inside the box at every shape
+	// highlight_panel_test.go's FitsEveryBoxShape covers: the label row's
+	// top edge lands between -0.383 and -0.390 of unit (worst case, the
+	// smallest box tested) and the highlight row's bottom edge between
+	// +0.400 and +0.410, both well short of the box's own edge at ±0.5.
+	// That headroom is deliberate: the old stack's highlight name reached
+	// to +0.45, a hair from the edge, and that crowding was the user's
+	// whole complaint.
+	p.labelNameY = centerY - unit*0.29
+	p.nameY = centerY + unit*0.27
 
 	p.ribbon = Box{
 		X: box.X + inset,
@@ -177,39 +184,58 @@ func (MarkerPanel) Prepare(ctx *Context, box Box) Painter {
 	p.headW = math.Max(1, unit*0.02)
 	p.headExtend = unit * 0.08
 
-	// The playhead is ASYMMETRIC, and that is the label name row's doing
-	// rather than an aesthetic choice. Above the ribbon there is nothing
-	// between it and the chrome label, so it takes the full headExtend.
-	// Below, the label name row is in the way: a symmetric 0.08 would put
-	// the playhead's lower tip well inside the label's own glyphs, and
-	// because the playhead sweeps the whole ribbon that is not a near miss
-	// at one position -- every label would eventually have an accent line
-	// drawn through its name.
+	// The playhead is ASYMMETRIC, and that is the highlight name row's
+	// doing rather than an aesthetic choice. The highlight name now sits
+	// BELOW the ribbon, in the largest text this box draws (namePx), and
+	// closer to the ribbon than it stood in the old four-row stack -- so a
+	// symmetric 0.08 both above and below would put the playhead's lower
+	// tip well inside the highlight's own glyphs, and because the playhead
+	// sweeps the whole ribbon that is not a near miss at one position --
+	// every highlight would eventually have an accent line drawn through
+	// its name.
 	//
-	// The room available is measured against the label row's REAL glyph
-	// extent, not against labelNamePx. A face's ascender-to-descender box
-	// runs about 1.16 to 1.25 times the nominal size (it varies with the
-	// size, through hinting), so the row's true top edge sits appreciably
-	// higher than labelNameY less half labelNamePx would suggest. Measured
-	// across the box shapes highlight_panel_test.go covers, the gap between
-	// the ribbon's bottom edge and that true top edge is 0.040 to 0.047 of
-	// unit -- so 0.05 was inside the glyphs at every one of them, and the
-	// arithmetic that chose it was wrong precisely because it reasoned
-	// about the nominal size instead of the drawn one.
+	// The room available is measured against the highlight row's REAL
+	// glyph extent, not against namePx. A face's ascender-to-descender box
+	// runs about 1.16 to 1.27 times the nominal size across the shapes
+	// this panel is tested against (it varies with the size, through
+	// hinting), so the row's true top edge sits appreciably higher than
+	// nameY less half namePx would suggest. Measured across the box shapes
+	// highlight_panel_test.go covers, the gap between the ribbon's bottom
+	// edge and that true top edge is 0.035 to 0.043 of unit -- so
+	// headExtendBelow has to stay below that, and it does NOT get to relax
+	// back toward headExtend the way the old label-name geometry might
+	// suggest: the row it now has to clear carries bigger text sitting
+	// closer to the ribbon than the label name ever did in the old stack,
+	// so this value tightens rather than loosens.
 	//
-	// 0.03 leaves at least 0.01 of clear background at the tightest shape.
-	// Both are fractions of the same unit, so the clearance holds at every
-	// resolution rather than only the ones a test happened to try -- and
-	// TestMarkerPanel_PlayheadClearsTheLabelNameRowAcrossEveryBoxShape
+	// 0.025 leaves at least 0.035 of clear background at the tightest shape
+	// this panel is tested against. Both are fractions of the same unit, so
+	// the clearance holds at every resolution rather than only the ones a
+	// test happened to try -- and
+	// TestMarkerPanel_PlayheadClearsTheHighlightNameRowAcrossEveryBoxShape
 	// asserts it against the measured extent, so raising this number back
 	// toward headExtend fails rather than quietly reintroducing the bug.
-	p.headExtendBelow = unit * 0.03
+	p.headExtendBelow = unit * 0.025
 
 	// A label's tick is deliberately thinner than the playhead and extends
 	// ABOVE the ribbon only, never through or below it -- differing from
 	// the playhead in shape as well as colour (Theme.Foreground, not
 	// Theme.Accent) so the two are never mistaken for each other even in a
 	// frame with no colour to go by.
+	//
+	// Above the ribbon is no longer empty -- the label name row now lives
+	// there -- so both this tick and the playhead's own upward reach
+	// (headExtend, above) have to clear it, measured the same
+	// glyph-extent way headExtendBelow is: across the shapes this panel is
+	// tested against, headExtend's own margin above the label row's real
+	// top edge runs 0.040 to 0.047 of unit, and tickExtend's (shorter, so
+	// it never reaches as far from the ribbon as the playhead does) runs
+	// 0.070 to 0.077. TestMarkerPanel_PlayheadClearsTheLabelNameRowAcrossEveryBoxShape
+	// and TestMarkerPanel_TickClearsTheLabelNameRowAcrossEveryBoxShape pin
+	// both, independently -- the tick margin looks generous today, but
+	// nothing stops a future change from growing tickExtend on its own,
+	// and that test is what would catch it walking into the label's
+	// glyphs.
 	p.tickW = math.Max(1, unit*0.012)
 	p.tickExtend = unit * 0.05
 
@@ -399,17 +425,15 @@ type markerPainter struct {
 
 	ribbon      Box
 	centerX     float64
-	labelY      float64
 	nameY       float64
 	labelNameY  float64
-	labelPx     float64
 	namePx      float64
 	labelNamePx float64
 	headW       float64
 	headExtend  float64
 	// headExtendBelow is the playhead's DOWNWARD reach, deliberately
-	// shorter than headExtend so it stops clear of the label name row.
-	// See Prepare for why the two differ.
+	// shorter than headExtend so it stops clear of the highlight name row
+	// below the ribbon. See Prepare for why the two differ.
 	headExtendBelow float64
 	tickW           float64
 	tickExtend      float64
@@ -429,14 +453,24 @@ type markerPainter struct {
 	labelAnchorX []float64
 }
 
-// Static draws the ribbon, every highlight's block and every label's tick,
-// all invariant across the render: the "MARKERS" chrome label, the track the
-// blocks and ticks sit on, the blocks themselves dimmed to
-// highlightRestAlpha until Dynamic brightens whichever one is playing, and
-// the ticks at full strength since a label has no "rest" state of its own to
-// dim from -- it is either on screen (Dynamic draws its name) or it is not,
-// but the tick marking WHERE it falls belongs on the ribbon permanently, the
-// same way a highlight's block does.
+// Static draws the ribbon, every highlight's block and every label's tick --
+// the whole of what is invariant across the render, now that this box carries
+// no chrome caption of its own: the track the blocks and ticks sit on, the
+// blocks themselves dimmed to highlightRestAlpha until Dynamic brightens
+// whichever one is playing, and the ticks at full strength since a label has
+// no "rest" state of its own to dim from -- it is either on screen (Dynamic
+// draws its name) or it is not, but the tick marking WHERE it falls belongs
+// on the ribbon permanently, the same way a highlight's block does.
+//
+// There USED to be a "MARKERS" label drawn here, over the ribbon's own row.
+// It is deleted, not merely stopped being drawn: the word named the PANEL,
+// not the thing on screen, and a horizontal bar with coloured marks on it and
+// a playhead sweeping across is a scrubber, legible without a caption in a
+// way the word never made it more so. What used to make the caption feel
+// load-bearing was really the crowding it sat inside of -- see Prepare's own
+// comment on the re-derived stack -- and removing it is what gave the label
+// name and the highlight name room to stop crowding the ribbon and each
+// other.
 //
 // This is also what makes a labels-only render (no --highlight at all)
 // honest rather than a hole: MarkerPanel's own Accepts above already treats
@@ -444,11 +478,18 @@ type markerPainter struct {
 // here are the invariant content that makes the box real ink on every frame
 // of such a render, not bare background waiting for a highlight that never
 // comes.
+//
+// One caveat worth having read before staring at a single exported frame:
+// scripts/fd frames renders one instant, with no playhead sweeping across it.
+// On such a frame this box is a dim bar with some coloured blocks and/or
+// ticks on it and no caption at all -- which is correct, not unfinished. The
+// motion is the content; a still PNG of this panel alone will always look
+// sparser than the video it comes from, and that is the video being the
+// product, not a panel that forgot to draw something.
 func (p *markerPainter) Static(c *Canvas) {
 	if !p.ok {
 		return
 	}
-	_ = c.Text("MARKERS", p.centerX, p.labelY, 0.5, 0.5, p.labelPx, c.Theme.Dim)
 	c.Rect(p.ribbon, c.Theme.Dim)
 	for _, b := range p.blocks {
 		c.Rect(b, Fade(c.Theme.Highlight, highlightRestAlpha))
