@@ -196,6 +196,36 @@ func resolveWashColor(h panel.Highlight, theme panel.Theme) color.NRGBA {
 // Frames is the number of frames in the render.
 func (r *Renderer) Frames() int { return r.ctx.Timeline.Frames() }
 
+// LastFrameWithSample is the last frame index whose state carries a real
+// sample, or the final frame when the activity has none anywhere.
+//
+// It exists because a render's timeline spans the SESSION's declared window
+// (see panel.NewTimelineForActivity), which can end after the last record:
+// a watch that stopped recording a moment before the session closed leaves
+// real elapsed time with nothing recorded in it. Those trailing frames are
+// honest -- every gauge shows its placeholder, because Track.AtWithGap
+// interpolates between readings and refuses to extrapolate past the last
+// one -- but they are useless as the "here is the end state" frame the
+// --frames landmarks are for, which is what this answers instead.
+//
+// Deliberately asks this Renderer for the frames rather than re-deriving
+// "does this instant have a sample" from the track: Frame is the single
+// place that question is answered for the render, and a second copy here
+// could disagree with the pixels the loop actually produced -- which is
+// exactly the failure the frame-state invariant exists to prevent.
+//
+// Walks back rather than computing from the last sample's timestamp,
+// because an activity can also end inside an ordinary dropout, and the
+// last frame that DRAWS something is the honest answer in both cases.
+func (r *Renderer) LastFrameWithSample() int {
+	for i := r.Frames() - 1; i >= 0; i-- {
+		if r.Frame(i).HasSample {
+			return i
+		}
+	}
+	return r.Frames() - 1
+}
+
 // Placed returns the panels that will draw, with their boxes.
 func (r *Renderer) Placed() []panel.Placed { return r.placed }
 

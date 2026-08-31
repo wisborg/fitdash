@@ -1222,3 +1222,51 @@ func TestNew_RequiresTrackAndTimer(t *testing.T) {
 		t.Error("New accepted a context with no timer model")
 	}
 }
+
+// TestRenderer_LastFrameWithSampleSkipsATrailingDeadZone pins the landmark
+// --frames reaches for when it wants the end state.
+//
+// A session's declared window can outlast its final record: a watch that
+// stops recording a moment before the session closes leaves real elapsed
+// time with nothing in it. Those frames are honest -- Track.AtWithGap
+// interpolates between readings and refuses to extrapolate past the last
+// one, so every gauge shows its placeholder -- but a landmark that lands
+// there shows a frame on which nothing reads, which is the opposite of
+// what an "end state" frame is for.
+//
+// The fixture makes the dead zone many frames wide on purpose. A one- or
+// two-frame tail would pass against an implementation that simply returned
+// the final index, since the assertion would land within rounding of it.
+func TestRenderer_LastFrameWithSampleSkipsATrailingDeadZone(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 320, 180, 30)
+	// Ask for a window a full two seconds longer than the samples cover.
+	// At 30 fps that is 60 frames past the last reading, none of which can
+	// carry a sample at any gap tolerance, because there is nothing beyond
+	// the last one to interpolate towards.
+	samples := ctx.Track.Samples
+	last := samples[len(samples)-1].Time
+	tl, err := panel.NewTimeline(ctx.Timeline.Start(), last.Add(2*time.Second).Sub(ctx.Timeline.Start()), 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx.Timeline = tl
+
+	r, err := New(ctx, oneMarkerLayout(markerPanel{name: "a", accept: true}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	n := r.Frames()
+	got := r.LastFrameWithSample()
+	if got == n-1 {
+		t.Fatalf("LastFrameWithSample() = %d, the final frame, but the final frames are past the last sample", got)
+	}
+	if !r.Frame(got).HasSample {
+		t.Errorf("frame %d was named as the last one with a sample, but it has none", got)
+	}
+	for i := got + 1; i < n; i++ {
+		if r.Frame(i).HasSample {
+			t.Fatalf("frame %d is after the one named last-with-a-sample (%d) and yet has one", i, got)
+		}
+	}
+}

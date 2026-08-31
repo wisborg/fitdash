@@ -921,7 +921,7 @@ func writeLabelSummary(cmd *cobra.Command, labels []panel.Label, transition time
 // makes the fast visual loop a trustworthy proxy for the real render rather
 // than a second implementation free to disagree with it.
 func runFrames(cmd *cobra.Command, r *render.Renderer, in renderInputs) error {
-	indices, err := frameIndices(in.tl, renderOpts.frameAt, renderOpts.frameAtVideo, in.highlights, in.labels)
+	indices, err := frameIndices(in.tl, r.LastFrameWithSample(), renderOpts.frameAt, renderOpts.frameAtVideo, in.highlights, in.labels)
 	if err != nil {
 		return err
 	}
@@ -967,9 +967,17 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, in renderInputs) error {
 // label's own boundaries are there for the same reason: that is exactly
 // where a panel gets a transition wrong, and each one creates two new
 // boundaries the quarters will not land near on a long render.
-func frameIndices(tl panel.Timeline, at, atVideo []time.Duration, highlights []panel.Highlight, labels []panel.Label) ([]int, error) {
+func frameIndices(tl panel.Timeline, lastFrame int, at, atVideo []time.Duration, highlights []panel.Highlight, labels []panel.Label) ([]int, error) {
 	n := tl.Frames()
-	out := []int{0, n / 4, n / 2, (3 * n) / 4, n - 1}
+	// lastFrame is the last frame that DRAWS something, not n-1. The two
+	// differ when the session's declared window outlasts the final record --
+	// see render.Renderer.LastFrameWithSample, which is where that question
+	// is answered once. Writing n-1 here handed the user an "end state"
+	// landmark on which every gauge showed its placeholder, and the elevation
+	// profile's fill washed absent across the whole axis: honest about that
+	// instant, and useless as the frame you reach for to see how the render
+	// finished.
+	out := []int{0, n / 4, n / 2, (3 * n) / 4, lastFrame}
 	for _, h := range highlights {
 		out = append(out, highlightLandmarkFrames(tl, h)...)
 	}

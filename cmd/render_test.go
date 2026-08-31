@@ -119,7 +119,7 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 	}
 	n := tl.Frames() // 3000
 
-	got, err := frameIndices(tl, nil, nil, nil, nil)
+	got, err := frameIndices(tl, tl.Frames()-1, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestFrameIndices_CoversTheBoundariesAndHonoursFrameAt(t *testing.T) {
 
 	// --frame-at resolves through the timeline, so it is the same arithmetic
 	// the render itself uses. 50 seconds at 30 fps is frame 1500.
-	got, err = frameIndices(tl, []time.Duration{50 * time.Second}, nil, nil, nil)
+	got, err = frameIndices(tl, tl.Frames()-1, []time.Duration{50 * time.Second}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestFrameIndices_HonoursFrameAtVideo(t *testing.T) {
 	// 5s of VIDEO at 30fps is frame 150 -- and, at a 10x speedup, a
 	// completely different frame from what --frame-at 5s would have named
 	// (--frame-at 5s of ACTIVITY time is frame 15).
-	got, err := frameIndices(tl, nil, []time.Duration{5 * time.Second}, nil, nil)
+	got, err := frameIndices(tl, tl.Frames()-1, nil, []time.Duration{5 * time.Second}, nil, nil)
 	if err != nil {
 		t.Fatalf("frameIndices: %v", err)
 	}
@@ -170,16 +170,16 @@ func TestFrameIndices_HonoursFrameAtVideo(t *testing.T) {
 		t.Errorf("--frame-at-video 5s resolved to frame %d, want 150", last)
 	}
 
-	if _, err := frameIndices(tl, nil, []time.Duration{-time.Second}, nil, nil); err == nil {
+	if _, err := frameIndices(tl, tl.Frames()-1, nil, []time.Duration{-time.Second}, nil, nil); err == nil {
 		t.Error("frameIndices accepted a negative --frame-at-video offset")
 	}
-	if _, err := frameIndices(tl, nil, []time.Duration{11 * time.Second}, nil, nil); err == nil {
+	if _, err := frameIndices(tl, tl.Frames()-1, nil, []time.Duration{11 * time.Second}, nil, nil); err == nil {
 		t.Error("frameIndices accepted a --frame-at-video offset past the end of the video")
 	} else if !strings.Contains(err.Error(), "0:00:10") {
 		t.Errorf("the error should say how long the video runs; got: %v", err)
 	}
 	// The video's own last instant is a legitimate thing to ask for.
-	if _, err := frameIndices(tl, nil, []time.Duration{10 * time.Second}, nil, nil); err != nil {
+	if _, err := frameIndices(tl, tl.Frames()-1, nil, []time.Duration{10 * time.Second}, nil, nil); err != nil {
 		t.Errorf("frameIndices rejected the video's final instant: %v", err)
 	}
 }
@@ -195,7 +195,7 @@ func TestFrameIndices_IncludesEveryHighlightsFirstAndLastFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := frameIndices(tl, nil, nil, []panel.Highlight{
+	got, err := frameIndices(tl, tl.Frames()-1, nil, nil, []panel.Highlight{
 		{From: 20 * time.Second, To: 30 * time.Second, RateFactor: 5},
 	}, nil)
 	if err != nil {
@@ -231,18 +231,18 @@ func TestFrameIndices_RejectsAnOffsetPastTheActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := frameIndices(tl, []time.Duration{40 * time.Minute}, nil, nil, nil); err == nil {
+	if _, err := frameIndices(tl, tl.Frames()-1, []time.Duration{40 * time.Minute}, nil, nil, nil); err == nil {
 		t.Fatal("frameIndices accepted an offset past the end of the activity")
 	} else if !strings.Contains(err.Error(), "0:25:00") {
 		t.Errorf("the error should say how long the activity runs; got: %v", err)
 	}
-	if _, err := frameIndices(tl, []time.Duration{-time.Minute}, nil, nil, nil); err == nil {
+	if _, err := frameIndices(tl, tl.Frames()-1, []time.Duration{-time.Minute}, nil, nil, nil); err == nil {
 		t.Error("frameIndices accepted a negative offset")
 	}
 
 	// The boundary is inclusive: the very last instant of the activity is a
 	// legitimate thing to ask for.
-	if _, err := frameIndices(tl, []time.Duration{25 * time.Minute}, nil, nil, nil); err != nil {
+	if _, err := frameIndices(tl, tl.Frames()-1, []time.Duration{25 * time.Minute}, nil, nil, nil); err != nil {
 		t.Errorf("frameIndices rejected the activity's final instant: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestFrameIndices_RejectsAnOffsetPastTheActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := frameIndices(fast, []time.Duration{20 * time.Minute}, nil, nil, nil); err != nil {
+	if _, err := frameIndices(fast, fast.Frames()-1, []time.Duration{20 * time.Minute}, nil, nil, nil); err != nil {
 		t.Errorf("a 20m offset was rejected on a 25m activity rendered as a 1m video: %v", err)
 	}
 }
