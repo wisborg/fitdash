@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"time"
 
 	"github.com/wisborg/fitactivity"
 
@@ -45,6 +46,26 @@ import (
 // different origins because there is only one origin to scale against; that
 // principle is what this design is still built to preserve, only the origin
 // itself has moved.
+//
+// # The name rows
+//
+// A configured --highlight or --label is drawn on this axis as a mark on
+// the baseline (see buildMarks and elevMark/elevTick) -- both resolved by
+// DISTANCE, never time, for the reason the mapping's own cost is documented
+// at buildMarks and TimeToDistance. Naming which mark is active needs
+// somewhere to print that does not collide with the trace itself, so
+// Prepare reserves up to two rows at the TOP of this panel's own box,
+// above the plot: the label name on top, the highlight name beneath it,
+// plot below -- the same top-to-bottom order MarkerPanel's own ribbon
+// reads in, so a viewer moving between a strip render and a profile render
+// sees the same stack. The reservation is CONDITIONAL on what
+// ctx.Highlights/ctx.Labels actually configure: zero rows, and no cost to
+// the plot's own height, when neither is; only the row that is actually
+// used when just one is. Each row's own name draws in its OWN area
+// (drawActiveMarks), never a row shared between the two -- a label passing
+// over an active highlight must not make the highlight's name vanish and
+// reappear, which is exactly the alternative MarkerPanel's own Dynamic
+// already rejected for the identical reason, on the identical two names.
 type ElevationPanel struct{}
 
 // Name identifies the panel.
@@ -131,30 +152,15 @@ const profileSampleStep = 2.0
 // derivation, in the same voice as highlightWashStrength and the strip
 // weights.
 //
-// 0.12 was the starting point and did NOT survive the gate: on an activity
-// whose barometer settles a little way in, and whose overall minimum is
-// therefore close to its opening reading, the low label sits close enough
-// to the plot's bottom edge already that a 0.12 headroom left its own ink
-// overlapping the new baseline rule -- the rule reading as a strike-through
-// rather than as a floor. 0.22 was checked in its place and stopped that:
-// the low label's glyphs cleared the baseline rule at every resolution
-// tried (1080p, 4K, portrait) -- but "cleared" meant zero rows of daylight
-// at 1080p and portrait and one row at 4K, not a margin. That headroom was
-// tuned to exactly the low label's OWN half-height at the size it happened
-// to be measured at, which is not a property this fraction's own name
-// advertises, so the next person to change labelPx (bigger text, a
-// different font, a metrics change upstream) reintroduces the strike-through
-// this same headroom already exists to prevent, with nothing here to say
-// why. 0.25 buys real clearance -- several rows rather than a fraction of
-// one, at every resolution the previous value was checked at -- for a
-// three-point rise in this SAME fraction, which is cheap for the identical
-// reason 0.22 already was: it also thickens the fill at the activity's
-// lowest point (the OTHER thing this fraction has to keep legible) rather
-// than trading against it, and it compresses the real trace into a
-// negligibly smaller share of the plot (80% of it rather than 82%).
-// A reader retuning labelPx is still expected to re-check this gap -- this
-// comment records the coupling so that check is not rediscovered from a
-// strike-through, not so it can be skipped.
+// The headroom has to clear the low label's own glyphs against the
+// baseline rule below it, or the rule reads as a strike-through rather
+// than a floor -- and that clearance depends on labelPx, not on this
+// fraction's own name, so a future change to labelPx (bigger text, a
+// different font, a metrics change upstream) has to re-check this gap
+// rather than assume it still holds. 0.25 is the value that clears the low
+// label with real margin -- not merely daylight -- at 1080p, 4K and
+// portrait, while still giving the real trace the bulk of the plot's own
+// height.
 const elevationFloorHeadroom = 0.25
 
 // elevationFillAlpha is the opacity of the COVERED distance fill under the
@@ -302,6 +308,51 @@ func elevationAbsentFillAlpha(theme Theme) float64 {
 		elevationAbsentFillContrastFloor+elevationAbsentFillContrastMargin)
 }
 
+// TimeToDistance resolves offset -- an activity-time offset from start,
+// exactly what Highlight.From/To and Label.At are measured in -- to a
+// distance via track's own gap-aware sample lookup. Exported because it has
+// two callers that must never disagree: this panel's own buildMarks, which
+// feeds the result into xForDistance to place a mark, and
+// cmd/render.go's summary, which only needs ok to report a mark it could not
+// place. A local copy of the same lookup in cmd used to exist for that
+// second caller; it is gone; both now call this one function.
+//
+// ok is false, and the caller must not draw a mark at the returned distance
+// (which is meaningless when ok is false), in two cases that this function
+// deliberately does NOT distinguish between: AtWithGap itself refusing --
+// offset falls outside the track's own coverage, or deeper into a real
+// recording gap than fitactivity.DefaultMaxGap from either side -- and
+// AtWithGap succeeding but returning a sample with HasDistance false, a GPS
+// dropout landing exactly on offset without the surrounding gap itself
+// being wide enough to trip the first case. Both are the identical fact
+// from a caller's point of view: there is no distance to place a mark at,
+// and this function's whole job is to make that case distinguishable from
+// an actual distance rather than silently returning zero, which a caller
+// could mistake for "the start line".
+//
+// This is deliberately a THIN wrapper, not a second interpolation on top of
+// AtWithGap's own. Refusing to draw a straight line across a gap wider than
+// DefaultMaxGap is exactly what AtWithGap is for (see its own doc comment
+// in fitactivity); resolving the gap differently here -- say, by walking
+// Track.Samples for the nearest distance on either side -- would be a
+// second, local copy of the same judgement call, on a narrower and less
+// reviewed slice of the problem. If a real recording's marks need rescuing
+// from a dropout at their own boundary often enough to matter -- widening
+// to the nearest known distance INSIDE the span rather than refusing the
+// whole mark -- that needs a "first sample carrying distance in [a,b]"
+// lookup, which is a fitactivity accessor to add on its own branch and
+// verify against every consumer, not a local walk of Track.Samples here.
+func TimeToDistance(track *fitactivity.Track, start time.Time, offset time.Duration) (float64, bool) {
+	if track == nil {
+		return 0, false
+	}
+	s, ok := track.AtWithGap(start.Add(offset), fitactivity.DefaultMaxGap)
+	if !ok || !s.HasDistance {
+		return 0, false
+	}
+	return s.Distance, true
+}
+
 // Prepare builds the elevation model and lays out the plot, once.
 func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 	p := &elevationPainter{box: box}
@@ -322,7 +373,15 @@ func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 	if box.W < unit {
 		unit = box.W
 	}
-	p.labelPx = unit * 0.16
+	// The axis chrome -- both elevation labels and (via distPx below) both
+	// distance labels -- is sized from ctx.BasePx(), the layout's OWN base
+	// text size for this frame, not from unit (this panel's own box). See
+	// elevAxisLabelFraction's own doc comment for why: unit is exactly the
+	// quantity the band's weight in layouts.go controls, and chrome sized
+	// from it inherits every future re-weighting of that band as a change
+	// in how loud the axis reads, which is not a property axis labels have
+	// any business tracking.
+	p.labelPx = ctx.BasePx() * elevAxisLabelFraction
 
 	// profileStart is the model's own StartDistance -- where the recorded
 	// trace begins, NOT where the axis begins. See the type doc comment for
@@ -356,11 +415,51 @@ func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 		}
 	}
 
+	// The name rows -- see the type doc comment's "the name rows" section
+	// and marks.go's fitLongestName -- are reserved above the plot,
+	// CONDITIONAL on what ctx.Highlights/ctx.Labels actually configure: zero
+	// rows, and topReserved stays zero, when neither is configured, which is
+	// what keeps a render configuring neither pixel-identical to the box
+	// this panel resolved to before this feature existed (the frozen
+	// pixel-identity test's whole claim -- see elevation_test.go). One row
+	// when only one of the two is; two, stacked, when both are. Ordering is
+	// label above highlight, matching MarkerPanel's own top-to-bottom read
+	// (label above the ribbon, highlight below it), so a viewer moving
+	// between a strip render and a profile render reads the same stack.
+	//
+	// Sized from unit like every other measure here, at the row's own
+	// NOMINAL font size -- before fitLongestName (called from buildMarks,
+	// once the plot's width is known) ever narrows it for a long name. That
+	// order matters: fitLongestName only ever shrinks a size to fit an
+	// available width, never grows one, so reserving against the nominal
+	// size is already the largest the row will ever need and does not
+	// itself depend on which names are configured -- only on whether a row
+	// is needed at all.
+	var labelRowH, highlightRowH float64
+	if len(ctx.Labels) > 0 {
+		p.labelNamePx = unit * elevLabelNamePx
+		labelRowH = p.labelNamePx * elevNameRowPadding
+	}
+	if len(ctx.Highlights) > 0 {
+		p.namePx = unit * elevNamePx
+		highlightRowH = p.namePx * elevNameRowPadding
+	}
+	rowsTop := box.Y
+	if labelRowH > 0 {
+		p.labelNameY = rowsTop + labelRowH/2
+		rowsTop += labelRowH
+	}
+	if highlightRowH > 0 {
+		p.nameY = rowsTop + highlightRowH/2
+		rowsTop += highlightRowH
+	}
+	topReserved := rowsTop - box.Y
+
 	p.plot = Box{
 		X: box.X + gutter,
-		Y: box.Y + p.labelPx*0.9,
+		Y: box.Y + p.labelPx*0.9 + topReserved,
 		W: box.W - gutter - box.W*0.02,
-		H: box.H - p.labelPx*0.9 - bottom,
+		H: box.H - p.labelPx*0.9 - topReserved - bottom,
 	}
 	if p.plot.W <= 0 || p.plot.H <= 0 {
 		return p
@@ -397,6 +496,16 @@ func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 	p.dotR = math.Max(2, unit*0.03)
 	p.baselineW = math.Max(1, p.lineW*0.5)
 
+	// The mark strip -- every configured highlight's block, every
+	// configured label's tick -- lies ON the baseline rule, entirely inside
+	// the plot. See buildMarks and "the marks" in the type doc comment for
+	// why DISTANCE, not time, is the only defensible axis for it once it is
+	// drawn inside this panel's own box.
+	p.markH = unit * elevMarkFraction
+	p.tickW = math.Max(1, unit*0.012)
+	p.tickExtend = unit * elevTickFraction
+	p.buildMarks(ctx)
+
 	if !p.flat {
 		// The trace itself only covers profileStart..axisEnd -- the axis runs
 		// from zero, but there is nothing recorded before profileStart to draw
@@ -422,6 +531,293 @@ func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 		}
 	}
 	return p
+}
+
+// elevAxisLabelFraction is the axis chrome's own text size -- both
+// elevation labels (highLabel/lowLabel) and, via distPx's own fit-to-width
+// starting point, both distance labels -- as a fraction of ctx.BasePx(),
+// the layout's base text size for THIS FRAME. Not a fraction of unit (this
+// panel's own box height), which is what every other measure on this
+// Painter is sized off, and that is the point of the departure, not an
+// oversight.
+//
+// Sizing axis chrome from unit couples it to this panel's own band weight
+// in layouts.go: re-weighting the band for an unrelated reason -- to make
+// room for the mark name rows, say -- scales the axis labels right along
+// with it, for a reason that has nothing to do with legibility, and can
+// just as easily invert the hierarchy between chrome and the mark names it
+// sits beside (elevNamePx/elevLabelNamePx below) as leave it alone. BasePx
+// is fixed for the whole render -- derived from the OUTPUT FRAME's own
+// dimensions and the layout's FontScale (see Context.BasePx) -- so it
+// cannot change because this panel's own band gained or lost weight. The
+// panel contract's own "how does it scale" question names exactly these
+// two sources -- frame dimensions or the layout's font scale -- and unit is
+// the frame dimension already spent turning INTO this panel's own box;
+// BasePx is the other one, upstream of that division.
+//
+// 0.45 is legible chrome, clearly recessive beside a mark's name, checked
+// at 1080p, 4K and in the portrait tree: because BasePx depends only on
+// the frame's own smaller dimension, portrait and landscape land the axis
+// labels at the identical size for a given output quality, rather than
+// following whatever height this panel's own band happens to resolve to
+// in each tree.
+//
+// The trade this does not pretend to dodge: unit-derived measures shrink
+// automatically if this panel is ever given a much shorter band, and this
+// one no longer does. A band cut short enough that the axis chrome no
+// longer fits would need a hand retune, or the labels overflow it --
+// nothing here clamps against unit to catch that case. Every layout this
+// panel is placed in today gives it a band several times BasePx tall, so
+// that is a deliberate omission rather than a gap nobody noticed; a future
+// layout wanting a much shorter band is itself a layout-selection question
+// the panel contract says to raise, not something to silently guard
+// against with a second, competing constant.
+const elevAxisLabelFraction = 0.45
+
+// elevMarkFraction is the mark strip's own thickness, as a fraction of unit
+// -- the same min(box.W, box.H) every other measure on this Painter is
+// sized off. It sits on the baseline rule and stays inside the plot, so it
+// never competes with the bottom label row's own reserved height (see
+// "bottom" above) the way a strip along the panel's own edge would have.
+const elevMarkFraction = 0.05
+
+// elevTickFraction is how far a label's tick rises above the baseline into
+// the plot -- deliberately taller than elevMarkFraction so a tick reads as
+// rising OUT of the mark strip rather than as another block of the same
+// height sitting beside it.
+const elevTickFraction = 0.14
+
+// elevNamePx and elevLabelNamePx are the highlight and label name rows' own
+// nominal text sizes, reserved above the plot -- see Prepare's own
+// "the name rows" comment. Both scale off unit like every other measure on
+// this Painter, and both sit smaller than MarkerPanel's own namePx/
+// labelNamePx (0.22/0.16): those fight a ribbon and a playhead for the same
+// fixed vertical inches, so they earn every fraction they claim; these sit
+// in rows the PLOT ITSELF pays for by shrinking, so the fraction is a
+// judgement call to check at the gate -- legible at 1080p, 4K and portrait
+// without spending more of the plot's own height than the name is worth.
+//
+// These two are not independent of elevAxisLabelFraction, and must be
+// retuned together with it rather than in isolation. A mark's name is this
+// panel's annotation, not its content the way it is on MarkerPanel's own
+// ribbon, so it has to read smaller than the plot itself but larger than
+// the axis chrome it sits above -- and the two are fractions of DIFFERENT
+// bases (unit here, ctx.BasePx() for the axis chrome), so retuning one
+// without checking the other can silently invert that hierarchy. 0.115 and
+// 0.09 keep the highlight name clearly larger than the axis labels and the
+// label name a step below the highlight's, at every resolution checked,
+// while still leaving the real trace the bulk of the plot's own height.
+const elevNamePx = 0.115
+const elevLabelNamePx = 0.09
+
+// elevNameRowPadding multiplies a name row's own font size into the row's
+// reserved height, leaving ascender/descender clearance around the glyph.
+// A flat multiple, not the per-shape glyph-extent derivation
+// highlight_panel.go's Prepare works through for its own rows: that
+// derivation earns its keep fighting a ribbon and a playhead for shared
+// space, and a name row here has nothing else in it to fight -- the row is
+// wholly the name's own to spend.
+const elevNameRowPadding = 1.4
+
+// elevMark is one highlight's span, resolved to a pair of x coordinates on
+// THIS panel's own distance axis by buildMarks -- xForDistance(d0) and
+// xForDistance(d1), already widened to the axis's own floor and separated
+// from its neighbours by the identical geometry (marks.go) MarkerPanel's
+// own blocks use on the time axis.
+//
+// ok is false when either endpoint's distance could not be resolved (see
+// TimeToDistance) -- D.1's policy: a mark needs BOTH endpoints, and one
+// known, one not is still unplaceable. There is no placeholder for "a mark
+// with no position on this axis", the same as there is none on the route
+// panel's map (see routeMark), so Static and Dynamic both skip a mark whose
+// ok is false; reporting it in words is cmd's job, not this Painter's.
+type elevMark struct {
+	ok     bool
+	x0, x1 float64
+}
+
+// elevTick is one label's instant, resolved to a single x the same way.
+type elevTick struct {
+	ok bool
+	x  float64
+}
+
+// buildMarks resolves every configured highlight to a block and every
+// configured label to a tick on this panel's distance axis, entirely from
+// ctx.Highlights, ctx.Labels, ctx.Track and ctx.Timeline.Start() -- all
+// fixed for the whole render -- so nothing here reads a Frame and every
+// mark's position is invariant across it. The tempting wrong version reads
+// f.Sample.Distance in Dynamic instead; that recomputes a lookup Prepare can
+// already do once, and it is also simply wrong once a distance dropout is in
+// play -- a mark is a property of the highlight's own span (an offset the
+// user typed), not of what the CURRENT frame's sensor happened to record
+// (see Dynamic's own comment on why marks still draw over the absent wash).
+//
+// Skipped entirely when neither Highlights nor Labels is configured, so
+// ctx.Timeline -- a zero Timeline in a caller that had no reason to set one
+// before this change, such as most of this file's own existing tests -- is
+// never touched by a render with no marks configured at all.
+func (p *elevationPainter) buildMarks(ctx *Context) {
+	if len(ctx.Highlights) == 0 && len(ctx.Labels) == 0 {
+		return
+	}
+	start := ctx.Timeline.Start()
+
+	p.marks = make([]elevMark, len(ctx.Highlights))
+	p.names = make([]string, len(ctx.Highlights))
+	p.anchorX = make([]float64, len(ctx.Highlights))
+	minMarkW := math.Max(2, p.markH*minBlockFraction)
+	boxes := make([]Box, 0, len(ctx.Highlights))
+	order := make([]int, 0, len(ctx.Highlights))
+	for i, h := range ctx.Highlights {
+		p.names[i] = h.Name
+		d0, ok0 := TimeToDistance(ctx.Track, start, h.From)
+		d1, ok1 := TimeToDistance(ctx.Track, start, h.To)
+		if !ok0 || !ok1 {
+			// D.1: unplaceable. p.marks[i] stays its zero value (ok:
+			// false); Static and Dynamic both skip it -- including its
+			// name, which has no anchor to draw at any more than the mark
+			// itself has an x to draw at.
+			continue
+		}
+		x0, x1 := widenToMinimum(p.xForDistance(d0), p.xForDistance(d1), minMarkW)
+		boxes = append(boxes, Box{X: x0, W: x1 - x0})
+		order = append(order, i)
+	}
+	// Distance is monotone non-decreasing in time (see the type doc
+	// comment's "the marks" section), so highlights already sorted by From
+	// (resolveHighlights' own contract) produce boxes already sorted
+	// ascending by X -- separateSpans' own precondition for treating this
+	// as a single left-to-right sweep, exactly as MarkerPanel's blocks are
+	// on the time axis.
+	separateSpans(boxes, p.markH*blockGapFraction)
+
+	// The name row's own text size is fit against the LONGEST configured
+	// highlight name, once -- never against whichever one is active, which
+	// is the jitter fitLongestName (marks.go) exists to prevent, the
+	// identical rule MarkerPanel's own namePx follows. Sized against
+	// p.plot.W, the width the name row actually has, not against box.W --
+	// the plot is already inset from the panel's own box by the y-axis
+	// label gutter, and fitting against the wider box would let a long name
+	// print into that gutter.
+	p.namePx = fitLongestName(ctx.Fonts, p.names, p.namePx, p.plot.W*0.92)
+	for j, b := range boxes {
+		i := order[j]
+		// The name sits centred over its own (already separated) block,
+		// clamped to the plot's own x extent -- the same clampAnchor rule
+		// (marks.go) MarkerPanel's own anchorX uses, so a highlight near
+		// either edge of the plot cannot print its name half off the
+		// panel.
+		anchor := b.X + b.W/2
+		if ctx.Fonts != nil && p.names[i] != "" {
+			if w, _, err := ctx.Fonts.Measure(p.names[i], p.namePx); err == nil {
+				anchor = clampAnchor(anchor, w/2, p.plot.X, p.plot.X+p.plot.W, p.plot.X+p.plot.W/2)
+			}
+		}
+		p.marks[i] = elevMark{ok: true, x0: b.X, x1: b.X + b.W}
+		p.anchorX[i] = anchor
+	}
+
+	// Labels have no span to widen -- an instant, not a range -- so each
+	// starts as a bare x, widened to a hairline box only for THIS
+	// separation pass and then collapsed back to its own centre. Two
+	// labels landing on (or nudged onto) the same distance, e.g. either
+	// side of a pause, is D.4's case: now that a name draws in the label
+	// row, two coincident ticks would print one name directly over the
+	// other rather than merely a doubled line, so they are nudged apart by
+	// the identical separation sweep the highlight blocks above already
+	// use, bounded to 2*tickW away from each tick's own true position. The
+	// bound is what keeps the nudge honest -- it moves a tick by less than
+	// this axis's own pixel quantization can even express as a different
+	// distance, never far enough to claim the two labels fell at genuinely
+	// different points on the course. A pair still touching after the
+	// bound is left as close as the bound allows, recorded into
+	// overlappingLabels below rather than silently accepted: reporting it
+	// in words is cmd's job (see OverlappingLabels and TimeToDistance's own
+	// D.1 policy above), not this Painter's, but cmd can only report what
+	// this Painter hands back -- the geometry that decides "still touching"
+	// exists only here, sized from this render's own box.
+	p.ticks = make([]elevTick, len(ctx.Labels))
+	p.labelNames = make([]string, len(ctx.Labels))
+	p.labelAnchorX = make([]float64, len(ctx.Labels))
+	tickBoxes := make([]Box, 0, len(ctx.Labels))
+	tickOrder := make([]int, 0, len(ctx.Labels))
+	tickOrig := make([]float64, 0, len(ctx.Labels))
+	for i, l := range ctx.Labels {
+		p.labelNames[i] = l.Name
+		d, ok := TimeToDistance(ctx.Track, start, l.At)
+		if !ok {
+			// D.1, restated for a tick: unplaceable, and p.ticks[i] stays
+			// its zero value (ok: false); Static and Dynamic both skip it
+			// and its name.
+			continue
+		}
+		x := p.xForDistance(d)
+		tickBoxes = append(tickBoxes, Box{X: x - p.tickW/2, W: p.tickW})
+		tickOrder = append(tickOrder, i)
+		tickOrig = append(tickOrig, x)
+	}
+	separateSpans(tickBoxes, p.tickW)
+
+	// Same template rule as the highlight row, applied to the label row:
+	// sized once against the longest configured label name, never against
+	// whichever one is active.
+	p.labelNamePx = fitLongestName(ctx.Fonts, p.labelNames, p.labelNamePx, p.plot.W*0.92)
+
+	// prevX/havePrev track the immediately preceding tick's own FINAL
+	// (clamped) x, in the same ascending-by-time order tickBoxes was built
+	// in (see the comment above on why that is also ascending by x). D.4's
+	// "still touching" is a fact about NEIGHBOURS -- the separation sweep
+	// only ever pulls adjacent pairs apart, so only an adjacent pair can
+	// still be under gap p.tickW apart once it has run. p.tickW is the same
+	// gap separateSpans was asked to enforce a few lines above; anything
+	// short of it once the bound has clamped is exactly the shortfall the
+	// bound exists to leave honest rather than paper over (see D.4 above).
+	var prevX float64
+	var prevI int
+	havePrev := false
+	for j, b := range tickBoxes {
+		i := tickOrder[j]
+		x := b.X + b.W/2
+		if lo, hi := tickOrig[j]-2*p.tickW, tickOrig[j]+2*p.tickW; x < lo {
+			x = lo
+		} else if x > hi {
+			x = hi
+		}
+		p.ticks[i] = elevTick{ok: true, x: x}
+
+		if havePrev && x-prevX < p.tickW {
+			p.overlappingLabels = appendOverlapping(p.overlappingLabels, prevI)
+			p.overlappingLabels = appendOverlapping(p.overlappingLabels, i)
+		}
+		prevX, prevI, havePrev = x, i, true
+
+		// Anchored over the label's OWN (nudged) tick, exactly the way a
+		// highlight's name is anchored over its own block above -- not
+		// centred in the row, which is invisible with one label and gives
+		// several no visible relationship to any tick at all.
+		anchor := x
+		if ctx.Fonts != nil && p.labelNames[i] != "" {
+			if w, _, err := ctx.Fonts.Measure(p.labelNames[i], p.labelNamePx); err == nil {
+				anchor = clampAnchor(anchor, w/2, p.plot.X, p.plot.X+p.plot.W, p.plot.X+p.plot.W/2)
+			}
+		}
+		p.labelAnchorX[i] = anchor
+	}
+}
+
+// appendOverlapping appends i to overlapping, skipping it when it is already
+// the LAST element -- the only duplicate D.4's neighbour-pair scan in
+// buildMarks can produce: a label in the middle of three that all collide is
+// visited once as the later half of one pair and once as the earlier half
+// of the next, and the two calls are always consecutive, so comparing only
+// against the last element is enough to keep the result free of repeats
+// without a set.
+func appendOverlapping(overlapping []int, i int) []int {
+	if n := len(overlapping); n > 0 && overlapping[n-1] == i {
+		return overlapping
+	}
+	return append(overlapping, i)
 }
 
 type elevationPainter struct {
@@ -468,7 +864,61 @@ type elevationPainter struct {
 	// defined bottom at frame 0, before any distance has been read, and it
 	// is what makes a single exported PNG of this panel legible on its own.
 	baselineW float64
+
+	// markH, tickW, tickExtend size the mark strip: markH is the thickness
+	// of a highlight's block, resting on the baseline; tickExtend is how
+	// far a label's tick rises above the baseline into the plot; tickW is
+	// the tick's own stroke width. See elevMarkFraction/elevTickFraction.
+	markH, tickW, tickExtend float64
+
+	// marks is parallel to Context.Highlights and indexed by Frame.Interval
+	// -- the same convention MarkerPanel's own blocks/anchorX and
+	// RoutePanel's own marks use, so a lookup here can never disagree with
+	// which highlight the render loop says is active.
+	marks []elevMark
+
+	// ticks is parallel to Context.Labels and indexed by Frame.Label, for
+	// the identical reason.
+	ticks []elevTick
+
+	// namePx, nameY size and place the highlight name row; labelNamePx,
+	// labelNameY the label name row beneath it -- both reserved above the
+	// plot in Prepare, and both zero (rows never occupied) when the
+	// corresponding slice (ctx.Highlights/ctx.Labels) was empty. See
+	// Prepare's own "the name rows" comment for why the reservation is
+	// conditional and why label sits above highlight.
+	namePx, nameY           float64
+	labelNamePx, labelNameY float64
+
+	// names and anchorX are parallel to Context.Highlights and indexed by
+	// Frame.Interval, exactly the convention marks already uses -- names[i]
+	// is empty precisely when the highlight itself was configured with no
+	// name, mirroring MarkerPanel's own p.names.
+	names   []string
+	anchorX []float64
+
+	// labelNames and labelAnchorX are parallel to Context.Labels and
+	// indexed by Frame.Label, for the identical reason.
+	labelNames   []string
+	labelAnchorX []float64
+
+	// overlappingLabels holds, ascending, the index into Context.Labels of
+	// every label whose final tick still sits within p.tickW of a neighbour
+	// once buildMarks' bounded nudge (D.4) has run -- the case the 2*tickW
+	// bound exists to leave honestly unresolved rather than paper over. See
+	// OverlappingLabels and buildMarks' own D.4 comment.
+	overlappingLabels []int
 }
+
+// OverlappingLabels implements LabelOverlapReporter: it reports which
+// configured labels, by index into Context.Labels, could not be pulled
+// tickW apart on this axis even after buildMarks' bounded nudge. cmd asks
+// this rather than re-deriving tick positions itself, the identical reason
+// TimeToDistance is exported rather than copied -- the geometry that would
+// answer "are these two still touching" lives only on this Painter, sized
+// from THIS render's own box, so a second computation of it in cmd could
+// disagree with what actually got drawn.
+func (p *elevationPainter) OverlappingLabels() []int { return p.overlappingLabels }
 
 // xForDistance places a distance on the plot's x axis.
 //
@@ -565,6 +1015,33 @@ func (p *elevationPainter) Static(c *Canvas) {
 	labelY := p.plot.Y + p.plot.H + p.labelPx*1.0
 	_ = c.Text(p.startLabel, p.xForDistance(0), labelY, 0, 0.5, p.distPx, c.Theme.Dim)
 	_ = c.Text(p.endLabel, p.xForDistance(p.axisEnd), labelY, 1, 0.5, p.distPx, c.Theme.Dim)
+
+	// Every highlight's block, at rest, and every label's tick -- drawn HERE,
+	// under where the Dynamic fill will later pass over them, so the fill
+	// TINTS a rest-state block rather than hiding it: the fill is a
+	// translucent wash (elevationFillAlpha), not an opaque stroke the way
+	// RoutePanel's covered prefix is, so what Static already drew keeps
+	// showing through it. Only the ACTIVE block is re-drawn, brightened, in
+	// Dynamic (see drawActiveMarks) -- every other configured highlight's
+	// block stays exactly what it drew here for the whole render. Ticks
+	// have no "active" state of their own to brighten -- the mark itself
+	// never changes once a label is on screen -- so they draw here once,
+	// at full strength, and are never touched again; only the NAME above
+	// them, in the reserved label name row, fades in and out per frame
+	// (see drawActiveMarks).
+	baselineTop := baseline - p.markH
+	for _, m := range p.marks {
+		if !m.ok {
+			continue
+		}
+		c.Rect(Box{X: m.x0, Y: baselineTop, W: m.x1 - m.x0, H: p.markH}, Fade(c.Theme.Highlight, highlightRestAlpha))
+	}
+	for _, tk := range p.ticks {
+		if !tk.ok {
+			continue
+		}
+		c.Rect(Box{X: tk.x - p.tickW/2, Y: baseline - p.tickExtend, W: p.tickW, H: p.tickExtend}, c.Theme.Foreground)
+	}
 }
 
 // profileYAt returns the profile's own y at x, and the index of the last
@@ -778,6 +1255,27 @@ func (p *elevationPainter) preDataFillTo(c *Canvas, x float64, col color.Color) 
 // separate object rather than as the fill's own boundary. If the edge ever
 // reads as mushy at the gate, the remedy is to stroke it at headW in Accent
 // from the floor to the trace -- NOT to restore the rect.
+//
+// # Draw order: fill (or absent wash), then marks and their names, then dot
+//
+// Mirroring RoutePanel's own Dynamic, and for the identical reason: the fill
+// drawn just below is a translucent wash over the WHOLE plot up to the
+// playhead, so anything drawn only in Static under it would be tinted by
+// it, not obscured (see Static's own comment on the rest-state blocks it
+// draws for exactly that effect) -- but the ACTIVE mark needs to read
+// clearly above that tint regardless of which branch below drew the fill,
+// so drawActiveMarks is called at the end of every branch, never only the
+// ordinary one. It runs unconditionally on f.Sample.HasDistance: a
+// highlight's mark, and a label's, are properties of the render's TIMELINE
+// (an offset the user typed), not of what a sensor recorded at the current
+// instant -- MarkerPanel's own doc comment makes the identical argument --
+// so both must keep drawing, brightened by weight, straight over the
+// absent wash on a distance dropout, and so must their names in the
+// reserved rows above the plot: those rows sit outside the plot's own
+// area, untouched by any fill or wash, so there is nothing for the name to
+// disagree with regardless of which branch below ran. Only the dot is
+// gated on a known, in-range distance: unlike a mark, a dot with no
+// current position would be inventing one.
 func (p *elevationPainter) Dynamic(c *Canvas, f Frame) {
 	if p.flat || len(p.xs) < 2 {
 		return
@@ -791,6 +1289,7 @@ func (p *elevationPainter) Dynamic(c *Canvas, f Frame) {
 	if !f.Sample.HasDistance {
 		p.preDataFillTo(c, p.xs[0], absent)
 		p.fillTo(c, p.plot.X+p.plot.W, absent)
+		p.drawActiveMarks(c, f)
 		return
 	}
 
@@ -800,6 +1299,7 @@ func (p *elevationPainter) Dynamic(c *Canvas, f Frame) {
 		// see "The pre-data region" above. No dot -- there is no curve here
 		// to place one on.
 		p.preDataFillTo(c, p.xForDistance(d), absent)
+		p.drawActiveMarks(c, f)
 		return
 	}
 
@@ -810,14 +1310,62 @@ func (p *elevationPainter) Dynamic(c *Canvas, f Frame) {
 
 	if d > p.axisEnd {
 		p.fillTo(c, p.plot.X+p.plot.W, Fade(c.Theme.Foreground, elevationFillAlpha))
+		p.drawActiveMarks(c, f)
 		return
 	}
 
 	x := p.xForDistance(d)
 	p.fillTo(c, x, Fade(c.Theme.Foreground, elevationFillAlpha))
+	p.drawActiveMarks(c, f)
 
 	y, _ := p.profileYAt(x)
 	c.Circle(x, y, p.dotR, c.Theme.Accent)
+}
+
+// drawActiveMarks re-draws the currently active highlight's block, brightened
+// by Frame.IntervalWeight through the SAME restAlpha ramp MarkerPanel's own
+// blocks and RoutePanel's own route marks use -- one function shared by all
+// three, rather than three independent copies of "brighten by weight" that
+// could drift out of step (see restAlpha's own doc comment) -- and fades in
+// its name in the highlight name row, plus the active label's name in the
+// label name row beneath it, each in its OWN reserved row (see Prepare's
+// "the name rows" comment) rather than one shared row: a label passing over
+// an active highlight must not make the highlight's name vanish and
+// reappear, which is exactly the alternative MarkerPanel's own Dynamic
+// already rejected for the identical reason, on the identical two names.
+//
+// Every OTHER configured highlight's block/tick stays exactly what Static
+// drew for it; only the active highlight's block and name, and the active
+// label's name, need to read clearly here. A configured name that is the
+// empty string draws no text, mirroring MarkerPanel's identical choice: the
+// block or tick lighting up already says something is active, and empty
+// text would print nothing anyway.
+//
+// A no-op for the highlight side when no highlight is active, or when the
+// active one's own mark was never placeable to begin with (m.ok false, see
+// buildMarks and D.1) -- there is nothing to brighten or anchor a name to
+// in either case. Independently a no-op for the label side under the
+// identical unplaceable-tick condition.
+func (p *elevationPainter) drawActiveMarks(c *Canvas, f Frame) {
+	if f.Interval != NoHighlight && f.Interval >= 0 && f.Interval < len(p.marks) {
+		if m := p.marks[f.Interval]; m.ok {
+			baseline := p.yForElevation(p.floorElev)
+			weight := clampWeight(f.IntervalWeight)
+			c.Rect(Box{X: m.x0, Y: baseline - p.markH, W: m.x1 - m.x0, H: p.markH}, Fade(c.Theme.Highlight, restAlpha(weight)))
+			if name := p.names[f.Interval]; name != "" {
+				_ = c.Text(name, p.anchorX[f.Interval], p.nameY, 0.5, 0.5, p.namePx, Fade(c.Theme.Foreground, weight))
+			}
+		}
+	}
+
+	if f.Label != NoLabel && f.Label >= 0 && f.Label < len(p.ticks) {
+		if tk := p.ticks[f.Label]; tk.ok {
+			if name := p.labelNames[f.Label]; name != "" {
+				weight := clampWeight(f.LabelWeight)
+				_ = c.Text(name, p.labelAnchorX[f.Label], p.labelNameY, 0.5, 0.5, p.labelNamePx, Fade(c.Theme.Foreground, weight))
+			}
+		}
+	}
 }
 
 // formatElevation renders metres, without decimals: a profile's labels are

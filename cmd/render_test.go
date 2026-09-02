@@ -15,6 +15,7 @@ import (
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/fittest"
 
+	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/panel"
 	"github.com/wisborg/fitdash/internal/render"
 )
@@ -647,7 +648,7 @@ func TestWriteHighlightSummary_DecomposesBaseAndHighlightsAndListsEach(t *testin
 	c := &cobra.Command{}
 	c.SetErr(&buf)
 
-	writeHighlightSummary(c, tl, nil, []panel.Highlight{highlight}, panel.Smoothing{}, panel.DefaultTheme())
+	writeHighlightSummary(c, tl, nil, []panel.Highlight{highlight}, panel.Smoothing{}, panel.DefaultTheme(), false)
 
 	out := buf.String()
 	if !strings.Contains(out, "0:00:30 base + 0:00:09 of highlights = 0:00:39 of video") {
@@ -686,7 +687,7 @@ func TestWriteHighlightSummary_WarnsOnClippedOneFrameAndPaused(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, nil, highlights, panel.Smoothing{}, panel.DefaultTheme())
+	writeHighlightSummary(c, tl, nil, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
 
 	out := buf.String()
 	for _, want := range []string{
@@ -756,7 +757,7 @@ func TestWriteHighlightSummary_ReportsResolvedColourAndContrastWarnings(t *testi
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, nil, highlights, panel.Smoothing{}, theme)
+	writeHighlightSummary(c, tl, nil, highlights, panel.Smoothing{}, theme, false)
 
 	out := buf.String()
 	for _, want := range []string{
@@ -847,7 +848,7 @@ func TestWriteHighlightSummary_ReportsAnUnmarkableHighlight(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme())
+	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
 
 	out := buf.String()
 	if strings.Contains(out, `"Covered" has no GPS fixes`) {
@@ -855,6 +856,147 @@ func TestWriteHighlightSummary_ReportsAnUnmarkableHighlight(t *testing.T) {
 	}
 	if !strings.Contains(out, `highlight "Lost signal" has no GPS fixes; it is not marked on the route`) {
 		t.Errorf("summary is missing the unmarkable-highlight line for a highlight past the last GPS fix; got:\n%s", out)
+	}
+}
+
+// TestWriteHighlightSummary_ReportsAHighlightUnplaceableOnTheElevationProfile
+// pins the summary's half of D.1's own policy: a highlight whose bounds fall
+// where distance is unknown cannot be placed on the elevation profile's axis
+// at all -- there is no placeholder for a mark with no position, the same
+// reasoning TestWriteHighlightSummary_ReportsAnUnmarkableHighlight already
+// pins for the route -- so the honest analogue is this line.
+//
+// markersOnProfile is passed true directly rather than built through a real
+// render.New, unlike that route test: writeHighlightSummary's own
+// hasProfileDistanceSpan call is the thing under test here, and building a
+// whole Renderer to reach it would only add a second fixture this test does
+// not need. render_test.go's TestNew_MarkerPanelAbsorbedWhenTheProfileTakesTheBand
+// is what proves markersOnProfile itself is computed correctly.
+func TestWriteHighlightSummary_ReportsAHighlightUnplaceableOnTheElevationProfile(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 100)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{
+			Time: start.Add(time.Duration(i) * time.Second),
+			// Distance only for the first half -- a dropout that never comes
+			// back, the identical shape the route test above uses for GPS,
+			// applied to distance instead.
+			HasDistance: i < 50,
+			Distance:    float64(i) * 3,
+		}
+	}
+	track := &fitactivity.Track{Samples: samples}
+
+	highlights := []panel.Highlight{
+		{Name: "Covered", From: 10 * time.Second, To: 20 * time.Second},
+		{Name: "Lost signal", From: 80 * time.Second, To: 90 * time.Second},
+	}
+	tl, err := panel.NewSegmentedTimeline(start, 99*time.Second, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewSegmentedTimeline: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme(), true)
+
+	out := buf.String()
+	if strings.Contains(out, `"Covered" has no distance`) {
+		t.Errorf("a highlight entirely inside the distance-covered stretch was reported as unplaceable; got:\n%s", out)
+	}
+	if !strings.Contains(out, `highlight "Lost signal" has no distance at its bounds; it is not marked on the elevation profile`) {
+		t.Errorf("summary is missing the unplaceable-highlight line for a highlight past the last distance reading; got:\n%s", out)
+	}
+}
+
+// TestWriteHighlightSummary_UnplaceableOnProfileSilentWhenMarkersNotAbsorbed
+// is the guard's own negative case: the identical fixture as the test above,
+// with markersOnProfile left false, must print nothing about the elevation
+// profile at all -- a highlight with no distance at its bounds is only
+// unplaceable news once something was actually trying to place it there
+// (see markersOnProfile's own doc comment on writeHighlightSummary).
+func TestWriteHighlightSummary_UnplaceableOnProfileSilentWhenMarkersNotAbsorbed(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 100)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{
+			Time:        start.Add(time.Duration(i) * time.Second),
+			HasDistance: i < 50,
+			Distance:    float64(i) * 3,
+		}
+	}
+	track := &fitactivity.Track{Samples: samples}
+
+	highlights := []panel.Highlight{
+		{Name: "Lost signal", From: 80 * time.Second, To: 90 * time.Second},
+	}
+	tl, err := panel.NewSegmentedTimeline(start, 99*time.Second, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewSegmentedTimeline: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
+
+	if out := buf.String(); strings.Contains(out, "elevation profile") {
+		t.Errorf("markersOnProfile was false, but the summary reported an unplaceable mark on the elevation profile anyway; got:\n%s", out)
+	}
+}
+
+// TestWriteHighlightSummary_ReportsAHighlightUnplaceableWithOnlyOneEndpointMissingDistance
+// is the partial-span case neither test above covers: D.1's own policy is
+// that a highlight needs distance at BOTH bounds, and one resolvable
+// endpoint with the other unresolvable is STILL unplaceable -- not "half
+// marked" and not silently accepted because the From end happened to
+// resolve. hasProfileDistanceSpan's AND is what this pins; an
+// implementation that only checked one end (e.g. From, since that is
+// nearly always the one a user picks first) would wrongly call this
+// highlight placeable.
+func TestWriteHighlightSummary_ReportsAHighlightUnplaceableWithOnlyOneEndpointMissingDistance(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 100)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{
+			Time: start.Add(time.Duration(i) * time.Second),
+			// Distance only for the first half -- identical fixture shape to
+			// the two tests above, but this highlight straddles the boundary
+			// rather than sitting fully on one side of it.
+			HasDistance: i < 50,
+			Distance:    float64(i) * 3,
+		}
+	}
+	track := &fitactivity.Track{Samples: samples}
+
+	highlights := []panel.Highlight{
+		// From (10s) is well inside the covered stretch; To (80s) is well
+		// past the last distance reading.
+		{Name: "Partial", From: 10 * time.Second, To: 80 * time.Second},
+	}
+	tl, err := panel.NewSegmentedTimeline(start, 99*time.Second, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewSegmentedTimeline: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme(), true)
+
+	out := buf.String()
+	if !strings.Contains(out, `highlight "Partial" has no distance at its bounds; it is not marked on the elevation profile`) {
+		t.Errorf("a highlight with only ONE endpoint missing distance was not reported as unplaceable; got:\n%s", out)
 	}
 }
 
@@ -872,7 +1014,7 @@ func TestWriteHighlightSummary_PrintsNothingWithNoHighlights(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, nil, nil, panel.Smoothing{}, panel.DefaultTheme())
+	writeHighlightSummary(c, tl, nil, nil, panel.Smoothing{}, panel.DefaultTheme(), false)
 	if buf.Len() != 0 {
 		t.Errorf("writeHighlightSummary printed something with no highlights configured: %q", buf.String())
 	}
@@ -1080,6 +1222,115 @@ func TestWritePanelSummary_BottomBandProfileReportsNothingOmitted(t *testing.T) 
 	}
 	if strings.Contains(out, "omitted") {
 		t.Errorf("the default --bottom-band must not print the omitted heading at all; got:\n%s", out)
+	}
+}
+
+// elevationAbsorptionTestContext builds a real, fittest-backed Context
+// carrying real elevation and distance -- unlike summaryTestContext's bare
+// two-sample track, this exercises render.New's keep filter against the REAL
+// (panel.ElevationPanel{}).Accepts, which is what profileTakesTheBand
+// actually calls (see internal/render's own doc comment on it). A stand-in
+// panel named "elevation" would never reach that call at all.
+func elevationAbsorptionTestContext(t *testing.T, highlights []panel.Highlight) *panel.Context {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "activity.fit")
+	opts := fittest.DefaultOptions()
+	opts.Count = 60
+	if err := fittest.WriteFile(path, opts); err != nil {
+		t.Fatalf("generating fixture: %v", err)
+	}
+	track, err := fitactivity.Decode(path)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	timer := fitactivity.BuildTimerModel(track)
+	tl, err := panel.NewTimelineForActivityWithHighlights(timer, 30, 1, highlights)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithHighlights: %v", err)
+	}
+	fonts, err := panel.NewFaceCache()
+	if err != nil {
+		t.Fatalf("NewFaceCache: %v", err)
+	}
+	return &panel.Context{
+		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
+		Width: 1920, Height: 1080, FontScale: 0.05, Fonts: fonts,
+		Highlights: highlights,
+	}
+}
+
+// TestWritePanelSummary_ReportsAbsorbedMarkersAsAFourthReasonNotADecline
+// pins the fourth heading writePanelSummary gains in this step: once the
+// elevation profile is drawing the configured highlight as a mark on its own
+// axis, the marker panel is neither placed (it draws nothing in its own
+// box) nor declined (it had something to show) -- it is absorbed, and the
+// summary must say so under its own heading rather than either.
+func TestWritePanelSummary_ReportsAbsorbedMarkersAsAFourthReasonNotADecline(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	highlights := []panel.Highlight{{Name: "h", From: 5 * time.Second, To: 15 * time.Second}}
+	ctx := elevationAbsorptionTestContext(t, highlights)
+	// ctx.BottomBand left at its zero value: the profile must be free to
+	// take the band.
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.ElevationPanel{}},
+		{Panel: panel.MarkerPanel{}},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writePanelSummary(c, r, ctx.Timeline, layout.Name, "dark", panel.Smoothing{})
+
+	out := buf.String()
+	if !strings.Contains(out, "panels: elevation\n") {
+		t.Errorf("only the elevation panel should have been placed in its own box; got:\n%s", out)
+	}
+	if !strings.Contains(out, "absorbed into the elevation profile: markers\n") {
+		t.Errorf("missing the fourth heading naming the absorbed marker panel; got:\n%s", out)
+	}
+	if strings.Contains(out, "declined") {
+		t.Errorf("an absorbed panel must never be reported under either decline heading; got:\n%s", out)
+	}
+}
+
+// TestWritePanelSummary_NoAbsorptionHeadingWithoutHighlightsOrLabels is the
+// guard's own negative case: the identical fixture as the test above, with
+// no --highlight or --label configured at all, must never print the fourth
+// heading -- MarkerPanel's own Accepts already declines with nothing
+// configured, and that decline (a fact about the flags) must not be
+// relabelled as an absorption (a fact about where marks went) when there
+// were no marks to begin with.
+func TestWritePanelSummary_NoAbsorptionHeadingWithoutHighlightsOrLabels(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := elevationAbsorptionTestContext(t, nil) // no --highlight or --label at all
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.ElevationPanel{}},
+		{Panel: panel.MarkerPanel{}},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writePanelSummary(c, r, ctx.Timeline, layout.Name, "dark", panel.Smoothing{})
+
+	out := buf.String()
+	if strings.Contains(out, "absorbed") {
+		t.Errorf("nothing was configured to absorb, but the summary printed the absorption heading anyway; got:\n%s", out)
+	}
+	if !strings.Contains(out, "declined (no --highlight or --label given): markers") {
+		t.Errorf("the marker panel should still decline for the ordinary reason; got:\n%s", out)
 	}
 }
 

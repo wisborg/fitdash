@@ -8,6 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wisborg/fitactivity"
+
 	"github.com/wisborg/fitdash/internal/panel"
 )
 
@@ -368,7 +370,7 @@ func TestWriteLabelSummary_ReportsClippingToTheRendersEnd(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, labels, 400*time.Millisecond)
+	writeLabelSummary(c, tl, nil, labels, 400*time.Millisecond, false, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `label "Finish" clipped to 100ms so it ends at the render's last frame`) {
@@ -397,7 +399,7 @@ func TestWriteLabelSummary_ReportsEachLabelAndTruncation(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, labels, 400*time.Millisecond)
+	writeLabelSummary(c, tl, nil, labels, 400*time.Millisecond, false, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `labels: "A" 0:00:10 -> 1s, "B" 0:00:11 -> 3s`) {
@@ -421,7 +423,7 @@ func TestWriteLabelSummary_WarnsWhenTheSpanNeverReachesFullOpacity(t *testing.T)
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, labels, 400*time.Millisecond)
+	writeLabelSummary(c, panel.Timeline{}, nil, labels, 400*time.Millisecond, false, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `label "Blip" is on screen for 500ms, shorter than twice --highlight-transition (400ms); its name never reaches full opacity`) {
@@ -438,9 +440,141 @@ func TestWriteLabelSummary_PrintsNothingWithNoLabels(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, nil, 400*time.Millisecond)
+	writeLabelSummary(c, panel.Timeline{}, nil, nil, 400*time.Millisecond, false, nil)
 
 	if buf.Len() != 0 {
 		t.Errorf("writeLabelSummary with no labels wrote %q, want nothing", buf.String())
+	}
+}
+
+// TestWriteLabelSummary_ReportsALabelUnplaceableOnTheElevationProfile mirrors
+// TestWriteHighlightSummary_ReportsAHighlightUnplaceableOnTheElevationProfile
+// for a --label: an instant with no distance at all cannot be placed on the
+// elevation profile's axis (see D.1's own policy in
+// internal/panel/elevation.go), so the summary owes the same honest line, in
+// the singular ("its instant" rather than "its bounds") since a label has no
+// span to have bounds at all.
+func TestWriteLabelSummary_ReportsALabelUnplaceableOnTheElevationProfile(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 100)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{
+			Time: start.Add(time.Duration(i) * time.Second),
+			// Distance only for the first half -- a dropout that never comes
+			// back, the same shape the highlight version of this test uses.
+			HasDistance: i < 50,
+			Distance:    float64(i) * 3,
+		}
+	}
+	track := &fitactivity.Track{Samples: samples}
+	tl, err := panel.NewTimeline(start, 99*time.Second, 30, 1)
+	if err != nil {
+		t.Fatalf("NewTimeline: %v", err)
+	}
+
+	labels := []panel.Label{
+		{Name: "Early", At: 15 * time.Second, Video: 3 * time.Second},
+		{Name: "Late", At: 85 * time.Second, Video: 3 * time.Second},
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeLabelSummary(c, tl, track, labels, 400*time.Millisecond, true, nil)
+
+	out := buf.String()
+	if strings.Contains(out, `"Early" has no distance`) {
+		t.Errorf("a label inside the distance-covered stretch was reported as unplaceable; got:\n%s", out)
+	}
+	if !strings.Contains(out, `label "Late" has no distance at its instant; it is not marked on the elevation profile`) {
+		t.Errorf("summary is missing the unplaceable-label line for an instant past the last distance reading; got:\n%s", out)
+	}
+}
+
+// --- QA round: the overlap report -------------------------------------------
+
+// TestWriteLabelSummary_ReportsLabelsStillOverlappingOnTheElevationProfile
+// pins the OTHER half of D.4's summary line, alongside the two
+// "has no distance" tests above: overlapping (render.Renderer.OverlappingLabels())
+// names indices into labels that ElevationPanel could not pull tickW apart
+// even after its own bounded nudge (see internal/panel/elevation.go's
+// buildMarks), and this must print one line per affected label, naming it,
+// and say nothing for a label that was not in that list.
+func TestWriteLabelSummary_ReportsLabelsStillOverlappingOnTheElevationProfile(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 100)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{Time: start.Add(time.Duration(i) * time.Second), HasDistance: true, Distance: float64(i) * 3}
+	}
+	track := &fitactivity.Track{Samples: samples}
+	tl, err := panel.NewTimeline(start, 99*time.Second, 30, 1)
+	if err != nil {
+		t.Fatalf("NewTimeline: %v", err)
+	}
+
+	labels := []panel.Label{
+		{Name: "Water", At: 20 * time.Second, Video: 3 * time.Second},
+		{Name: "Turn", At: 40 * time.Second, Video: 3 * time.Second},
+		{Name: "Aid", At: 60 * time.Second, Video: 3 * time.Second},
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	// Water (0) and Turn (1) are reported as overlapping; Aid (2) is not.
+	writeLabelSummary(c, tl, track, labels, 400*time.Millisecond, true, []int{0, 1})
+
+	out := buf.String()
+	if !strings.Contains(out, `label "Water" is too close to a neighbouring label on the elevation profile; the two are not clearly separated`) {
+		t.Errorf("missing the overlap line for Water; got:\n%s", out)
+	}
+	if !strings.Contains(out, `label "Turn" is too close to a neighbouring label on the elevation profile; the two are not clearly separated`) {
+		t.Errorf("missing the overlap line for Turn; got:\n%s", out)
+	}
+	if strings.Contains(out, `"Aid" is too close`) {
+		t.Errorf("Aid was not among the overlapping indices; it must not be reported as overlapping; got:\n%s", out)
+	}
+}
+
+// TestWriteLabelSummary_OverlapSilentWhenMarkersNotAbsorbed is the guard's
+// own negative case, mirroring the "has no distance" guard tests above: the
+// identical overlapping indices, with markersOnProfile left false, must
+// print nothing about the elevation profile at all -- the strip has its own
+// separation sweep and its own tolerances, and reporting the PROFILE's
+// tighter tolerance against labels that are not being drawn there would be
+// news about the wrong axis.
+func TestWriteLabelSummary_OverlapSilentWhenMarkersNotAbsorbed(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 100)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{Time: start.Add(time.Duration(i) * time.Second), HasDistance: true, Distance: float64(i) * 3}
+	}
+	track := &fitactivity.Track{Samples: samples}
+	tl, err := panel.NewTimeline(start, 99*time.Second, 30, 1)
+	if err != nil {
+		t.Fatalf("NewTimeline: %v", err)
+	}
+
+	labels := []panel.Label{
+		{Name: "Water", At: 20 * time.Second, Video: 3 * time.Second},
+		{Name: "Turn", At: 40 * time.Second, Video: 3 * time.Second},
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeLabelSummary(c, tl, track, labels, 400*time.Millisecond, false, []int{0, 1})
+
+	if out := buf.String(); strings.Contains(out, "too close") {
+		t.Errorf("markersOnProfile was false, but the summary reported the overlap anyway; got:\n%s", out)
 	}
 }

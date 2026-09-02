@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -140,11 +141,13 @@ func bindRenderFlags(c *cobra.Command) {
 			"\"landscape\", or \"portrait\". Naming one overrides the frame's shape, which is occasionally what you want "+
 			"and usually not")
 	f.StringVar(&renderOpts.bottomBand, "bottom-band", panel.BottomBandProfile,
-		"what occupies the bottom band -- \"profile\" (default: the elevation profile, filled to the playhead) "+
-			"or \"distance\" (omit the profile so the standalone distance readout takes the band instead, even "+
-			"on an activity that carries elevation). An activity carrying no elevation falls back to the "+
-			"readout under \"profile\" too, exactly as before this flag existed -- this flag adds a second way "+
-			"to reach that same fallback, not a different one")
+		"what occupies the bottom band -- \"profile\" (default: the elevation profile, filled to the playhead, "+
+			"and -- when at least one --highlight or --label is configured -- carrying their marks too, in place "+
+			"of the standalone marker strip) or \"distance\" (omit the profile so the standalone distance readout "+
+			"takes the band instead, even on an activity that carries elevation, and restores the standalone "+
+			"marker strip alongside it). An activity carrying no elevation falls back to the readout under "+
+			"\"profile\" too, exactly as before this flag existed -- this flag adds a second way to reach that "+
+			"same fallback, not a different one")
 	f.StringVar(&renderOpts.theme, "theme", panel.DefaultTheme().Name,
 		"colour palette -- \"dark\" (default) or \"light\"")
 	f.StringVar(&renderOpts.smoothing, "smoothing", smoothingAuto,
@@ -532,8 +535,9 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs)
 		baseSpeedupNote(in.tl.BaseSpeedup(), len(in.highlights) > 0), strconv.FormatFloat(in.tl.FPS(), 'f', -1, 64), in.w, in.h)
 
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
-	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme)
-	writeLabelSummary(cmd, in.labels, renderOpts.highlightTransition)
+	markersOnProfile := markersAbsorbedIntoProfile(r)
+	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
+	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
 }
 
 // writePanelSummary reports the arrangement and, crucially, which panels were
@@ -571,6 +575,18 @@ func smoothingNote(s panel.Smoothing, tl panel.Timeline) string {
 // panel itself rather than restated as a string literal, so the two cannot
 // drift apart the way a hand-copied name could.
 var markerPanelName = panel.MarkerPanel{}.Name()
+
+// markersAbsorbedIntoProfile is true when the elevation profile is drawing
+// this render's configured highlights and labels as marks on its own
+// distance axis, rather than MarkerPanel drawing them on the standalone
+// strip -- see render.Renderer.Absorbed's own doc comment and
+// internal/render's profileTakesTheBand. Computed once per render and passed
+// into both writeHighlightSummary and writeLabelSummary, which use it to
+// gate the D.1 "has no distance" line: that line is only true news once
+// something was actually trying to place a mark on the profile's axis.
+func markersAbsorbedIntoProfile(r *render.Renderer) bool {
+	return slices.Contains(r.Absorbed(), markerPanelName)
+}
 
 func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline, layoutName, themeName string, smoothing panel.Smoothing) {
 	if renderOpts.quiet {
@@ -618,6 +634,18 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline
 	if omitted := r.Omitted(); len(omitted) > 0 {
 		fmt.Fprintf(out, "omitted (--bottom-band %s): %s\n", panel.BottomBandDistance, strings.Join(omitted, ", "))
 	}
+
+	// A FOURTH reason, and again deliberately not a decline: the marker
+	// panel had something to show -- render.New's keep filter only reaches
+	// this branch once at least one --highlight or --label is configured --
+	// and it IS on screen, just not in its own box. It is drawn as marks on
+	// the elevation profile's own distance axis instead (see
+	// Renderer.Absorbed's own doc comment and internal/panel/elevation.go's
+	// "the name rows"). Folding this into "declined" would say the opposite
+	// of what happened: nothing was left out, it moved.
+	if absorbed := r.Absorbed(); len(absorbed) > 0 {
+		fmt.Fprintf(out, "absorbed into the elevation profile: %s\n", strings.Join(absorbed, ", "))
+	}
 }
 
 // writeHighlightSummary reports the base/highlight decomposition, one line
@@ -638,13 +666,29 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline
 // figure moved out of the plain "smoothing auto" line once a render could
 // carry more than one window.
 //
-// track is here for exactly one thing: reporting a highlight whose span has
-// no GPS fix anywhere near it, so RoutePanel could not mark it on the map
-// (see route.SpanIndices). track may be nil in a test exercising the rest of
-// this table, in which case route.FromTrack(nil, ...) returns no points and
-// that check is silently skipped -- correct, since a nil track carries no
-// route to report against, not a bug in the check.
-func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, highlights []panel.Highlight, smoothing panel.Smoothing, theme panel.Theme) {
+// track is here for two things: reporting a highlight whose span has no GPS
+// fix anywhere near it, so RoutePanel could not mark it on the map (see
+// route.SpanIndices), and -- when markersOnProfile is true -- reporting one
+// whose bounds have no distance, so ElevationPanel could not mark it on the
+// profile either (see panel.TimeToDistance's own D.1 policy in
+// internal/panel/elevation.go). track may be nil in a test exercising the
+// rest of this table, in which case route.FromTrack(nil, ...) returns no
+// points and hasProfileDistance(nil, ...) returns false, so both checks are
+// silently skipped -- correct, since a nil track carries neither a route nor
+// a distance stream to report against, not a bug in either check.
+//
+// markersOnProfile is true exactly when render.Renderer.Absorbed() names the
+// marker panel -- i.e. ElevationPanel is drawing these highlights as marks
+// on its own axis instead of MarkerPanel drawing them on the standalone
+// strip (see internal/render's own profileTakesTheBand). It gates the
+// distance check for the identical reason canMarkRoute gates the GPS one: a
+// highlight whose bounds have no distance is only unplaceable news when
+// something was actually trying to place it there. When the strip is
+// standalone -- the ordinary case, and also --bottom-band distance's own
+// escape hatch -- every highlight is placeable on it regardless of distance
+// (MarkerPanel positions blocks in VIDEO time, never distance), so nothing
+// here would be true to report.
+func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, highlights []panel.Highlight, smoothing panel.Smoothing, theme panel.Theme, markersOnProfile bool) {
 	if renderOpts.quiet || len(highlights) == 0 {
 		return
 	}
@@ -706,7 +750,38 @@ func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitacti
 				fmt.Fprintf(out, "highlight %s has no GPS fixes; it is not marked on the route\n", highlightSummaryName(h))
 			}
 		}
+		if markersOnProfile && !hasProfileDistanceSpan(track, tl.Start(), h.From, h.To) {
+			fmt.Fprintf(out, "highlight %s has no distance at its bounds; it is not marked on the elevation profile\n", highlightSummaryName(h))
+		}
 	}
+}
+
+// hasProfileDistance is true when offset -- an activity-time offset from
+// start -- resolves to a placeable distance, by calling panel.TimeToDistance
+// directly rather than re-deriving the same gap-aware lookup here. That is
+// the SAME function ElevationPanel's own buildMarks calls to place a mark
+// (internal/panel/elevation.go), so this summary line can never disagree
+// with what the panel actually drew -- matching the precedent this file's
+// own canMarkRoute check already sets by calling route.SpanIndices directly
+// instead of asking RoutePanel. An earlier version of this function
+// hand-copied TimeToDistance's own body instead of calling it, on the
+// mistaken belief that canMarkRoute was precedent for that; canMarkRoute
+// calls an exported function, it does not duplicate one.
+//
+// false, harmlessly, when track is nil -- a caller with nothing to report
+// against, not a bug in the check.
+func hasProfileDistance(track *fitactivity.Track, start time.Time, offset time.Duration) bool {
+	_, ok := panel.TimeToDistance(track, start, offset)
+	return ok
+}
+
+// hasProfileDistanceSpan is hasProfileDistance applied to BOTH ends of a
+// span: a highlight needs distance at both From and To to be placeable on
+// the elevation profile's axis (see elevation.go's own D.1 policy -- one
+// known endpoint and one unknown is still unplaceable), so this is false the
+// moment either one is.
+func hasProfileDistanceSpan(track *fitactivity.Track, start time.Time, from, to time.Duration) bool {
+	return hasProfileDistance(track, start, from) && hasProfileDistance(track, start, to)
 }
 
 // formatHexColor renders c the same way a user would have typed it in
@@ -887,7 +962,28 @@ func highlightSummaryName(h panel.Highlight) string {
 // by the time it reaches here, for EITHER truncation cause above, so this
 // warning fires (or stays silent) on the real on-screen span rather than on
 // a duration the label never got.
-func writeLabelSummary(cmd *cobra.Command, labels []panel.Label, transition time.Duration) {
+//
+// track and tl are here for exactly one thing, mirroring
+// writeHighlightSummary's own identically-named parameters: reporting a
+// label whose instant has no distance, so ElevationPanel could not mark it
+// on the profile either, once markersOnProfile says the profile is drawing
+// these labels' ticks at all -- see hasProfileDistance and
+// writeHighlightSummary's own doc comment for the full reasoning, which
+// applies here unchanged. track may be nil and tl the zero Timeline in a
+// test exercising the rest of this function with markersOnProfile false, in
+// which case the check is never reached.
+//
+// overlapping is render.Renderer.OverlappingLabels(): the index into labels
+// of every label ElevationPanel could not pull a full tick-width away from
+// its neighbour even after D.4's bounded nudge (internal/panel/elevation.go).
+// Reported the same way a mark with no resolvable distance is -- in words,
+// once, per affected label -- rather than silently leaving two names to
+// print on top of each other with nothing on screen explaining why. Passed
+// in rather than recomputed here for the identical reason hasProfileDistance
+// now calls panel.TimeToDistance instead of re-deriving it: the pixel
+// geometry that decides "still touching" is sized from this render's own
+// box and lives only on the Painter that drew it.
+func writeLabelSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, labels []panel.Label, transition time.Duration, markersOnProfile bool, overlapping []int) {
 	if renderOpts.quiet || len(labels) == 0 {
 		return
 	}
@@ -898,6 +994,11 @@ func writeLabelSummary(cmd *cobra.Command, labels []panel.Label, transition time
 		lines[i] = fmt.Sprintf("%s %s -> %s", labelSummaryName(l), panel.FormatClock(l.At), l.Video.Round(time.Millisecond))
 	}
 	fmt.Fprintf(out, "labels: %s\n", strings.Join(lines, ", "))
+
+	stillTouching := make(map[int]bool, len(overlapping))
+	for _, i := range overlapping {
+		stillTouching[i] = true
+	}
 
 	for i, l := range labels {
 		switch {
@@ -911,6 +1012,12 @@ func writeLabelSummary(cmd *cobra.Command, labels []panel.Label, transition time
 		if transition > 0 && l.Video < 2*transition {
 			fmt.Fprintf(out, "label %s is on screen for %s, shorter than twice --highlight-transition (%s); its name never reaches full opacity\n",
 				labelSummaryName(l), l.Video.Round(time.Millisecond), transition)
+		}
+		if markersOnProfile && !hasProfileDistance(track, tl.Start(), l.At) {
+			fmt.Fprintf(out, "label %s has no distance at its instant; it is not marked on the elevation profile\n", labelSummaryName(l))
+		}
+		if markersOnProfile && stillTouching[i] {
+			fmt.Fprintf(out, "label %s is too close to a neighbouring label on the elevation profile; the two are not clearly separated\n", labelSummaryName(l))
 		}
 	}
 }
@@ -950,8 +1057,9 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, in renderInputs) error {
 	// (see --frame-at-video), so it gets the same base/highlight
 	// decomposition and warnings the video path prints -- otherwise the one
 	// command built for checking a highlight would say nothing about it.
-	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme)
-	writeLabelSummary(cmd, in.labels, renderOpts.highlightTransition)
+	markersOnProfile := markersAbsorbedIntoProfile(r)
+	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
+	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
 	return nil
 }
 

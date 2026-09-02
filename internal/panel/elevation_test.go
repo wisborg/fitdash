@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"math"
@@ -235,7 +236,18 @@ func TestElevationPanel_YForElevationSpansTheFloorNotTheMinimum(t *testing.T) {
 func TestElevationPanel_LowLabelMovesUpWithTheFloor(t *testing.T) {
 	const startD, endD = 0, 5000
 	box := Box{X: 0, Y: 0, W: 900, H: 260}
-	fw, fh := 900, 260
+	// fw, fh is a FRAME the box sits inside, deliberately larger than the box
+	// on both axes rather than equal to it (as this test used before the axis
+	// chrome moved off unit -- see elevAxisLabelFraction's own doc comment):
+	// the label size now comes from ctx.BasePx(), which is derived from fw/fh
+	// alone, and a frame sized to exactly match this one panel's own box is
+	// not a shape any real layout ever produces -- every real placement gives
+	// this panel a box smaller than the frame it sits in. 1280x720 keeps that
+	// true here too, and keeps the low label's glyphs large enough (previously
+	// they'd only be 5.85px at a 900x260 "frame", too small to compare
+	// centroids to +-1px precision) for this test's own centroid comparison to
+	// resolve the shift it exists to catch.
+	fw, fh := 1280, 720
 
 	img := image.NewRGBA(image.Rect(0, 0, fw, fh))
 	faces, _ := NewFaceCache()
@@ -249,7 +261,19 @@ func TestElevationPanel_LowLabelMovesUpWithTheFloor(t *testing.T) {
 	// its vertical midpoint, which isolates the low label's ink from the
 	// high label's (drawn near p.plot.Y, well above this region) without
 	// needing to know either one's exact extent up front.
-	lowerGutter := Box{X: 0, Y: p.plot.Y + p.plot.H*0.5, W: p.plot.X, H: float64(fh) - (p.plot.Y + p.plot.H*0.5)}
+	//
+	// The width stops a few pixels short of the plot's own left edge, NOT at
+	// it: Canvas.Polyline's stroke caps bleed a pixel or two past a line's
+	// nominal endpoint (measured directly: a 2.6px-wide horizontal line
+	// starting at x=48 painted ink as far left as x=46), and the baseline
+	// rule Static draws at yForElevation(floorElev) starts exactly at
+	// p.plot.X. A gutter now narrow enough that the low label sits close to
+	// the baseline's own row -- which the smaller axis chrome this test
+	// exists to check for makes more likely than it was at the old, wider
+	// gutter -- would otherwise let that bleed into this measurement and
+	// shift the centroid away from the label's own ink, for a reason that
+	// has nothing to do with where the label itself was drawn.
+	lowerGutter := Box{X: 0, Y: p.plot.Y + p.plot.H*0.5, W: math.Max(0, p.plot.X-4), H: float64(fh) - (p.plot.Y + p.plot.H*0.5)}
 	gotCy, n := centroidY(img, lowerGutter, c.Theme.Background)
 	if n == 0 {
 		t.Fatal("no ink found in the lower gutter; the low label was not drawn")
@@ -1365,4 +1389,1015 @@ func TestElevationPanel_AcceptsImpliesDistanceReadoutAccepts(t *testing.T) {
 				"the Alt slot has nothing left to fall through to and distance would appear nowhere")
 		}
 	})
+}
+
+// gappedDistanceTrack builds a track with a REAL recording gap: two samples
+// a second apart, then nothing for gapWidth, then two more a second apart.
+// fitactivity.DefaultMaxGap is 3s, so a gapWidth well past that is what lets
+// this fixture tell a correct TimeToDistance apart from a broken one --
+// see the function's own doc comment on why a query landing IN this gap,
+// closer to neither side than DefaultMaxGap, must come back not-ok rather
+// than an interpolated or extrapolated distance.
+func gappedDistanceTrack(gapWidth time.Duration) (*fitactivity.Track, time.Time) {
+	base := time.Date(2021, 6, 1, 8, 0, 0, 0, time.UTC)
+	lo0, lo1 := base, base.Add(time.Second)
+	hi0, hi1 := lo1.Add(gapWidth), lo1.Add(gapWidth+time.Second)
+	track := &fitactivity.Track{Samples: []fitactivity.Sample{
+		{Time: lo0, HasDistance: true, Distance: 0},
+		{Time: lo1, HasDistance: true, Distance: 3},
+		{Time: hi0, HasDistance: true, Distance: 500},
+		{Time: hi1, HasDistance: true, Distance: 503},
+	}}
+	return track, base
+}
+
+// TestTimeToDistance_RefusesToResolveInsideARealGap pins D.1's policy at the
+// one function that implements it: a query point sitting deeper into a
+// recording gap than fitactivity.DefaultMaxGap from EITHER bracketing
+// sample must come back not-ok, not an interpolated straight line across
+// the gap and not a snap to whichever side happens to be nearer. A fixture
+// with no gap at all -- every existing elevation test up to this one --
+// cannot exercise this path, because AtWithGap only ever takes it once the
+// bracketing pair are more than DefaultMaxGap apart.
+func TestTimeToDistance_RefusesToResolveInsideARealGap(t *testing.T) {
+	const gapWidth = 100 * time.Second
+	track, start := gappedDistanceTrack(gapWidth)
+
+	// Comfortably past DefaultMaxGap (3s) from both lo1 (at 1s) and hi0 (at
+	// 101s): the midpoint of the gap, 51s in.
+	if _, ok := TimeToDistance(track, start, 51*time.Second); ok {
+		t.Error("TimeToDistance resolved a distance from deep inside a real gap; " +
+			"it must refuse rather than interpolate or extrapolate across one")
+	}
+
+	// Within DefaultMaxGap of the sample just before the gap (lo1 at 1s):
+	// AtWithGap snaps to that sample rather than refusing.
+	d, ok := TimeToDistance(track, start, 3*time.Second)
+	if !ok {
+		t.Fatal("TimeToDistance refused a query within DefaultMaxGap of a real sample; want a snap to it")
+	}
+	if d != 3 {
+		t.Errorf("TimeToDistance snapped to distance %v, want 3 (lo1's own distance)", d)
+	}
+
+	// Within DefaultMaxGap of the sample just after the gap (hi0 at 101s).
+	d, ok = TimeToDistance(track, start, 99*time.Second)
+	if !ok {
+		t.Fatal("TimeToDistance refused a query within DefaultMaxGap of a real sample; want a snap to it")
+	}
+	if d != 500 {
+		t.Errorf("TimeToDistance snapped to distance %v, want 500 (hi0's own distance)", d)
+	}
+}
+
+// TestTimeToDistance_OrdinaryOffsetInterpolates is the non-gap control for
+// the test above: an offset strictly between two samples that ARE within
+// DefaultMaxGap of each other resolves to the linear interpolation between
+// them, exactly what AtWithGap already promises.
+func TestTimeToDistance_OrdinaryOffsetInterpolates(t *testing.T) {
+	track, start := gappedDistanceTrack(2 * time.Second)
+	// lo1 (1s, distance 3) and hi0 (3s, distance 500) are 2s apart, inside
+	// DefaultMaxGap. The midpoint in time, 2s, interpolates to (3+500)/2.
+	d, ok := TimeToDistance(track, start, 2*time.Second)
+	if !ok {
+		t.Fatal("TimeToDistance refused an offset between two samples within DefaultMaxGap of each other")
+	}
+	if want := (3.0 + 500.0) / 2; d != want {
+		t.Errorf("TimeToDistance = %v, want %v", d, want)
+	}
+}
+
+// TestTimeToDistance_NilTrackIsUnplaceable is the same "no track at all"
+// guard TimeToDistance opens with, pinned so a future refactor cannot drop
+// it and panic on a nil Track instead.
+func TestTimeToDistance_NilTrackIsUnplaceable(t *testing.T) {
+	if _, ok := TimeToDistance(nil, time.Now(), 0); ok {
+		t.Error("TimeToDistance resolved a distance with no Track at all")
+	}
+}
+
+// TestTimeToDistance_DropoutAtTheQueriedInstantIsUnplaceable covers the
+// second case TimeToDistance's own doc comment says it deliberately does
+// NOT distinguish from a gap AtWithGap itself refuses: AtWithGap succeeds
+// (the query sits inside DefaultMaxGap of real samples on both sides) but
+// the sample it hands back does not carry distance at all -- a GPS dropout
+// landing exactly on the query without the surrounding gap being wide
+// enough to trip AtWithGap's own refusal.
+func TestTimeToDistance_DropoutAtTheQueriedInstantIsUnplaceable(t *testing.T) {
+	base := time.Date(2021, 6, 1, 8, 0, 0, 0, time.UTC)
+	track := &fitactivity.Track{Samples: []fitactivity.Sample{
+		{Time: base, HasDistance: true, Distance: 0},
+		{Time: base.Add(time.Second), HasDistance: false},
+		{Time: base.Add(2 * time.Second), HasDistance: true, Distance: 20},
+	}}
+	if _, ok := TimeToDistance(track, base, time.Second); ok {
+		t.Error("TimeToDistance resolved a distance from a sample with HasDistance false")
+	}
+}
+
+// --- The marks on the profile itself ---------------------------------------
+
+// pausedPaceTrack builds a track over highlightEpoch (the same wall clock
+// highlight_panel_test.go's own controlled-Timeline tests use, so a
+// Highlight.From/To given in that file's units lands on the same instants
+// here) that moves at a steady pace, STOPS for a while, then moves again --
+// the coffee-stop shape section 0 of the plan this change was built to
+// describes: distance is flat while time keeps advancing, which is exactly
+// what makes the difference between a time-indexed mark and a
+// distance-indexed one visible rather than coincidental.
+//
+// Elevation varies smoothly throughout so BuildElevationModel never sees a
+// flat profile (which would make Accepts decline and Prepare bail early on
+// p.flat) -- the pause is in DISTANCE only, not in elevation, on purpose.
+func pausedPaceTrack() *fitactivity.Track {
+	samples := make([]fitactivity.Sample, 0, 101)
+	d := 0.0
+	for i := 0; i <= 100; i++ {
+		switch {
+		case i <= 50:
+			d = float64(i) * 10 // 0..500 m over the first 50 s
+		case i <= 70:
+			// stopped: distance does not advance for 20 s
+		default:
+			d = 500 + float64(i-70)*10 // resumes, 500..800 m over the last 30 s
+		}
+		samples = append(samples, fitactivity.Sample{
+			Time:         highlightEpoch.Add(time.Duration(i) * time.Second),
+			HasDistance:  true,
+			Distance:     d,
+			HasElevation: true,
+			Elevation:    50 + 20*math.Sin(float64(i)/12),
+		})
+	}
+	return &fitactivity.Track{Samples: samples}
+}
+
+// elevMarkContext builds a Context over pausedPaceTrack (or another track
+// carrying the same highlightEpoch-based timeline) with the given highlights
+// and labels already resolved the way cmd/highlight.go and cmd/label.go
+// would hand them to a real render.
+func elevMarkContext(t *testing.T, track *fitactivity.Track, highlights []Highlight, labels []Label) *Context {
+	t.Helper()
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl, err := NewSegmentedTimeline(highlightEpoch, 100*time.Second, 30, 1, highlights)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Context{
+		Track: track, Report: inspect.Build(track),
+		Width: 1200, Height: 300, FontScale: 0.05, Fonts: faces,
+		Timeline: tl, Highlights: highlights, Labels: labels,
+	}
+}
+
+// TestElevationPanel_MarkPositionComesFromDistanceNotFromTimeFraction pins
+// section 0's ruling: once a mark is drawn inside this panel's own box, its
+// x MUST come from xForDistance, never from the highlight's fraction of the
+// render's TIME axis -- the same axis MarkerPanel's ribbon uses. This
+// highlight sits in the ORDINARY (non-paused) part of pausedPaceTrack, where
+// the two axes disagree measurably: 10s..20s is 10%..20% of the 100s
+// timeline, but 100m..200m is 12.5%..25% of the activity's own 800m total,
+// because the 20s stop later in the activity does not shrink the TIME axis
+// but does shrink -- relatively -- the DISTANCE one.
+func TestElevationPanel_MarkPositionComesFromDistanceNotFromTimeFraction(t *testing.T) {
+	track := pausedPaceTrack()
+	highlights := []Highlight{{Name: "Rep", From: 10 * time.Second, To: 20 * time.Second}}
+	ctx := elevMarkContext(t, track, highlights, nil)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.marks) != 1 || !p.marks[0].ok {
+		t.Fatalf("mark not placed: %+v", p.marks)
+	}
+
+	wantX0, wantX1 := p.xForDistance(100), p.xForDistance(200)
+	if math.Abs(p.marks[0].x0-wantX0) > 0.5 || math.Abs(p.marks[0].x1-wantX1) > 0.5 {
+		t.Errorf("mark = [%v, %v], want [%v, %v] (xForDistance(100), xForDistance(200))",
+			p.marks[0].x0, p.marks[0].x1, wantX0, wantX1)
+	}
+
+	// The contrast that matters: what a TIME-fraction placement (the
+	// ribbon's own frameFraction rule) would have put here instead, on the
+	// same 100s/30fps timeline this Context resolved. If the two ever
+	// coincided this test would prove nothing, so it also asserts they
+	// differ on this fixture.
+	timeX0 := p.plot.X + frameFraction(ctx.Timeline, 10*time.Second)*p.plot.W
+	timeX1 := p.plot.X + frameFraction(ctx.Timeline, 20*time.Second)*p.plot.W
+	if math.Abs(p.marks[0].x0-timeX0) < 0.5 && math.Abs(p.marks[0].x1-timeX1) < 0.5 {
+		t.Fatal("precondition failed: the distance-indexed mark and a time-indexed placement coincide on this " +
+			"fixture, so this test cannot tell the two mappings apart")
+	}
+}
+
+// TestElevationPanel_MarkOverAPauseCollapsesToTheAxisMinimum pins the cost
+// section 0 names explicitly and asks the user to accept: a highlight whose
+// whole span sits inside a stop -- distance does not advance from From to
+// To -- resolves to two IDENTICAL distances, so its mark collapses toward
+// zero width and is rescued only by widenToMinimum, exactly as a
+// one-frame-long highlight collapses on the ribbon's own time axis. The
+// widened width is the axis's own floor, not a claim that the stop covered
+// that much ground.
+func TestElevationPanel_MarkOverAPauseCollapsesToTheAxisMinimum(t *testing.T) {
+	track := pausedPaceTrack()
+	// 55s..65s sits entirely inside the 50s..70s stop, where distance holds
+	// at 500m throughout.
+	highlights := []Highlight{{Name: "Stop", From: 55 * time.Second, To: 65 * time.Second}}
+	ctx := elevMarkContext(t, track, highlights, nil)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.marks) != 1 || !p.marks[0].ok {
+		t.Fatalf("mark not placed: %+v", p.marks)
+	}
+
+	got := p.marks[0].x1 - p.marks[0].x0
+	minMarkW := math.Max(2, p.markH*minBlockFraction)
+	if math.Abs(got-minMarkW) > 0.5 {
+		t.Errorf("mark width = %v, want the axis's own floor %v (widenToMinimum)", got, minMarkW)
+	}
+	if got <= 0 {
+		t.Error("a collapsed mark drew with zero or negative width; widenToMinimum should have rescued it")
+	}
+}
+
+// TestElevationPanel_MarkIsUnplaceableWhenAnEndpointHasNoDistance pins D.1:
+// a mark needs BOTH endpoints resolved, and one known, one unplaceable is
+// still unplaceable -- not interpolated, not drawn from the one end that IS
+// known. The fixture is gappedDistanceTrack's own real gap, wide enough that
+// From's own instant, deep inside it, cannot be resolved by TimeToDistance.
+func TestElevationPanel_MarkIsUnplaceableWhenAnEndpointHasNoDistance(t *testing.T) {
+	track, start := gappedDistanceTrack(100 * time.Second)
+	// Give the track elevation too, so BuildElevationModel has something
+	// to build a non-flat profile from; the gap in DISTANCE is what this
+	// test is about, not a gap in elevation.
+	for i := range track.Samples {
+		track.Samples[i].HasElevation = true
+		track.Samples[i].Elevation = 40 + float64(i)*5
+	}
+	tl, err := NewSegmentedTimeline(start, 4*time.Second, 30, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 51s (deep inside the 100s gap, unresolvable) .. 101.5s (within
+	// DefaultMaxGap of hi0 at 101s, resolvable) -- one known endpoint, one
+	// not.
+	highlights := []Highlight{{Name: "Unplaceable", From: 51 * time.Second, To: 101500 * time.Millisecond}}
+	ctx := &Context{
+		Track: track, Report: inspect.Build(track),
+		Width: 1200, Height: 300, FontScale: 0.05, Fonts: faces,
+		Timeline: tl, Highlights: highlights,
+	}
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.marks) != 1 {
+		t.Fatalf("len(p.marks) = %d, want 1", len(p.marks))
+	}
+	if p.marks[0].ok {
+		t.Error("a mark with one endpoint inside an unresolvable gap was placed; D.1 says one known, one not is still unplaceable")
+	}
+}
+
+// TestElevationPanel_MarkInThePreDataRegionIsStillPlaced pins D.3: a
+// highlight whose span sits before the elevation model's own StartDistance
+// -- distance is known there, elevation never was -- still gets a mark. The
+// mark answers "where on the course", which is known throughout; only the
+// TERRAIN is missing there, and that is the fill's own concern (see
+// preDataFillTo), not this mark's.
+func TestElevationPanel_MarkInThePreDataRegionIsStillPlaced(t *testing.T) {
+	base := highlightEpoch
+	samples := make([]fitactivity.Sample, 0, 61)
+	for i := 0; i <= 60; i++ {
+		s := fitactivity.Sample{
+			Time: base.Add(time.Duration(i) * time.Second), HasDistance: true, Distance: float64(i) * 10,
+		}
+		// Elevation only starts being recorded 30s in -- everything before
+		// that is the pre-data region BuildElevationModel's own filter
+		// produces (see elevation.go's type doc comment).
+		if i >= 30 {
+			s.HasElevation = true
+			s.Elevation = 50 + float64(i-30)
+		}
+		samples = append(samples, s)
+	}
+	track := &fitactivity.Track{Samples: samples}
+
+	highlights := []Highlight{{Name: "Early", From: 5 * time.Second, To: 15 * time.Second}}
+	ctx := elevMarkContext(t, track, highlights, nil)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if p.profileStart <= 0 {
+		t.Fatalf("precondition failed: profileStart = %v, want > 0 (a real pre-data region)", p.profileStart)
+	}
+	if len(p.marks) != 1 || !p.marks[0].ok {
+		t.Fatalf("mark inside the pre-data region was not placed: %+v", p.marks)
+	}
+}
+
+// TestElevationPanel_MarksStillDrawDuringADistanceDropout pins D.5: a mark
+// is a property of the render's TIMELINE, not of what the CURRENT frame's
+// sensor recorded, so it must keep drawing -- brightened by weight when
+// active -- straight over the absent wash on a distance dropout, the
+// identical policy MarkerPanel's own doc comment states for the ribbon.
+func TestElevationPanel_MarksStillDrawDuringADistanceDropout(t *testing.T) {
+	track := pausedPaceTrack()
+	highlights := []Highlight{{Name: "Rep", From: 10 * time.Second, To: 20 * time.Second}}
+	ctx := elevMarkContext(t, track, highlights, nil)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	img := image.NewRGBA(image.Rect(0, 0, 1200, 300))
+	faces, _ := NewFaceCache()
+	c, _ := NewCanvas(img, 20, DefaultTheme(), faces)
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.marks) != 1 || !p.marks[0].ok {
+		t.Fatalf("mark not placed: %+v", p.marks)
+	}
+
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	// A dropout frame, with the highlight fully active (weight 1).
+	p.Dynamic(c, Frame{HasSample: false, Interval: 0, IntervalWeight: 1})
+
+	markBox := Box{X: p.marks[0].x0, Y: p.yForElevation(p.floorElev) - p.markH, W: p.marks[0].x1 - p.marks[0].x0, H: p.markH}
+	wantLit := color.RGBAModel.Convert(Fade(c.Theme.Highlight, restAlpha(1))).(color.RGBA)
+	if _, _, found := findRGBA(img, markBox, wantLit, 3); !found {
+		t.Error("the active mark did not draw over the dropout's absent wash; a mark is a property of the " +
+			"timeline, not of this frame's sensor reading, and must stay lit through a dropout")
+	}
+}
+
+// --- The name rows above the plot -------------------------------------------
+
+// TestElevationPanel_NoMarksReservesNoRowsAndLeavesThePlotUnchanged pins the
+// load-bearing half of step 4: with NEITHER --highlight nor --label
+// configured, Prepare must reserve nothing above the plot, so the plot
+// resolves to exactly the rectangle Prepare's formula produced before this
+// feature existed. That is what keeps a render configuring neither
+// pixel-identical to one from before -- the frozen claim
+// TestElevationPanel_StaysInsideItsBox and this project's own
+// pixel-identity test at the render level both depend on.
+//
+// wantY/wantH are derived from the SAME two quantities Prepare's own
+// pre-existing formula uses -- p.labelPx (unit*0.16) and p.labelPx*1.8 (the
+// distance label row already reserved below the plot) -- not a number
+// recorded from a run, so a future retuning of either moves both the code
+// and this expectation together rather than silently drifting apart.
+func TestElevationPanel_NoMarksReservesNoRowsAndLeavesThePlotUnchanged(t *testing.T) {
+	track := hillTrack(0, 5000, 100)
+	box := Box{X: 10, Y: 20, W: 1200, H: 300}
+	p := elevationPainterFor(t, track, box, 1200, 300)
+
+	wantY := box.Y + p.labelPx*0.9
+	wantH := box.H - p.labelPx*0.9 - p.labelPx*1.8
+	if math.Abs(p.plot.Y-wantY) > 1e-9 {
+		t.Errorf("plot.Y = %v, want %v -- neither highlight nor label was configured, so no row should be reserved", p.plot.Y, wantY)
+	}
+	if math.Abs(p.plot.H-wantH) > 1e-9 {
+		t.Errorf("plot.H = %v, want %v -- neither highlight nor label was configured, so no row should be reserved", p.plot.H, wantH)
+	}
+	if p.namePx != 0 || p.labelNamePx != 0 {
+		t.Errorf("namePx = %v, labelNamePx = %v, want both 0: a row's own font size is only ever set when that row is reserved", p.namePx, p.labelNamePx)
+	}
+}
+
+// TestElevationPanel_NameRowsAreReservedOnlyForWhatIsConfigured pins the
+// other half: ONE row -- highlight or label -- when only one is configured,
+// and both, stacked, when both are. Each row's own height is derived from
+// the same unit-scaled constants Prepare uses (elevNamePx/elevLabelNamePx
+// times elevNameRowPadding), so this asserts the reservation's SIZE rather
+// than merely that the plot got a little smaller.
+func TestElevationPanel_NameRowsAreReservedOnlyForWhatIsConfigured(t *testing.T) {
+	track := pausedPaceTrack()
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+	highlight := Highlight{Name: "Climb", From: 10 * time.Second, To: 20 * time.Second}
+	label := Label{Name: "Aid Station", At: 15 * time.Second}
+
+	none := elevationPainterFor(t, track, box, 1200, 300)
+
+	prep := func(highlights []Highlight, labels []Label) *elevationPainter {
+		ctx := elevMarkContext(t, track, highlights, labels)
+		p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+		if !ok {
+			t.Fatal("Prepare did not return an elevation painter")
+		}
+		return p
+	}
+	highlightOnly := prep([]Highlight{highlight}, nil)
+	labelOnly := prep(nil, []Label{label})
+	both := prep([]Highlight{highlight}, []Label{label})
+
+	unit := math.Min(box.W, box.H)
+	wantHighlightRowH := unit * elevNamePx * elevNameRowPadding
+	wantLabelRowH := unit * elevLabelNamePx * elevNameRowPadding
+
+	if got, want := none.plot.H-highlightOnly.plot.H, wantHighlightRowH; math.Abs(got-want) > 1e-6 {
+		t.Errorf("highlight-only plot.H shrank by %v, want %v (one highlight row)", got, want)
+	}
+	if got, want := none.plot.H-labelOnly.plot.H, wantLabelRowH; math.Abs(got-want) > 1e-6 {
+		t.Errorf("label-only plot.H shrank by %v, want %v (one label row)", got, want)
+	}
+	if got, want := none.plot.H-both.plot.H, wantHighlightRowH+wantLabelRowH; math.Abs(got-want) > 1e-6 {
+		t.Errorf("both-configured plot.H shrank by %v, want %v (both rows stacked)", got, want)
+	}
+
+	// Ordering: the label row sits ABOVE the highlight row -- a smaller Y --
+	// matching MarkerPanel's own top-to-bottom read (label above the
+	// ribbon, highlight below it).
+	if both.labelNameY >= both.nameY {
+		t.Errorf("labelNameY = %v, nameY = %v: the label row should sit above the highlight row", both.labelNameY, both.nameY)
+	}
+}
+
+// TestElevationPanel_ActiveHighlightAndLabelNamesDrawInTheirOwnRowsWithoutDisplacingEachOther
+// pins the rejected-alternative claim from the plan directly: a highlight
+// and a label active on the SAME frame each draw their own name in their
+// own reserved row, and neither's presence removes or moves the other's --
+// the alternative this project rejected once already, on the ribbon, for
+// making a name visibly vanish and reappear as another mark passes over it.
+func TestElevationPanel_ActiveHighlightAndLabelNamesDrawInTheirOwnRowsWithoutDisplacingEachOther(t *testing.T) {
+	track := pausedPaceTrack()
+	highlights := []Highlight{{Name: "Climb", From: 10 * time.Second, To: 20 * time.Second}}
+	labels := []Label{{Name: "Aid Station", At: 15 * time.Second}}
+	ctx := elevMarkContext(t, track, highlights, labels)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	img := image.NewRGBA(image.Rect(0, 0, 1200, 300))
+	faces, _ := NewFaceCache()
+	c, _ := NewCanvas(img, 20, DefaultTheme(), faces)
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if p.namePx == 0 || p.labelNamePx == 0 {
+		t.Fatalf("precondition failed: both rows should be sized (namePx=%v labelNamePx=%v)", p.namePx, p.labelNamePx)
+	}
+
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	// Both the highlight and the label are active on this same frame.
+	p.Dynamic(c, Frame{
+		HasSample: true, Sample: fitactivity.Sample{HasDistance: true, Distance: 150},
+		Interval: 0, IntervalWeight: 1,
+		Label: 0, LabelWeight: 1,
+	})
+
+	rowH := math.Max(p.namePx, p.labelNamePx) * 1.4
+	highlightRow := Box{X: p.plot.X, Y: p.nameY - rowH/2, W: p.plot.W, H: rowH}
+	labelRow := Box{X: p.plot.X, Y: p.labelNameY - rowH/2, W: p.plot.W, H: rowH}
+
+	if rightmostInk(img, highlightRow, c.Theme.Background) < 0 {
+		t.Error("the active highlight's name did not draw in its own row")
+	}
+	if rightmostInk(img, labelRow, c.Theme.Background) < 0 {
+		t.Error("the active label's name did not draw in its own row")
+	}
+}
+
+// TestElevationPanel_CoincidentTicksAreNudgedApartBoundedByTwoTickWidths pins
+// D.4: two labels landing on the same distance -- here, both inside
+// pausedPaceTrack's own 50s..70s stop, where distance holds at 500m
+// throughout -- must not draw as one indistinguishable tick with one name
+// printed over the other now that a name draws for each. buildMarks nudges
+// them apart using the identical separation sweep the highlight blocks
+// above already use, bounded to 2*tickW away from each tick's own true
+// (pre-nudge) position -- the bound this test pins, not merely that they
+// moved at all.
+func TestElevationPanel_CoincidentTicksAreNudgedApartBoundedByTwoTickWidths(t *testing.T) {
+	track := pausedPaceTrack()
+	labels := []Label{
+		{Name: "Water", At: 55 * time.Second},
+		{Name: "Turn", At: 65 * time.Second},
+	}
+	ctx := elevMarkContext(t, track, nil, labels)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.ticks) != 2 || !p.ticks[0].ok || !p.ticks[1].ok {
+		t.Fatalf("ticks not placed: %+v", p.ticks)
+	}
+
+	rawX := p.xForDistance(500) // both labels sit at the stop's own held distance
+	for i, tk := range p.ticks {
+		if d := math.Abs(tk.x - rawX); d > 2*p.tickW+0.5 {
+			t.Errorf("ticks[%d].x = %v, more than 2*tickW (%v) from its own true position %v -- "+
+				"the nudge must stay bounded", i, tk.x, 2*p.tickW, rawX)
+		}
+	}
+	if p.ticks[0].x == p.ticks[1].x {
+		t.Error("two coincident ticks were not nudged apart at all; their names would print one over the other")
+	}
+}
+
+// --- QA round: the index remapping in buildMarks ---------------------------
+
+// TestElevationPanel_MiddleUnresolvableHighlightIsSkippedWithoutShiftingItsNeighboursIndices
+// pins the sharpest risk in buildMarks: it builds boxes/order over only the
+// PLACEABLE highlights, then writes back through order[j] to p.marks[i]. A
+// version that instead assumed the placeable subset's own position equalled
+// the original index (writing p.marks[j] rather than p.marks[order[j]]), or
+// that ran separateSpans over a placeholder box for the skipped middle
+// highlight instead of leaving it out, would misplace or mislabel First
+// and/or Third here without erroring -- exactly the "plausible number, no
+// crash" failure mode this project is built around, applied to indices
+// instead of a Sample field.
+//
+// First and Third are constructed to straddle the pause in pausedPaceTrack
+// (50s..70s, where distance holds at 500m) from either side, so they land
+// on ADJACENT, touching distances (490..500 and 500..510) and the
+// separation sweep has real work to do on exactly the two boxes that
+// survive -- if the remap were wrong, that work would land on the wrong
+// pair, or not run on this pair at all.
+func TestElevationPanel_MiddleUnresolvableHighlightIsSkippedWithoutShiftingItsNeighboursIndices(t *testing.T) {
+	track := pausedPaceTrack()
+	// Force a genuine distance dropout at the two samples Middle's own
+	// bounds land on exactly (60s, 61s) -- both timestamps are real
+	// samples one second apart, well inside DefaultMaxGap of their own
+	// neighbours, so AtWithGap resolves each query to that exact sample
+	// (D.1's second case: HasDistance false at the queried instant itself)
+	// rather than refusing for being deep in a wide gap.
+	track.Samples[60].HasDistance = false
+	track.Samples[61].HasDistance = false
+
+	highlights := []Highlight{
+		{Name: "First", From: 49 * time.Second, To: 50 * time.Second},  // 490m -> 500m
+		{Name: "Middle", From: 60 * time.Second, To: 61 * time.Second}, // both bounds undefined
+		{Name: "Third", From: 70 * time.Second, To: 71 * time.Second},  // 500m -> 510m
+	}
+	ctx := elevMarkContext(t, track, highlights, nil)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.marks) != 3 {
+		t.Fatalf("len(p.marks) = %d, want 3", len(p.marks))
+	}
+	if !p.marks[0].ok {
+		t.Error("marks[0] (First) should be placeable; both its bounds carry distance")
+	}
+	if p.marks[1].ok {
+		t.Error("marks[1] (Middle) should be unplaceable; both its bounds land on a distance dropout")
+	}
+	if !p.marks[2].ok {
+		t.Error("marks[2] (Third) should be placeable; both its bounds carry distance")
+	}
+	if p.marks[1] != (elevMark{}) {
+		t.Errorf("marks[1] (Middle) = %+v, want the zero value -- an unplaceable mark must not carry a leftover position", p.marks[1])
+	}
+
+	d0From, ok := TimeToDistance(track, highlightEpoch, 49*time.Second)
+	if !ok {
+		t.Fatal("precondition: First.From should resolve")
+	}
+	d0To, ok := TimeToDistance(track, highlightEpoch, 50*time.Second)
+	if !ok {
+		t.Fatal("precondition: First.To should resolve")
+	}
+	d2From, ok := TimeToDistance(track, highlightEpoch, 70*time.Second)
+	if !ok {
+		t.Fatal("precondition: Third.From should resolve")
+	}
+	d2To, ok := TimeToDistance(track, highlightEpoch, 71*time.Second)
+	if !ok {
+		t.Fatal("precondition: Third.To should resolve")
+	}
+	if d0From != 490 || d0To != 500 || d2From != 500 || d2To != 510 {
+		t.Fatalf("precondition failed: distances = %v/%v and %v/%v, want 490/500 and 500/510", d0From, d0To, d2From, d2To)
+	}
+
+	// The expected positions, derived independently: widenToMinimum and
+	// separateSpans -- the SAME shared primitives buildMarks calls -- run
+	// here over ONLY First and Third's two boxes, exactly as buildMarks
+	// should once Middle is left out.
+	minMarkW := math.Max(2, p.markH*minBlockFraction)
+	x0a, x1a := widenToMinimum(p.xForDistance(d0From), p.xForDistance(d0To), minMarkW)
+	x0b, x1b := widenToMinimum(p.xForDistance(d2From), p.xForDistance(d2To), minMarkW)
+	want := []Box{{X: x0a, W: x1a - x0a}, {X: x0b, W: x1b - x0b}}
+	if want[0].X+want[0].W < want[1].X-0.01 {
+		t.Fatalf("precondition failed: First and Third do not overlap even before separation (%v..%v vs %v..%v); "+
+			"this test needs them to collide for the sweep to have real work to do",
+			want[0].X, want[0].X+want[0].W, want[1].X, want[1].X+want[1].W)
+	}
+	separateSpans(want, p.markH*blockGapFraction)
+
+	if math.Abs(p.marks[0].x0-want[0].X) > 0.01 || math.Abs(p.marks[0].x1-(want[0].X+want[0].W)) > 0.01 {
+		t.Errorf("marks[0] (First) = [%v, %v], want [%v, %v]", p.marks[0].x0, p.marks[0].x1, want[0].X, want[0].X+want[0].W)
+	}
+	if math.Abs(p.marks[2].x0-want[1].X) > 0.01 || math.Abs(p.marks[2].x1-(want[1].X+want[1].W)) > 0.01 {
+		t.Errorf("marks[2] (Third) = [%v, %v], want [%v, %v]", p.marks[2].x0, p.marks[2].x1, want[1].X, want[1].X+want[1].W)
+	}
+	if p.names[0] != "First" || p.names[2] != "Third" {
+		t.Errorf("names = %v, want [First Middle Third]", p.names)
+	}
+}
+
+// TestElevationPanel_MiddleUnresolvableLabelIsSkippedWithoutShiftingItsNeighboursIndices
+// is the identical shape and the identical claim, applied to buildMarks'
+// OTHER remap -- tickOrder/ticks for a --label's tick rather than
+// order/marks for a --highlight's block. Water and Turn land on the
+// IDENTICAL held distance (the pause's own 500m), which is D.4's own
+// collision case, so this also proves the remap did not confuse which two
+// ticks are adjacent once the middle one dropped out of the placeable
+// subset.
+func TestElevationPanel_MiddleUnresolvableLabelIsSkippedWithoutShiftingItsNeighboursIndices(t *testing.T) {
+	track := pausedPaceTrack()
+	track.Samples[60].HasDistance = false
+
+	labels := []Label{
+		{Name: "Water", At: 50 * time.Second}, // 500m, the pause's own start
+		{Name: "Aid", At: 60 * time.Second},   // dropout: unresolvable
+		{Name: "Turn", At: 70 * time.Second},  // 500m, the pause's own end
+	}
+	ctx := elevMarkContext(t, track, nil, labels)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.ticks) != 3 {
+		t.Fatalf("len(p.ticks) = %d, want 3", len(p.ticks))
+	}
+	if !p.ticks[0].ok {
+		t.Error("ticks[0] (Water) should be placeable")
+	}
+	if p.ticks[1].ok {
+		t.Error("ticks[1] (Aid) should be unplaceable; its own instant is a distance dropout")
+	}
+	if !p.ticks[2].ok {
+		t.Error("ticks[2] (Turn) should be placeable")
+	}
+	if p.ticks[1] != (elevTick{}) {
+		t.Errorf("ticks[1] (Aid) = %+v, want the zero value", p.ticks[1])
+	}
+
+	rawX := p.xForDistance(500)
+	if math.Abs(p.ticks[0].x-rawX) > 2*p.tickW+0.5 || math.Abs(p.ticks[2].x-rawX) > 2*p.tickW+0.5 {
+		t.Errorf("ticks = [%v, _, %v], both should stay within 2*tickW (%v) of their own true position %v",
+			p.ticks[0].x, p.ticks[2].x, 2*p.tickW, rawX)
+	}
+	if p.ticks[0].x == p.ticks[2].x {
+		t.Error("Water and Turn were not nudged apart at all despite landing on the identical held distance")
+	}
+
+	if p.labelNames[0] != "Water" || p.labelNames[2] != "Turn" {
+		t.Fatalf("labelNames = %v, want [Water Aid Turn]", p.labelNames)
+	}
+	if math.Abs(p.labelAnchorX[0]-p.ticks[0].x) > 1 {
+		t.Errorf("labelAnchorX[0] = %v, want close to ticks[0].x = %v", p.labelAnchorX[0], p.ticks[0].x)
+	}
+	if math.Abs(p.labelAnchorX[2]-p.ticks[2].x) > 1 {
+		t.Errorf("labelAnchorX[2] = %v, want close to ticks[2].x = %v", p.labelAnchorX[2], p.ticks[2].x)
+	}
+}
+
+// --- QA round: rest-state marks must draw at all ----------------------------
+
+// TestElevationPanel_RestStateMarkDrawsDimmerThanTheActiveOne is this
+// project's own sharpest failure mode, applied to the profile's new mark
+// strip: nothing before this pinned that a highlight NOT currently active
+// still draws its block. A Dynamic that only ever redrew the active
+// highlight -- forgetting Static's own rest-state pass, or a stray early
+// return before it -- would leave every OTHER configured highlight's block
+// invisible with no error and an otherwise plausible frame: the "panel
+// that draws nothing" failure this project is built around.
+func TestElevationPanel_RestStateMarkDrawsDimmerThanTheActiveOne(t *testing.T) {
+	track := pausedPaceTrack()
+	highlights := []Highlight{
+		{Name: "Active", From: 5 * time.Second, To: 15 * time.Second},
+		{Name: "Resting", From: 80 * time.Second, To: 90 * time.Second},
+	}
+	ctx := elevMarkContext(t, track, highlights, nil)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	img := image.NewRGBA(image.Rect(0, 0, 1200, 300))
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewCanvas(img, 20, DefaultTheme(), faces)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.marks) != 2 || !p.marks[0].ok || !p.marks[1].ok {
+		t.Fatalf("marks not placed: %+v", p.marks)
+	}
+
+	d, ok := TimeToDistance(track, highlightEpoch, 10*time.Second)
+	if !ok {
+		t.Fatal("precondition: distance at 10s should resolve")
+	}
+
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	p.Dynamic(c, Frame{
+		HasSample: true, Sample: fitactivity.Sample{HasDistance: true, Distance: d},
+		Interval: 0, IntervalWeight: 1, Label: NoLabel,
+	})
+
+	baseline := p.yForElevation(p.floorElev)
+	blockPixel := func(m elevMark) color.Color {
+		x := int((m.x0 + m.x1) / 2)
+		y := int(baseline - p.markH/2)
+		return img.At(x, y)
+	}
+	activeC := blockPixel(p.marks[0])
+	restC := blockPixel(p.marks[1])
+	bg := c.Theme.Background
+
+	distFromBG := func(col color.Color) float64 {
+		r1, g1, b1, _ := col.RGBA()
+		r2, g2, b2, _ := bg.RGBA()
+		return math.Abs(float64(r1)-float64(r2)) + math.Abs(float64(g1)-float64(g2)) + math.Abs(float64(b1)-float64(b2))
+	}
+
+	restDist := distFromBG(restC)
+	activeDist := distFromBG(activeC)
+	if restDist == 0 {
+		t.Fatal("the resting highlight's block did not draw at all -- Static must draw every configured " +
+			"highlight's block, not only the currently active one")
+	}
+	if activeDist <= restDist {
+		t.Errorf("active block's colour distance from background = %v, resting block's = %v; "+
+			"the active block should read brighter than a resting one", activeDist, restDist)
+	}
+}
+
+// --- QA round: an unplaceable mark, proven undrawn in pixels ---------------
+
+// TestElevationPanel_UnplaceableMarkDrawsNothingEvenWhenClaimedActive is the
+// inverse of the test above and of TestElevationPanel_MarksStillDrawDuringADistanceDropout:
+// a highlight whose mark could not be placed at all (D.1) must draw
+// NOTHING -- not merely "p.marks[0].ok is false" inspected on the struct,
+// but no ink anywhere in the rendered frame -- even when the render loop
+// claims it is the CURRENTLY ACTIVE interval, which is exactly the
+// condition drawActiveMarks' own `m.ok` guard exists to refuse. Comparing
+// a frame that claims it active against one that does not claim any
+// interval active at all is what proves the guard is load-bearing rather
+// than a coincidence of both branches happening to draw nothing anyway.
+func TestElevationPanel_UnplaceableMarkDrawsNothingEvenWhenClaimedActive(t *testing.T) {
+	track, start := gappedDistanceTrack(100 * time.Second)
+	for i := range track.Samples {
+		track.Samples[i].HasElevation = true
+		track.Samples[i].Elevation = 40 + float64(i)*5
+	}
+	tl, err := NewSegmentedTimeline(start, 4*time.Second, 30, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	highlights := []Highlight{{Name: "Unplaceable", From: 51 * time.Second, To: 101500 * time.Millisecond}}
+	ctx := &Context{
+		Track: track, Report: inspect.Build(track),
+		Width: 1200, Height: 300, FontScale: 0.05, Fonts: faces,
+		Timeline: tl, Highlights: highlights,
+	}
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.marks) != 1 || p.marks[0].ok {
+		t.Fatalf("precondition failed: mark should be unplaceable, got %+v", p.marks)
+	}
+
+	renderFrame := func(f Frame) *image.RGBA {
+		img := image.NewRGBA(image.Rect(0, 0, 1200, 300))
+		c, err := NewCanvas(img, 20, DefaultTheme(), faces)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		p.Dynamic(c, f)
+		return img
+	}
+
+	notClaimed := renderFrame(Frame{HasSample: false, Interval: NoHighlight, IntervalWeight: 0, Label: NoLabel})
+	claimedActive := renderFrame(Frame{HasSample: false, Interval: 0, IntervalWeight: 1, Label: NoLabel})
+
+	if !bytes.Equal(notClaimed.Pix, claimedActive.Pix) {
+		t.Error("claiming the unplaceable highlight as the active interval changed the rendered pixels; " +
+			"a mark with no resolvable position must draw nothing, active or not")
+	}
+}
+
+// --- QA round: the size hierarchy ------------------------------------------
+
+// TestElevationPanel_AxisChromeDependsOnlyOnTheFrameNotTheBox pins
+// elevAxisLabelFraction's own ruling directly: labelPx comes from
+// ctx.BasePx() -- the OUTPUT FRAME's own smaller dimension times the
+// layout's FontScale -- and must not move when this panel is handed a
+// differently-shaped box at the identical frame size. Before that fraction
+// moved off unit (this panel's own box height, what every other measure on
+// this Painter is still sized from), the same box-height change this test
+// makes would have changed labelPx too -- exactly the inversion the doc
+// comment on elevAxisLabelFraction records as having happened once already.
+func TestElevationPanel_AxisChromeDependsOnlyOnTheFrameNotTheBox(t *testing.T) {
+	const fw, fh = 1920, 1080
+	track := hillTrack(0, 5000, 200)
+	tall := Box{X: 0, Y: 0, W: 1200, H: 500}
+	short := Box{X: 0, Y: 0, W: 1200, H: 120}
+
+	pTall := elevationPainterFor(t, track, tall, fw, fh)
+	pShort := elevationPainterFor(t, track, short, fw, fh)
+
+	want := 0.05 * math.Min(float64(fw), float64(fh)) * elevAxisLabelFraction
+	if math.Abs(pTall.labelPx-want) > 1e-9 {
+		t.Errorf("labelPx = %v for the %vpx box, want %v (FontScale * min(frame) * elevAxisLabelFraction)", pTall.labelPx, tall.H, want)
+	}
+	if pTall.labelPx != pShort.labelPx {
+		t.Errorf("labelPx = %v for a %vpx-tall box but %v for a %vpx-tall box at the SAME %vx%v frame; "+
+			"axis chrome must depend only on ctx.BasePx(), never on the box it was given",
+			pTall.labelPx, tall.H, pShort.labelPx, short.H, fw, fh)
+	}
+}
+
+// TestElevationPanel_MarkNameRowsAreLargerThanTheAxisChrome pins the OTHER
+// half of the hierarchy elevNamePx/elevLabelNamePx's own doc comment
+// states as intent: a mark's own name must read larger than the axis chrome
+// (elevAxisLabelFraction) it sits beside, and the highlight's name a step
+// larger than the label's beneath it -- checked against the REAL boxes
+// LandscapeLayout and PortraitLayout resolve the elevation panel into at
+// three shipped resolutions, not an arbitrary box, since the two fractions
+// are of DIFFERENT bases (unit here, ctx.BasePx() for the chrome) and the
+// doc comment is explicit that retuning one without the other can silently
+// invert this exact ordering.
+func TestElevationPanel_MarkNameRowsAreLargerThanTheAxisChrome(t *testing.T) {
+	cases := []struct {
+		name   string
+		layout Layout
+		fw, fh int
+	}{
+		{"1080p landscape", LandscapeLayout(), 1920, 1080},
+		{"4K landscape", LandscapeLayout(), 3840, 2160},
+		{"portrait", PortraitLayout(), 1080, 1920},
+	}
+
+	track := pausedPaceTrack()
+	highlights := []Highlight{{Name: "Climb", From: 10 * time.Second, To: 20 * time.Second}}
+	labels := []Label{{Name: "Aid Station", At: 15 * time.Second}}
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl, err := NewSegmentedTimeline(highlightEpoch, 100*time.Second, 30, 1, highlights)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Resolved the way a REAL render with marks configured resolves
+			// it: MarkerPanel is absorbed, because the profile is taking the
+			// band and carrying the marks itself (see internal/render.New's
+			// keep filter). Passing a nil keep instead would place the strip
+			// AND reserve the profile's name rows in one frame -- a
+			// combination the keep filter makes unreachable, since the rows
+			// are reserved only when marks are configured and the strip is
+			// dropped in exactly that case. Measuring it would test a band
+			// narrower than any render produces, and would fail on a
+			// hierarchy the shipped layout does not actually invert.
+			placed, err := c.layout.Resolve(c.fw, c.fh, func(pnl Panel) bool {
+				return pnl.Name() != (MarkerPanel{}).Name()
+			})
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			var box Box
+			found := false
+			for _, pl := range placed {
+				if pl.Panel.Name() == (ElevationPanel{}).Name() {
+					box, found = pl.Box, true
+				}
+			}
+			if !found {
+				t.Fatalf("elevation panel was not placed in %s", c.name)
+			}
+
+			ctx := &Context{
+				Track: track, Report: inspect.Build(track),
+				Width: c.fw, Height: c.fh, FontScale: c.layout.FontScale, Fonts: faces,
+				Timeline: tl, Highlights: highlights, Labels: labels,
+			}
+			p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+			if !ok {
+				t.Fatal("Prepare did not return an elevation painter")
+			}
+
+			if p.namePx <= p.labelPx {
+				t.Errorf("namePx = %v, labelPx (axis chrome) = %v; a highlight's own name should read larger than the axis chrome beside it", p.namePx, p.labelPx)
+			}
+			if p.labelNamePx <= p.labelPx {
+				t.Errorf("labelNamePx = %v, labelPx (axis chrome) = %v; a label's own name should read larger than the axis chrome beside it", p.labelNamePx, p.labelPx)
+			}
+			if p.namePx <= p.labelNamePx {
+				t.Errorf("namePx = %v, labelNamePx = %v; the highlight name should read a step larger than the label name beneath it", p.namePx, p.labelNamePx)
+			}
+		})
+	}
+}
+
+// --- QA round: the overlap report -------------------------------------------
+
+// TestElevationPanel_ThreeLabelsAtTheIdenticalDistanceUnderSeparateAndAreReported
+// is finding 3 from the previous review, now implemented: the plan's own
+// verification put three labels "at nearly the same distance" about 1.27px
+// apart against a 2.4px target, because the single left-to-right sweep
+// under-separates an INTERIOR tick even when no individual nudge anywhere
+// hits its own 2*tickW clamp. This fixture reproduces the mechanism at its
+// most extreme (three ticks at the IDENTICAL held distance, inside
+// pausedPaceTrack's own pause) rather than merely "nearly" identical, so
+// the shortfall is not a fluke of this fixture's own numbers: with all
+// three original positions equal, the sweep's own arithmetic (see
+// separateSpans and marks.go) leaves each adjacent pair exactly tickW/2
+// apart at their CENTRES, half of the tickW gap it is asked to enforce at
+// their edges, and every centre stays well inside its own clamp bound.
+func TestElevationPanel_ThreeLabelsAtTheIdenticalDistanceUnderSeparateAndAreReported(t *testing.T) {
+	track := pausedPaceTrack()
+	labels := []Label{
+		{Name: "Water", At: 55 * time.Second},
+		{Name: "Aid", At: 58 * time.Second},
+		{Name: "Turn", At: 61 * time.Second},
+	}
+	ctx := elevMarkContext(t, track, nil, labels)
+	box := Box{X: 0, Y: 0, W: 1200, H: 300}
+
+	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
+	if !ok {
+		t.Fatal("Prepare did not return an elevation painter")
+	}
+	if len(p.ticks) != 3 || !p.ticks[0].ok || !p.ticks[1].ok || !p.ticks[2].ok {
+		t.Fatalf("ticks not placed: %+v", p.ticks)
+	}
+
+	rawX := p.xForDistance(500) // all three fall inside the pause, at the identical held distance
+	for i, tk := range p.ticks {
+		if math.Abs(tk.x-rawX) >= 2*p.tickW {
+			t.Fatalf("ticks[%d].x = %v is at (or past) its own 2*tickW clamp bound around %v; "+
+				"this fixture is supposed to under-separate WITHOUT any individual nudge saturating its clamp",
+				i, tk.x, rawX)
+		}
+	}
+
+	gap01 := math.Abs(p.ticks[1].x - p.ticks[0].x)
+	gap12 := math.Abs(p.ticks[2].x - p.ticks[1].x)
+	if gap01 <= 0 || gap12 <= 0 {
+		t.Fatalf("adjacent ticks collapsed to identical positions (gaps %v, %v); the sweep should still separate them some", gap01, gap12)
+	}
+	if gap01 >= p.tickW && gap12 >= p.tickW {
+		t.Fatalf("both adjacent gaps (%v, %v) reached the full tickW (%v) target; "+
+			"this fixture is supposed to reproduce the sweep UNDER-separating an interior tick", gap01, gap12, p.tickW)
+	}
+
+	overlapping := p.OverlappingLabels()
+	if len(overlapping) == 0 {
+		t.Fatal("OverlappingLabels() reported nothing, but the ticks above are still closer than tickW apart")
+	}
+	seen := map[int]bool{}
+	for _, i := range overlapping {
+		seen[i] = true
+	}
+	if !seen[1] {
+		t.Errorf("OverlappingLabels() = %v, want the middle label (index 1) included -- every "+
+			"adjacent pair's under-separation touches it", overlapping)
+	}
 }

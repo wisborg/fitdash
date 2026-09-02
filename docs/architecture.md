@@ -171,15 +171,28 @@ The price of the tree is that a panel cannot be placed at an arbitrary spot; it 
 expresses nested rows and columns. That is acceptable for a dashboard, and a free-placement
 escape hatch can be added later without disturbing it.
 
-### One band, two candidates: the elevation profile or the distance readout
+### One band, two candidates — now with three jobs between them
 
 One full-width band runs across the bottom of both trees, in the row directly above the
-marker strip, and it shows **either** the elevation profile **or** the live distance
-readout — never both, and never neither while the activity carries the data for one of
-them. The profile used to have that band to itself and the readout used to sit beside the
-clock. Both moved for the same reason: **the filled area under the profile's trace is now
-this project's distance indicator**, so a separate readout drawn anywhere on the frame is
-the same quantity said twice.
+marker strip's own box, and it shows **either** the elevation profile **or** the live
+distance readout — never both, and never neither while the activity carries the data for
+one of them. The profile used to have that band to itself and the readout used to sit
+beside the clock. Both moved for the same reason: **the filled area under the profile's
+trace is now this project's distance indicator**, so a separate readout drawn anywhere on
+the frame is the same quantity said twice.
+
+That choice between the two, and the `Alt` slot that makes it, is unchanged from when this
+section was first written — see "The mechanism is an ordered alternatives slot" below.
+What changed is what it means for the profile to *win* that choice. The profile no longer
+only draws a curve, a fill and two axes: when a `--highlight` or a `--label` is configured,
+the winning profile now also draws every highlight's block, every label's tick, and up to
+two name rows reserved above the plot — the whole of what a separate marker strip used to
+be the only place to find. So this band, when the profile takes it, carries **three**
+jobs at once: the profile itself, the distance indicator (the fill), and the marker
+strip's own content, folded onto the profile's own axis rather than left in a box of its
+own. "The mark rows and the fold-in" below is that mechanism in full; "Absorbed, a fourth
+outcome" further down is how the render summary keeps that fold from reading as a panel
+that silently vanished.
 
 The fill runs from the trace's own start to the playhead, and its leading edge is the
 position. That is why the full-height playhead rule the panel used to draw is gone: the
@@ -296,7 +309,95 @@ panel name, and it asserts not only that the boxes still tile but **which** pane
 placed — geometry alone would have passed just as happily with the readout drawn beside
 the profile, which is the arrangement this section exists to say is gone.
 
-### The marker strip carries no caption
+### The mark rows and the fold-in: why distance, never time
+
+**Ruling: a mark drawn inside the profile's own box — a highlight's block, a label's
+tick — must be positioned by distance. There is no defensible time-indexed option for it,
+and this is forced, not chosen.** The profile's box already contains a moving indicator of
+its own: the fill's leading edge, at `xForDistance(f.Sample.Distance)`, which is this
+project's one distance readout (see above). A second, time-indexed ribbon drawn in the same
+box would give that box two horizontal axes and two playheads, sitting at different x on
+the same frame the moment the activity pauses — the fill's edge stalled at one x while a
+time-based ribbon's playhead kept moving past it. Both layers would draw, they would
+disagree, and nothing would error: the videofx axis-origin failure, reproduced in a form
+the viewer actually sees. So every mark folded onto this axis is resolved once, in
+`Prepare`, by converting the highlight's or label's own activity-time offset to a distance
+via the track's gap-aware sample lookup (`ElevationPanel`'s exported `TimeToDistance`, in
+`internal/panel/elevation.go`) and then placed exactly the way the trace, the fill and both
+distance labels already are — through `xForDistance`, the one origin this axis has ever
+had.
+
+**The honest cost, stated rather than hidden.** Distance is monotone in time but not
+injective, so a highlight spanning a stop can shrink toward zero width on this axis, and
+two labels either side of a pause can land on the same x. More importantly: **a mark's
+width on this axis is ground covered, not time elapsed**, and once the standalone strip is
+gone (see the fold-in below), **nothing on the frame states duration any more**. A viewer
+who wants to know how long a highlighted stretch lasted has to read it from the base clock,
+not from the width of its block. That trade was put to the user directly, along with the
+fact that a highlight over a full stop collapses to the axis's own smallest expressible
+mark, and they chose to accept it rather than keep a second, time-indexed ribbon that would
+have avoided it (`--bottom-band distance` remains the escape hatch for anyone who wants the
+old, time-indexed strip back — see below).
+
+**The fold-in itself.** `ElevationPanel` additionally reads `ctx.Highlights`, `ctx.Labels`
+and `ctx.Timeline.Start()` in `Prepare`, and reserves up to two rows at the *top* of its own
+box, above the plot — never inside the empty upper region the trace happens to leave, which
+would make the row's own position a function of the data, a second origin in a panel whose
+whole design is one. The label name sits in the top row, the highlight name beneath it, the
+plot below both, matching the marker strip's own top-to-bottom order (label above the
+ribbon, highlight below it) so a viewer moving between a strip render and a profile render
+reads the same stack. The reservation is conditional on what is actually configured: with
+neither a `--highlight` nor a `--label`, zero rows are reserved and the plot is exactly the
+rectangle it resolved to before this feature existed, which is what keeps the frozen
+pixel-identity test green untouched. `ElevationPanel` stayed one panel type rather than
+growing a second, composite one for this — it already subdivides its own box into gutter,
+plot and label row, so a mark row is one more piece of its own chrome, not a second panel's
+content wearing its name (see `internal/panel/marks.go`, which both this panel and the
+marker strip's own `Prepare` now call for the shared geometry: widening a span to a minimum
+width, sweeping neighbours apart, clamping a name's anchor, and sizing a row's text against
+the longest name in it).
+
+### Absorbed, a fourth outcome
+
+Folding the marker strip's content into the profile creates a case the render summary did
+not have a name for: a panel — `MarkerPanel` — that is *not* placed in its own box, has
+*not* declined (`Accepts` never even asked, because the marks are visibly on screen, just
+not there), and was *not* omitted by a flag the way `--bottom-band distance` omits the
+profile. `internal/render.New`'s `keep` filter now expresses this as a third rejection,
+`MarkerPanel`-only, guarded on `profileTakesTheBand` (the exact same expression, computed
+once, that decides whether the profile is drawing at all — see the "cheaper alternative"
+trap discussion above: this could not be expressed in `MarkerPanel.Accepts`, because
+`Accepts` cannot see what `keep` is about to do, and asking it to would repeat that exact
+mistake one panel later) and on at least one highlight or label actually being configured,
+so an ordinary render with neither still reports the strip's plain decline, unchanged.
+
+`Renderer` gains a third list beside `Declined()` and `Omitted()` — `Absorbed()` — and
+`cmd`'s render summary gains a fourth heading for it. The wording matters: an absorbed panel
+is not corrected the way a false decline would be, because nothing about it was false —
+its content is genuinely on screen, just inside a different panel's box — so the summary's
+job is to say *where*, not to walk back a claim. This is a different gap than the one named
+above under "The gap the slot leaves": that one is about the `Alt` slot never asking the
+readout's own `Accepts`, and remains open; this one is about a panel excluded by `keep` for
+a reason that is neither "nothing to show" nor "a flag removed it before asking," and it is
+closed rather than merely written down, because — unlike the `Alt` case — the reason here is
+knowable inside `keep` at the moment it decides, with no extra machinery required to surface
+it.
+
+### The marker strip carries no caption — and is now the fallback presentation
+
+This section used to describe the *only* place a highlight's block or a label's tick was
+drawn. It no longer is: whenever the elevation profile is both accepted and taking the
+bottom band (see "The mark rows and the fold-in", above), the profile draws the marks
+instead, on its own distance axis, and `MarkerPanel`'s own row — always a box separate from
+the profile's, in both trees — is pruned away entirely, its neighbours growing into the
+space exactly as they would for any other declining panel, even though `MarkerPanel` itself
+never declined (`Absorbed()`, not `Declined()`; see "Absorbed, a fourth outcome", above).
+The strip described below is now what a render falls back to instead: when the activity has
+no elevation to plot at all, or when the profile still has the band but loses it to
+`--bottom-band distance` (which restores this strip as the deliberate escape hatch — see its
+own help text). Everything below is still exactly true of that box; what changed is that it
+is no longer the *only* home for a highlight's block or a label's tick, only the one this
+project falls back to.
 
 The marker strip's invariant content is the ribbon, each highlight's block and each label's
 tick. There is no heading over it: the word `MARKERS` used to be drawn there and has been

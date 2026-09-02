@@ -968,12 +968,31 @@ func TestMarkerPanel_TickClearsTheLabelNameRowAcrossEveryBoxShape(t *testing.T) 
 // the marker row's own weight or a sibling's box would still be caught.
 // See TestNoHighlightOrLabelRenderIsPixelIdenticalToBeforeThisFeature.
 //
-// This is the first change to exercise the "update deliberately" rule the
+// This was the first change to exercise the "update deliberately" rule the
 // comment above states: the elevation/distance row changed from a Row with
 // 4:1/3:1 weights to an Alt slot with none, because the two panels no longer
-// draw in the same frame (see layouts.go). The marker row's own weight is
-// untouched by that change, which is exactly what the pixel-identical test
-// below still needs to hold.
+// draw in the same frame (see layouts.go). At that point the marker row's
+// own weight was untouched, and so was the band's.
+//
+// It is NOT untouched any more, and this is the SECOND deliberate move,
+// dated to when the marker strip's own marks were folded onto the elevation
+// profile's axis (see elevation.go's "the name rows" and buildMarks): once
+// MarkerPanel's row is pruned in every case the profile is placed at all --
+// not only when neither --highlight nor --label is configured, but also
+// (by internal/render's own keep filter) when the profile is drawing the
+// configured marks itself -- the row's own weight moved onto the band
+// rather than falling upward to the panels above it. Landscape's Alt grew
+// from 1 to 2; portrait's from 2 to 3 (portrait's own total is larger, so
+// the same single vacated unit of weight is worth proportionally less
+// there -- see PortraitLayout's own comment for the number).
+//
+// The consequence stated to the user, and accepted: an ORDINARY render --
+// no highlight, no label -- deliberately gained elevation-profile height by
+// this change. That is exactly what going red here is reporting, and it is
+// the reason these two functions are updated rather than the assertion
+// weakened. What this test still guards, unchanged, is the mechanism, not
+// the specific weight: that MarkerPanel's row, whenever pruned, costs its
+// siblings nothing beyond what the band's own weight already accounts for.
 func oldLandscapeLayout() Layout {
 	return Layout{
 		Name:      "landscape",
@@ -992,7 +1011,7 @@ func oldLandscapeLayout() Layout {
 					{Panel: Cadence(), Pad: 0.01},
 				}},
 			}},
-			{Dir: Alt, Weight: 1, Children: []Slot{
+			{Dir: Alt, Weight: 2, Children: []Slot{
 				{Panel: ElevationPanel{}, Pad: 0.01},
 				{Panel: Distance(), Pad: 0.01},
 			}},
@@ -1016,7 +1035,7 @@ func oldPortraitLayout() Layout {
 				{Panel: Power(), Pad: 0.01},
 				{Panel: Cadence(), Pad: 0.01},
 			}},
-			{Dir: Alt, Weight: 2, Children: []Slot{
+			{Dir: Alt, Weight: 3, Children: []Slot{
 				{Panel: ElevationPanel{}, Pad: 0.01},
 				{Panel: Distance(), Pad: 0.01},
 			}},

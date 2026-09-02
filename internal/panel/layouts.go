@@ -123,17 +123,46 @@ func LandscapeLayout() Layout {
 					{Panel: Cadence(), Pad: 0.01},
 				}},
 			}},
-			{Dir: Alt, Weight: 1, Children: []Slot{
+			// Weight 2, not the 1 this slot carried when the profile and the
+			// standalone marker strip below were still two separate rows.
+			// Once ElevationPanel started drawing the configured highlights
+			// and labels itself (see elevation.go's "the name rows" and
+			// buildMarks), MarkerPanel's row is pruned in EVERY case the
+			// profile is placed at all -- see the comment on MarkerPanel's
+			// own row below -- so this band is the only row left doing that
+			// row's job, and it takes that row's weight rather than leaving
+			// it to fall upward to the panels above. Measured at 1920x1080:
+			// giving the row's weight to the band alone was not enough on
+			// its own to keep the profile readable once it was also
+			// carrying a highlight's and a label's own name (see
+			// elevNamePx/elevLabelNamePx in elevation.go for the other half
+			// of that fix); this weight is what recovers the "no marks"
+			// case back to roughly its pre-feature height, and the name
+			// rows' own shrink is what recovers the marked case.
+			{Dir: Alt, Weight: 2, Children: []Slot{
 				{Panel: ElevationPanel{}, Pad: 0.01},
 				{Panel: Distance(), Pad: 0.01},
 			}},
-			// MarkerPanel declines outright with neither --highlight
-			// nor --label configured (see its own Accepts), and Resolve
-			// prunes a declining leaf BEFORE dividing space among its
-			// siblings -- so this row costs an ordinary render nothing:
-			// the rows above it get exactly the boxes they would have
-			// gotten had this line never been added. See
-			// highlight_panel_test.go's pixel-identical test.
+			// MarkerPanel declines outright with neither --highlight nor
+			// --label configured (see its own Accepts), and Resolve prunes a
+			// declining leaf BEFORE dividing space among its siblings -- so
+			// this row costs an ordinary render nothing: the rows above it
+			// get exactly the boxes they would have gotten had this line
+			// never been added. See highlight_panel_test.go's pixel-identical
+			// test.
+			//
+			// It is ALSO pruned -- by internal/render's own keep filter,
+			// never by this Accepts -- whenever the band above is showing
+			// the profile and at least one highlight or label IS configured:
+			// the marks are drawn on the profile's own axis instead (see
+			// elevation.go), and this row would otherwise show the identical
+			// marks a second time. That is the ordinary case this row's
+			// weight was folded into the band's own weight above for. It
+			// still has to exist, at its own weight, for the one case it is
+			// NOT pruned: --bottom-band distance, which omits the profile
+			// and restores this row as the standalone strip -- see
+			// docs/architecture.md's "one band, two candidates" and
+			// BottomBandDistance's own doc comment.
 			{Panel: MarkerPanel{}, Weight: 1, Pad: 0.01},
 		}},
 	}
@@ -169,7 +198,20 @@ func PortraitLayout() Layout {
 			// profile became this project's own distance indicator) and for
 			// why --bottom-band needs it to be Alt rather than a shared
 			// predicate on Distance's own Accepts.
-			{Dir: Alt, Weight: 2, Children: []Slot{
+			//
+			// Weight 3, not the 2 this slot carried before MarkerPanel's row
+			// below was folded into it -- one more than LandscapeLayout's own
+			// Alt weight, because this tree's rows sum to a larger total
+			// (13, against landscape's 6) and the SAME single unit of weight
+			// the marker row vacated is worth less here proportionally; +1 is
+			// what measured out to the marker row's own vacated share in
+			// THIS tree specifically, not landscape's weight copied over.
+			// Judged on its own gate: at 1080x1920 this keeps the "no marks"
+			// case's plot comfortably tall, and a highlight-and-label render
+			// legible without the plot collapsing the way it did before this
+			// weight moved (see LandscapeLayout's own comment on the
+			// identical trade for the reasoning that applies here too).
+			{Dir: Alt, Weight: 3, Children: []Slot{
 				{Panel: ElevationPanel{}, Pad: 0.01},
 				{Panel: Distance(), Pad: 0.01},
 			}},

@@ -968,6 +968,178 @@ func TestNew_BottomBandProfileLeavesElevationToItsOwnAccepts(t *testing.T) {
 	}
 }
 
+// withoutElevation strips every sample's elevation from ctx.Track in place
+// and rebuilds ctx.Report to match, standing in for an activity that never
+// carried elevation at all (a treadmill session, an indoor ride) -- the
+// "profile absent" half of the two cases below. Mutating a fittest-built
+// track after decode, rather than reaching for a second fixture generator,
+// keeps this test on the same fixture the "profile present" case uses,
+// differing only in the one field this feature cares about.
+func withoutElevation(ctx *panel.Context) {
+	for i := range ctx.Track.Samples {
+		ctx.Track.Samples[i].HasElevation = false
+	}
+	ctx.Report = inspect.Build(ctx.Track)
+}
+
+// TestNew_MarkerPanelUnaffectedWhenTheProfileCannotTakeTheBand is the first
+// of the two tests docs/architecture.md and PLAN5.md's section E both name:
+// "the standalone strip stays exactly as it is today" has to be a checkable
+// claim, not a hope, and this is the check. It runs render.New against the
+// REAL ElevationPanel and REAL MarkerPanel -- not the markerPanel test
+// stand-in used above, because the absorption guard in New's keep filter
+// calls (panel.ElevationPanel{}).Accepts(ctx) BY NAME, and a stand-in named
+// "elevation" would never exercise that call at all.
+//
+// Table-driven over the two ways the profile can fail to take the band --
+// an activity that never carried elevation, and one that did but was
+// removed by --bottom-band distance -- because both must behave IDENTICALLY
+// from MarkerPanel's own point of view: in either case profileTakesTheBand
+// is false, the absorption branch in keep never fires, and MarkerPanel is
+// placed or declined by its own ordinary Accepts exactly as before this
+// feature existed.
+func TestNew_MarkerPanelUnaffectedWhenTheProfileCannotTakeTheBand(t *testing.T) {
+	cases := []struct {
+		name       string
+		noElev     bool
+		bottomBand string
+	}{
+		{name: "activity carries no elevation", noElev: true},
+		{name: "--bottom-band distance", bottomBand: panel.BottomBandDistance},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := buildContext(t, shortOptions(), 300, 100, 10)
+			ctx.BottomBand = c.bottomBand
+			ctx.Highlights = []panel.Highlight{{Name: "h", From: 5 * time.Second, To: 15 * time.Second}}
+			if c.noElev {
+				withoutElevation(ctx)
+			}
+
+			r, err := New(ctx, oneMarkerLayout(panel.ElevationPanel{}, panel.MarkerPanel{}), panel.DefaultTheme())
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			if got := r.Absorbed(); len(got) != 0 {
+				t.Errorf("Absorbed() = %v, want none -- the profile cannot take the band in this case", got)
+			}
+			placed := r.Placed()
+			if len(placed) != 1 || placed[0].Panel.Name() != markerPanelName {
+				names := make([]string, len(placed))
+				for i, p := range placed {
+					names[i] = p.Panel.Name()
+				}
+				t.Fatalf("Placed() = %v, want [%s] alone -- the marker panel must be placed exactly as its own Accepts says", names, markerPanelName)
+			}
+			// The sole survivor of a two-child row takes the whole row --
+			// panel/layout_test.go already proves the arithmetic generally;
+			// this pins that MarkerPanel specifically still gets it, which is
+			// the "same boxes as today" half of the claim.
+			if got, want := placed[0].Box.W, 300.0; math.Abs(got-want) > 0.001 {
+				t.Errorf("markers box width = %v, want %v -- the sole survivor of the row must take it all", got, want)
+			}
+		})
+	}
+}
+
+// TestNew_MarkerPanelAbsorbedWhenTheProfileTakesTheBand is the second of the
+// two named tests: with the profile both accepting and permitted to take the
+// band (BottomBand at its zero value) and at least one highlight configured,
+// the marker panel is reported through Absorbed(), never through Declined(),
+// and does not appear among the placed panels at all -- it has something to
+// show, and it IS on screen, just inside ElevationPanel's own box rather
+// than its own.
+func TestNew_MarkerPanelAbsorbedWhenTheProfileTakesTheBand(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 300, 100, 10)
+	// ctx.BottomBand left at its zero value (BottomBandProfile's own
+	// behaviour) on purpose: the profile must be free to take the band.
+	ctx.Highlights = []panel.Highlight{{Name: "h", From: 5 * time.Second, To: 15 * time.Second}}
+
+	r, err := New(ctx, oneMarkerLayout(panel.ElevationPanel{}, panel.MarkerPanel{}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if got := r.Absorbed(); len(got) != 1 || got[0] != markerPanelName {
+		t.Errorf("Absorbed() = %v, want [%s]", got, markerPanelName)
+	}
+	if got := r.Declined(); len(got) != 0 {
+		t.Errorf("Declined() = %v, want none -- an absorbed panel is not a decline", got)
+	}
+	for _, p := range r.Placed() {
+		if p.Panel.Name() == markerPanelName {
+			t.Error("the marker panel was placed in its own box despite being absorbed into the profile")
+		}
+	}
+}
+
+// --- QA round: the OverlappingLabels report, plumbed through New -----------
+
+// overlapReportingPanel is a stand-in Painter that implements
+// panel.LabelOverlapReporter directly, standing in for ElevationPanel's own
+// implementation without needing a real distance axis geometry to
+// reproduce a collision: New's own new code just has to type-assert for the
+// interface and aggregate what it returns, and that is what this proves,
+// independently of whether any real Painter's geometry actually collides
+// (internal/panel/elevation_test.go proves that half, on the real Painter).
+type overlapReportingPanel struct {
+	name        string
+	overlapping []int
+}
+
+func (p overlapReportingPanel) Name() string                { return p.name }
+func (p overlapReportingPanel) Accepts(*panel.Context) bool { return true }
+func (p overlapReportingPanel) Prepare(*panel.Context, panel.Box) panel.Painter {
+	return &overlapReportingPainter{overlapping: p.overlapping}
+}
+
+type overlapReportingPainter struct {
+	overlapping []int
+}
+
+func (p *overlapReportingPainter) Static(*panel.Canvas)               {}
+func (p *overlapReportingPainter) Dynamic(*panel.Canvas, panel.Frame) {}
+func (p *overlapReportingPainter) OverlappingLabels() []int           { return p.overlapping }
+
+// TestNew_OverlappingLabelsReportsWhatAPlacedPainterReturns pins the
+// mechanism itself: a placed Painter implementing panel.LabelOverlapReporter
+// has its OverlappingLabels() result surfaced through Renderer.OverlappingLabels()
+// unchanged. Before this wiring existed in New, a Painter could report
+// exactly this and the render summary would never see it -- two labels
+// visibly too close together on the elevation profile with nothing on
+// screen or in the log explaining why.
+func TestNew_OverlappingLabelsReportsWhatAPlacedPainterReturns(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 300, 100, 10)
+	r, err := New(ctx, oneMarkerLayout(
+		overlapReportingPanel{name: "reporter", overlapping: []int{2, 5}},
+	), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got := r.OverlappingLabels()
+	if len(got) != 2 || got[0] != 2 || got[1] != 5 {
+		t.Errorf("OverlappingLabels() = %v, want [2 5]", got)
+	}
+}
+
+// TestNew_OverlappingLabelsEmptyWhenNoPlacedPainterReportsThem is the
+// negative case: an ordinary placed Painter -- markerPainter, used
+// throughout this file, implements neither Static nor Dynamic in terms of
+// labels at all -- must not make OverlappingLabels() panic on the type
+// assertion or invent a report where none exists.
+func TestNew_OverlappingLabelsEmptyWhenNoPlacedPainterReportsThem(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 300, 100, 10)
+	r, err := New(ctx, oneMarkerLayout(markerPanel{name: "silent", accept: true}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := r.OverlappingLabels(); len(got) != 0 {
+		t.Errorf("OverlappingLabels() = %v, want none -- no placed painter implements LabelOverlapReporter", got)
+	}
+}
+
 // TestNew_RejectsANilPainter turns a panel bug into a message naming the panel
 // rather than a nil dereference in the middle of a render.
 func TestNew_RejectsANilPainter(t *testing.T) {

@@ -39,6 +39,13 @@ const maxGap = fitactivity.DefaultMaxGap
 // against.
 var elevationPanelName = panel.ElevationPanel{}.Name()
 
+// markerPanelName is MarkerPanel's own Name(), read the same way and for the
+// same reason: New's keep filter compares against it to decide whether the
+// marker strip is being absorbed into the elevation profile (see
+// profileTakesTheBand below), and a rename in internal/panel must not
+// silently stop that comparison from matching.
+var markerPanelName = panel.MarkerPanel{}.Name()
+
 // Renderer draws one activity through one layout.
 type Renderer struct {
 	ctx      *panel.Context
@@ -49,6 +56,14 @@ type Renderer struct {
 	painters []panel.Painter
 	declined []string
 	omitted  []string
+	absorbed []string
+
+	// overlappingLabels holds, ascending, the index into ctx.Labels of every
+	// label a placed Painter reports (via panel.LabelOverlapReporter) as
+	// still too close to a neighbour after its own bounded nudge -- today
+	// only ElevationPanel implements the interface, for its D.4 policy. See
+	// OverlappingLabels.
+	overlappingLabels []int
 
 	// marginPx is the layout's own margin, in pixels for this render's frame
 	// size: Layout.MarginPx resolved once here rather than recomputed per
@@ -98,6 +113,33 @@ type Renderer struct {
 // (see Context.BottomBand's own doc comment). Recorded separately too: see
 // omitted below and Renderer.Omitted, which the render summary reports under
 // its own heading rather than folding into Declined.
+//
+// A THIRD, independent reason removes MarkerPanel by name: once the elevation
+// profile is going to draw the configured highlights and labels as marks on
+// its own distance axis (see internal/panel/elevation.go's "the name rows"
+// and buildMarks), the standalone strip would be showing the identical
+// highlights and labels a second time, in the same frame, on a different
+// axis -- not a bug exactly, but a waste of the box MarkerPanel would
+// otherwise take and the user's own stated reason for wanting the two
+// merged. profileTakesTheBand below is the ONE expression both branches of
+// keep consult, so the profile's placement and the strip's suppression can
+// never disagree: it cannot be computed twice, once per panel, because a
+// second computation is a second chance for it to drift.
+//
+// This must NOT be expressed as MarkerPanel.Accepts calling
+// ElevationPanel{}.Accepts -- see docs/architecture.md's "the cheaper
+// alternative, and why it is a trap", which this fails identically. Accepts
+// cannot see --bottom-band distance's own removal of ElevationPanel above
+// (that happens right here, in keep, never in Accepts), so a
+// bottom-band-distance render would have the strip decline on the strength
+// of a profile that was never going to be drawn -- the highlights would
+// vanish from the frame entirely, exactly the outcome the Alt slot between
+// the profile and the distance readout was invented to prevent, one layer
+// up. Nor can it be expressed in the layout tree: see docs/architecture.md
+// for why a nested Alt whose losing branch is a Col of [Distance, Markers]
+// is arithmetically impossible -- the band's own weight would have to be two
+// different numbers depending on which case is being rendered, and a slot's
+// weight is a static property of the tree.
 func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("render: no context")
@@ -119,7 +161,16 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		return nil, fmt.Errorf("render: context has no font cache")
 	}
 
-	var declined, omitted []string
+	// profileTakesTheBand is true exactly when ElevationPanel is both going
+	// to be drawn (the same Accepts check keep runs for real below, resolved
+	// once here rather than twice) AND not removed by --bottom-band distance
+	// -- the one expression both branches of keep consult, documented on New
+	// itself for why it must be exactly one computation. Costs one extra
+	// BuildElevationModel pass over the samples, which ElevationPanel.Accepts'
+	// own doc comment already argues is nothing beside rendering a frame.
+	profileTakesTheBand := ctx.BottomBand != panel.BottomBandDistance && (panel.ElevationPanel{}).Accepts(ctx)
+
+	var declined, omitted, absorbed []string
 	keep := func(p panel.Panel) bool {
 		// Checked BEFORE Accepts, and unconditionally -- never mind whether
 		// this activity actually carries elevation. The two questions are
@@ -133,6 +184,19 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		// established, so it must never be claimed.
 		if ctx.BottomBand == panel.BottomBandDistance && p.Name() == elevationPanelName {
 			omitted = append(omitted, p.Name())
+			return false
+		}
+		// Removed for the third reason, MarkerPanel only: the elevation
+		// profile is about to draw the same highlights and labels as marks
+		// on its own axis (see New's own doc comment on profileTakesTheBand).
+		// Guarded on at least one highlight or label actually being
+		// configured -- without that guard, an ordinary render with neither
+		// would report the strip as "folded into the profile" when nothing
+		// was folded anywhere: MarkerPanel.Accepts below would have declined
+		// it regardless, and that decline (a fact about the flags) must not
+		// be relabelled as an absorption (a fact about where the marks went).
+		if p.Name() == markerPanelName && profileTakesTheBand && (len(ctx.Highlights) > 0 || len(ctx.Labels) > 0) {
+			absorbed = append(absorbed, p.Name())
 			return false
 		}
 		if p.Accepts(ctx) {
@@ -153,7 +217,7 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 
 	r := &Renderer{
 		ctx: ctx, theme: theme, faces: ctx.Fonts,
-		basePx: ctx.BasePx(), placed: placed, declined: declined, omitted: omitted,
+		basePx: ctx.BasePx(), placed: placed, declined: declined, omitted: omitted, absorbed: absorbed,
 		// The same formula Layout.Resolve itself uses to inset its working
 		// frame before dividing anything among the tree -- read through
 		// Layout.MarginPx rather than re-derived here, so the guarantee
@@ -167,6 +231,12 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 			return nil, fmt.Errorf("render: panel %q prepared a nil painter", p.Panel.Name())
 		}
 		r.painters = append(r.painters, painter)
+		// Optional capability, checked once here rather than in the frame
+		// loop: most Painters place no labels of their own and do not
+		// implement it. See panel.LabelOverlapReporter's own doc comment.
+		if lor, ok := painter.(panel.LabelOverlapReporter); ok {
+			r.overlappingLabels = append(r.overlappingLabels, lor.OverlappingLabels()...)
+		}
 	}
 
 	// Resolved once here, regardless of --highlight-style: cheap (a handful
@@ -240,6 +310,26 @@ func (r *Renderer) Declined() []string { return r.declined }
 // Context.BottomBand's doc comment for why the two lists must stay separate
 // rather than merging into one "left out" report.
 func (r *Renderer) Omitted() []string { return r.omitted }
+
+// Absorbed returns the names of panels whose own content is being drawn by a
+// DIFFERENT panel instead -- distinct from both Declined (nothing to show)
+// and Omitted (a flag removed it before Accepts was asked): an absorbed panel
+// had something to show, and it is genuinely on screen, just not in its own
+// box. Today this is MarkerPanel alone, once ElevationPanel is drawing the
+// same highlights and labels as marks on its own distance axis (see New's own
+// doc comment on profileTakesTheBand); nothing else in this project is
+// absorbed. The render summary reports this under its own heading, naming
+// WHERE the content moved to rather than correcting a false claim of
+// decline -- see cmd/render.go's writePanelSummary.
+func (r *Renderer) Absorbed() []string { return r.absorbed }
+
+// OverlappingLabels returns the index into ctx.Labels of every label a
+// placed panel reports as still too close to a neighbour after its own
+// bounded separation nudge -- see panel.LabelOverlapReporter and
+// ElevationPanel's D.4 policy in internal/panel/elevation.go. Empty when no
+// placed panel implements the interface, or when none of its labels
+// collided badly enough to matter.
+func (r *Renderer) OverlappingLabels() []int { return r.overlappingLabels }
 
 // Frame builds the per-frame state for frame i.
 //

@@ -67,6 +67,23 @@ type Painter interface {
 	Dynamic(c *Canvas, f Frame)
 }
 
+// LabelOverlapReporter is an OPTIONAL capability a Painter may implement
+// when it places --label ticks on an axis of its own, with a bounded nudge
+// to pull coincident ones apart (see ElevationPanel's D.4 policy in
+// elevation.go). OverlappingLabels reports which configured labels, by
+// index into Context.Labels, still sit too close to a neighbour once that
+// nudge has run and the bound has stopped it from going further.
+//
+// It is not part of Painter itself because most panels place no labels at
+// all and would have nothing honest to return; internal/render type-asserts
+// for it after Prepare rather than adding a no-op method every other Painter
+// would have to carry. The render summary is what turns this list into
+// words, mirroring the "not marked" line a mark with no resolvable distance
+// already gets -- see cmd/render.go's writeLabelSummary.
+type LabelOverlapReporter interface {
+	OverlappingLabels() []int
+}
+
 // NoStatic is embedded by a panel with nothing invariant to draw.
 //
 // Embedding it is a deliberate, greppable declaration that the question was
