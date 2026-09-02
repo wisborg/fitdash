@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -144,10 +145,16 @@ func TestReadout_AcceptsFollowsCoverage(t *testing.T) {
 
 // TestReadout_DrawsTheReadingAndThePlaceholder is the "did it actually draw"
 // test, and the check that absence looks different from a value.
+//
+// This uses Cadence, not HeartRate, for the "a genuine zero must look like a
+// reading" half: a cyclist coasting or a runner between strides can report a
+// real zero cadence, where HeartRate's own zero is special-cased as absence
+// (see HeartRate's doc comment) and is covered by its own tests below rather
+// than by this generic one.
 func TestReadout_DrawsTheReadingAndThePlaceholder(t *testing.T) {
 	c, img, ctx := elapsedFixture(t, 400, 300)
 	box := Box{X: 0, Y: 0, W: 400, H: 300}
-	p := HeartRate().Prepare(ctx, box)
+	p := Cadence().Prepare(ctx, box)
 
 	shot := func(f Frame) []byte {
 		c.Fill(c.Theme.Background)
@@ -157,7 +164,7 @@ func TestReadout_DrawsTheReadingAndThePlaceholder(t *testing.T) {
 		return out
 	}
 
-	live := shot(Frame{HasSample: true, Sample: fitactivity.Sample{HasHeartRate: true, HeartRate: 148}})
+	live := shot(Frame{HasSample: true, Sample: fitactivity.Sample{HasCadence: true, Cadence: 87}})
 	if inkCount(img, box, c.Theme) == 0 {
 		t.Fatal("a live reading drew nothing")
 	}
@@ -178,10 +185,13 @@ func TestReadout_DrawsTheReadingAndThePlaceholder(t *testing.T) {
 
 	// A reading that is genuinely zero must look like a READING, not like the
 	// placeholder. This is the absent-is-not-zero rule from the other side,
-	// and it is the direction a panel is most likely to get wrong.
-	zero := shot(Frame{HasSample: true, Sample: fitactivity.Sample{HasHeartRate: true, HeartRate: 0}})
+	// and it is the direction a panel is most likely to get wrong. Cadence
+	// zero is a real reading -- a coasting cyclist or a runner momentarily
+	// between strides -- unlike HeartRate's, which this project treats as
+	// "not connected yet" (see HeartRate's doc comment).
+	zero := shot(Frame{HasSample: true, Sample: fitactivity.Sample{HasCadence: true, Cadence: 0}})
 	if string(zero) == string(absent) {
-		t.Error("a heart rate of 0 renders as the placeholder; a real zero is data")
+		t.Error("a cadence of 0 renders as the placeholder; a real zero is data")
 	}
 }
 
@@ -203,6 +213,82 @@ func TestReadout_ChangesWithTheReading(t *testing.T) {
 	}
 	if string(shot(148)) != string(shot(148)) {
 		t.Error("the same reading rendered differently twice; the panel is not deterministic")
+	}
+}
+
+// TestHeartRate_ZeroIsAbsentNotAReading pins where the decision lives, the
+// same shape as TestPace_StoppedIsAbsentNotZero: the value accessor is where
+// "there is no reading here" is decided, not a formatting special case
+// downstream, so the panel's ordinary placeholder path handles it.
+//
+// A recorded zero is refused even though HasHeartRate is true -- some
+// devices write 0 for "no skin contact yet" rather than leaving the sample
+// unmarked, and this project treats that as absence. See HeartRate's doc
+// comment for why that is this panel's call and not fitactivity's.
+func TestHeartRate_ZeroIsAbsentNotAReading(t *testing.T) {
+	live := fitactivity.Sample{HasHeartRate: true, HeartRate: 148}
+	strapNotYetConnected := fitactivity.Sample{HasHeartRate: true, HeartRate: 0}
+	noReading := fitactivity.Sample{}
+
+	hr := HeartRate()
+	if _, ok := hr.value(live); !ok {
+		t.Error("a live 148 bpm resolved no reading")
+	}
+	if _, ok := hr.value(strapNotYetConnected); ok {
+		t.Error("a recorded 0 bpm resolved a reading; a live heart rate cannot be zero")
+	}
+	if _, ok := hr.value(noReading); ok {
+		t.Error("a sample with no heart rate resolved a reading")
+	}
+}
+
+// TestHeartRate_DynamicDrawsThePlaceholderForARecordedZero is the pixel-level
+// half, on a fixture shaped like the real recording that motivated the fix:
+// the strap's opening samples record 0 before it acquires, and later samples
+// carry a genuine reading. It must draw the placeholder in Theme.Absent for
+// the opening run and a real reading in Theme.Foreground once the strap
+// connects, never the reverse and never a "0 bpm" in the foreground.
+//
+// Verified load bearing by hand: reverting the value accessor to
+// `s.HasHeartRate` alone (dropping the `&& s.HeartRate != 0` guard) makes
+// this test fail, drawing "0" in Theme.Foreground for the opening samples.
+func TestHeartRate_DynamicDrawsThePlaceholderForARecordedZero(t *testing.T) {
+	c, img, ctx := elapsedFixture(t, 400, 300)
+	box := Box{X: 0, Y: 0, W: 400, H: 300}
+	p := HeartRate().Prepare(ctx, box)
+
+	// A fixture shaped like the real recording: the strap's opening samples
+	// record zero before it finds skin contact, later ones do not.
+	samples := make([]fitactivity.Sample, 0, 40)
+	for i := 0; i < 20; i++ {
+		samples = append(samples, fitactivity.Sample{HasHeartRate: true, HeartRate: 0})
+	}
+	for i := 0; i < 20; i++ {
+		samples = append(samples, fitactivity.Sample{HasHeartRate: true, HeartRate: uint8(140 + i%10)})
+	}
+
+	for i, s := range samples {
+		c.Fill(c.Theme.Background)
+		p.Dynamic(c, Frame{HasSample: true, Sample: s})
+
+		if inkCount(img, box, c.Theme) == 0 {
+			t.Fatalf("sample %d drew nothing; the box would be an unexplained hole", i)
+		}
+		if i < 20 {
+			if !containsColor(img, c.Theme.Absent) {
+				t.Errorf("sample %d (recorded 0 bpm, strap not yet connected) did not draw in Theme.Absent", i)
+			}
+			if containsColor(img, c.Theme.Foreground) {
+				t.Errorf("sample %d (recorded 0 bpm) drew in Theme.Foreground, as though 0 bpm were a live reading", i)
+			}
+		} else {
+			if !containsColor(img, c.Theme.Foreground) {
+				t.Errorf("sample %d (a genuine reading) did not draw in Theme.Foreground", i)
+			}
+			if containsColor(img, c.Theme.Absent) {
+				t.Errorf("sample %d (a genuine reading) drew in Theme.Absent, as though it were unconnected", i)
+			}
+		}
 	}
 }
 
@@ -580,6 +666,10 @@ func TestPower_AcceptsCannotBeAnsweredByTheReport(t *testing.T) {
 // TestFormatPace_DerivesMinutesPerKilometre works every expectation out from
 // the speed rather than pinning what the function returns.
 func TestFormatPace_DerivesMinutesPerKilometre(t *testing.T) {
+	// maxPaceSeconds("88:88") = 99*60+59 = 5999 s/km, so 1000/5999 m/s is the
+	// slowest speed the template can still hold, and anything even a hair
+	// under it needs a sixth character the template has no room for.
+	const boundarySpeed = 1000.0 / 5999
 	cases := []struct {
 		name  string
 		speed float64 // m/s
@@ -600,11 +690,52 @@ func TestFormatPace_DerivesMinutesPerKilometre(t *testing.T) {
 		// fast, and any figure at all would be invented.
 		{"stopped", 0, PacePlaceholder},
 		{"a negative speed cannot happen and must not divide", -1, PacePlaceholder},
+		// Exactly at the template's own ceiling: 99:59, the widest real pace
+		// "88:88" has room for.
+		{"the slowest pace the template can hold", boundarySpeed, "99:59"},
+		// A hair slower needs a sixth character ("100:0x"), which the
+		// template does not have -- this is the bug: a smoothed mean this
+		// small is a real, positive speed, and its naive reciprocal would be
+		// "859:06" or worse, six characters where five were reserved.
+		{"just too slow for the template", boundarySpeed * 0.999, PacePlaceholder},
+		// The exact speed a mostly-stationary smoothing window produces in
+		// TestSmoothSample_StationaryOpeningYieldsATinyPositiveSpeed
+		// (internal/render/smooth_test.go): nineteen stationary seconds and
+		// one at 3.0 m/s, averaged over twenty, is 0.15 m/s -- a real,
+		// positive speed whose naive reciprocal is 6667 s = 111:07, which
+		// "88:88" cannot show at all.
+		{"a smoothed near-stationary mean", 3.0 / 20, PacePlaceholder},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := FormatPace(c.speed); got != c.want {
 				t.Errorf("FormatPace(%v) = %q, want %q", c.speed, got, c.want)
+			}
+		})
+	}
+}
+
+// TestMaxPaceSeconds_DerivesFromTheTemplatesOwnShape pins the arithmetic
+// maxPaceSeconds does its work with, independent of the pace template's
+// current literal value -- so a change to the template (a wider or narrower
+// minutes column) is checked against the SAME rule rather than against a
+// number copied out of today's template by hand.
+func TestMaxPaceSeconds_DerivesFromTheTemplatesOwnShape(t *testing.T) {
+	cases := []struct {
+		template string
+		want     int
+	}{
+		// Two digits of minutes (up to 99), plus 59 seconds: 99*60+59.
+		{"88:88", 99*60 + 59},
+		// One digit of minutes (up to 9): 9*60+59 = 599.
+		{"8:88", 9*60 + 59},
+		// Three digits of minutes (up to 999): 999*60+59.
+		{"888:88", 999*60 + 59},
+	}
+	for _, c := range cases {
+		t.Run(c.template, func(t *testing.T) {
+			if got := maxPaceSeconds(c.template); got != c.want {
+				t.Errorf("maxPaceSeconds(%q) = %d, want %d", c.template, got, c.want)
 			}
 		})
 	}
@@ -631,6 +762,112 @@ func TestPace_StoppedIsAbsentNotZero(t *testing.T) {
 	}
 	if _, ok := p.value(noReading); ok {
 		t.Error("a sample with no speed resolved a pace")
+	}
+}
+
+// TestPace_SmoothedNearStationarySpeedIsAbsentNotANumber is reachable from
+// real data: 0.15 m/s is exactly what
+// TestSmoothSample_StationaryOpeningYieldsATinyPositiveSpeed
+// (internal/render/smooth_test.go) shows the render loop's own smoothing
+// produces for nineteen stationary seconds followed by one at a running
+// pace -- a real, positive speed a bare "speed > 0" guard would accept, whose
+// naive reciprocal pace is 6667 s = 111:07, six characters where the
+// template ("88:88") reserves five.
+//
+// This is the bug this fix closes, on the panel side of the fix: the value
+// accessor must treat this speed exactly like a stopped runner's zero,
+// answering "no reading" rather than handing format a number it cannot
+// print.
+//
+// Verified load bearing by hand: reverting the guard to
+// `s.HasSpeed && s.Speed > 0` (the code before this fix) makes this test
+// fail, resolving ok=true for 0.15 m/s.
+func TestPace_SmoothedNearStationarySpeedIsAbsentNotANumber(t *testing.T) {
+	smoothed := fitactivity.Sample{HasSpeed: true, Speed: 3.0 / 20}
+	p := Pace()
+	if v, ok := p.value(smoothed); ok {
+		t.Errorf("a smoothed speed of %v m/s (pace 111:07) resolved a pace of %v; "+
+			"the reciprocal cannot fit the \"88:88\" template", smoothed.Speed, v)
+	}
+}
+
+// TestPace_ValueAcceptsExactlyWhatTheTemplateCanHoldAndNothingSlower pins the
+// boundary itself, on both sides, so the guard is not merely "rejects one
+// known-bad value" but actually agrees with maxPaceSeconds/minPaceSpeed at
+// the edge.
+func TestPace_ValueAcceptsExactlyWhatTheTemplateCanHoldAndNothingSlower(t *testing.T) {
+	minSpeed := minPaceSpeed(paceTemplate)
+	p := Pace()
+
+	if _, ok := p.value(fitactivity.Sample{HasSpeed: true, Speed: minSpeed}); !ok {
+		t.Errorf("the slowest speed the template can render (%v m/s, 99:59) was rejected", minSpeed)
+	}
+	justSlower := minSpeed * 0.999
+	if _, ok := p.value(fitactivity.Sample{HasSpeed: true, Speed: justSlower}); ok {
+		t.Errorf("a speed just below the template's floor (%v m/s) resolved a pace", justSlower)
+	}
+}
+
+// TestPace_DynamicDrawsThePlaceholderNotAConfidentOverflowForASmoothedSpeed
+// is the pixel-level half: the value-accessor test above proves the
+// PRESENCE decision, this proves the DRAWING follows it -- the smoothed
+// near-stationary speed must draw in Theme.Absent, never Theme.Foreground,
+// and the drawn text must never be wider than the template it was sized
+// against.
+func TestPace_DynamicDrawsThePlaceholderNotAConfidentOverflowForASmoothedSpeed(t *testing.T) {
+	c, img, ctx := elapsedFixture(t, 400, 300)
+	box := Box{X: 0, Y: 0, W: 400, H: 300}
+	p := Pace().Prepare(ctx, box)
+
+	c.Fill(c.Theme.Background)
+	p.Dynamic(c, Frame{HasSample: true, Sample: fitactivity.Sample{HasSpeed: true, Speed: 3.0 / 20}})
+
+	if inkCount(img, box, c.Theme) == 0 {
+		t.Fatal("nothing was drawn for a smoothed near-stationary speed; the box would be an unexplained hole")
+	}
+	if !containsColor(img, c.Theme.Absent) {
+		t.Error("a smoothed near-stationary speed was not drawn in Theme.Absent; it would read as a confident measurement")
+	}
+	if containsColor(img, c.Theme.Foreground) {
+		t.Error("a smoothed near-stationary speed was drawn in Theme.Foreground, as though 111:07 min/km were a real reading")
+	}
+}
+
+// TestPace_FormattedTextNeverExceedsTheTemplateWidth pins the second
+// symptom directly: whatever FormatPace returns, across every speed the
+// value accessor can actually let through PLUS the boundary values just
+// outside that range, its rendered width must never exceed paceTemplate's
+// own rendered width. Before this fix, a speed of 0.02 m/s (a plausible
+// smoothed mean) formatted as "859:06" -- six characters -- against a
+// five-character template.
+func TestPace_FormattedTextNeverExceedsTheTemplateWidth(t *testing.T) {
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplW, _, err := faces.Measure(paceTemplate, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	minSpeed := minPaceSpeed(paceTemplate)
+	speeds := []float64{
+		0.30, // a very fast runner
+		5, 1000.0 / 324, 1.4, 1000.0 / 240,
+		minSpeed * 1.5, minSpeed, // just inside the floor, and exactly at it
+		minSpeed * 0.5, minSpeed * 0.1, 0.02, 0.001, // the overflow region
+		0, -1, // no pace at all
+	}
+	for _, speed := range speeds {
+		text := FormatPace(speed)
+		w, _, err := faces.Measure(text, 40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w > tmplW {
+			t.Errorf("FormatPace(%v) = %q measures %g but the template %q only reserves %g; it would overflow the box",
+				speed, text, w, paceTemplate, tmplW)
+		}
 	}
 }
 
@@ -874,5 +1111,182 @@ func TestDistance_CoarsensFromTheCoarsestSegmentNotTheBase(t *testing.T) {
 	}
 	if p.valueTemplate() != "888.8" {
 		t.Errorf("valueTemplate() = %q, want the one-decimal template", p.valueTemplate())
+	}
+}
+
+// distanceTrack builds a track whose Distance metric genuinely reaches
+// maxMetres, for the tests of distanceLayout's magnitude-driven half below.
+// trackWith deliberately does not do this -- its branches mark a metric
+// present or absent across every sample, not carry a real accumulating
+// value, and no other test needed one until this one.
+func distanceTrack(maxMetres float64) *fitactivity.Track {
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	return &fitactivity.Track{Samples: []fitactivity.Sample{
+		{Time: base, HasDistance: true, Distance: 0},
+		{Time: base.Add(time.Hour), HasDistance: true, Distance: maxMetres},
+	}}
+}
+
+// TestDistanceLayout_TradesADecimalForTheExtraDigitPastNinetyNineKilometres
+// works every case out from distanceLayout's own stated rule rather than
+// pinning today's numbers: the digit budget is four (from distanceTemplate,
+// "88.88"), decimals are whatever that budget has left once the integer
+// digits are spent (see distanceDecimalsFor, and the dedicated test of it
+// below), and the integer digits grow by one each time the ROUNDED reading
+// reaches the next power of ten.
+func TestDistanceLayout_TradesADecimalForTheExtraDigitPastNinetyNineKilometres(t *testing.T) {
+	cases := []struct {
+		name          string
+		maxKm         float64
+		coarse        bool
+		wantIntDigits int
+		wantDecimals  int
+	}{
+		{"no distance data at all", 0, false, 2, 2},
+		{"a marathon", 42.195, false, 2, 2},
+		{"just under the two-decimal ceiling", 99.99, false, 2, 2},
+		{"a hundred-kilometre ride", 100, false, 3, 1},
+		{"just under the one-decimal ceiling", 999.94, false, 3, 1},
+		// Rounds UP to 1000.0 at one decimal, which needs a fourth integer
+		// digit that the raw 999.96 would not, by its own magnitude, have
+		// asked for -- this is the boundary the rounded-value check exists
+		// for.
+		{"rounds across the next power of ten", 999.96, false, 4, 0},
+		{"a thousand kilometres", 1000, false, 4, 0},
+		// Past a thousand the decimal is gone entirely rather than the
+		// reserved width growing: at that scale a tenth of a kilometre is
+		// noise, and dropping it keeps four integer digits inside the same
+		// four-digit budget the template always had. The width is only
+		// threatened again beyond 99999 km, which is not an activity anyone
+		// records.
+		{"a multi-day ride", 12345.6, false, 5, 0},
+		// Compression alone reserves one extra digit over the base template,
+		// matching what this readout always did before magnitude was
+		// considered, regardless of how short the activity actually is.
+		{"a short ride, heavily compressed", 5, true, 3, 1},
+		// Magnitude already asked for at least as much as compression would;
+		// compression must not narrow it back down.
+		{"a long ride, heavily compressed", 1500, true, 4, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotInt, gotDec := distanceLayout(c.maxKm, c.coarse)
+			if gotInt != c.wantIntDigits || gotDec != c.wantDecimals {
+				t.Errorf("distanceLayout(%v, %v) = (%d, %d), want (%d, %d)",
+					c.maxKm, c.coarse, gotInt, gotDec, c.wantIntDigits, c.wantDecimals)
+			}
+		})
+	}
+}
+
+// TestDistanceDecimalsFor_IsTheDigitBudgetMinusIntegerDigits pins the general
+// rule directly, independent of any of the ladder's particular thresholds:
+// decimals is exactly the digit budget minus however many integer digits are
+// spent, floored at zero once the integer part alone reaches the budget.
+// Deriving "budget" from distanceTemplate here, the same way
+// distanceDecimalsFor itself does, is what keeps this test from silently
+// passing against a stale copy of a number that moved.
+func TestDistanceDecimalsFor_IsTheDigitBudgetMinusIntegerDigits(t *testing.T) {
+	budget := distanceDigitCount(distanceTemplate)
+	for intDigits := 0; intDigits <= budget+3; intDigits++ {
+		want := budget - intDigits
+		if want < 0 {
+			want = 0
+		}
+		if got := distanceDecimalsFor(intDigits); got != want {
+			t.Errorf("distanceDecimalsFor(%d) = %d, want %d (budget %d)", intDigits, got, want, budget)
+		}
+	}
+}
+
+// TestDistance_WidensPastNinetyNineKilometres is the integration half: an
+// activity whose REPORT says it reaches past 99.99 km must widen its
+// template rather than let the readout overflow it, on an ordinary,
+// uncompressed render where compression cannot be the explanation.
+//
+// Before this fix, the template was fixed at "88.88" regardless of the
+// activity, and formatting a hundred-kilometre reading at two decimals
+// ("100.00") drew six characters into a box reserved for five.
+func TestDistance_WidensPastNinetyNineKilometres(t *testing.T) {
+	track := distanceTrack(150_000) // a 150 km ride
+	tl, err := NewTimeline(epoch, 6*time.Hour, 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &Context{Track: track, Report: inspect.Build(track), Timeline: tl}
+	p := Distance().Prepare(ctx, Box{W: 300, H: 200}).(*readoutPainter)
+
+	if got, want := p.valueTemplate(), "888.8"; got != want {
+		t.Errorf("valueTemplate() = %q, want %q -- a 150 km activity needs a third integer digit", got, want)
+	}
+	v, ok := p.value(fitactivity.Sample{HasDistance: true, Distance: 150_000})
+	if !ok {
+		t.Fatal("no distance resolved")
+	}
+	if got, want := p.format(v), "150.0"; got != want {
+		t.Errorf("format = %q, want %q -- a real 150 km reading, not hidden behind a placeholder", got, want)
+	}
+
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplW, _, err := faces.Measure(p.valueTemplate(), 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	textW, _, err := faces.Measure(p.format(v), 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if textW > tmplW {
+		t.Errorf("%q measures %g but the template %q only reserves %g; it overflows the box",
+			p.format(v), textW, p.valueTemplate(), tmplW)
+	}
+}
+
+// TestDistance_FormattedTextNeverExceedsTheTemplateWidth follows the shape of
+// TestPace_FormattedTextNeverExceedsTheTemplateWidth: across a sweep of
+// activity sizes and render speeds, whatever distanceLayout resolves must
+// never draw past its own template's width -- and, unlike pace, must never
+// fall back to a placeholder, because a long real activity is not a stopped
+// runner and always has a genuine reading to show.
+func TestDistance_FormattedTextNeverExceedsTheTemplateWidth(t *testing.T) {
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		maxKm  float64
+		coarse bool
+	}{
+		{0, false}, {0.34, false}, {42.195, false}, {99.99, false},
+		{100, false}, {999.94, false}, {999.96, false}, {1000, false},
+		{12345.6, false}, // an implausible but not impossible multi-day track
+		{5, true}, {99.99, true}, {150, true}, {1500, true},
+	}
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("%vkm coarse=%v", c.maxKm, c.coarse), func(t *testing.T) {
+			intDigits, decimals := distanceLayout(c.maxKm, c.coarse)
+			template := distanceTemplateFor(intDigits, decimals)
+			tmplW, _, err := faces.Measure(template, 40)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			text := fmt.Sprintf("%.*f", decimals, c.maxKm)
+			textW, _, err := faces.Measure(text, 40)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if textW > tmplW {
+				t.Errorf("%q measures %g but the template %q only reserves %g; it would overflow the box",
+					text, textW, template, tmplW)
+			}
+			if text == ReadoutPlaceholder {
+				t.Errorf("a distance of %v km rendered as the placeholder; a long real activity is not a stopped runner", c.maxKm)
+			}
+		})
 	}
 }

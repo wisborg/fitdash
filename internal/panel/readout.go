@@ -47,11 +47,35 @@ type Readout struct {
 }
 
 // HeartRate reads the standard FIT heart rate field.
+//
+// A recorded zero is treated as no reading, on top of the field's own
+// presence flag -- HasHeartRate is true while a strap has not yet found skin
+// contact, and some devices write 0 for that state rather than leaving the
+// sample absent. A heart rate of zero would mean the person is dead, which is
+// never the honest reading of "not connected yet"; it is a device convention
+// for absence wearing the field's ordinary shape, and refusing it is the
+// same judgement Pace makes about a speed of zero, just answered here instead
+// of upstream.
+//
+// This is deliberately NOT fitactivity's call: that library's presence flags
+// exist to turn the FIT format's SENTINEL values into an explicit "absent",
+// and zero is not one of those sentinels -- it is a legal recorded heart
+// rate value as far as the format is concerned. Deciding that a strap's zero
+// does not count as a measurement is a domain judgement about what a human
+// heart rate can be, and that judgement belongs to the panel that draws it,
+// not to the shared decoder.
+//
+// This does NOT change what `fitdash inspect` reports for the same file: the
+// field is present (HasHeartRate is true) and its recorded minimum genuinely
+// is zero, so the report is right to say so. The two are not in
+// disagreement -- inspect answers "what did the file record", and this
+// answers "does that recording mean anything as a heart rate", which is a
+// question only a heart rate panel needs to ask.
 func HeartRate() Readout {
 	return Readout{
 		name: "heart-rate", label: "HEART RATE", unit: "bpm", metric: inspect.MetricHeartRate,
 		value: func(s fitactivity.Sample) (float64, bool) {
-			return float64(s.HeartRate), s.HasHeartRate
+			return float64(s.HeartRate), s.HasHeartRate && s.HeartRate != 0
 		},
 		format: func(v float64) string { return fmt.Sprintf("%.0f", v) },
 	}
@@ -299,13 +323,45 @@ const PacePlaceholder = "--:--"
 func Distance() Readout {
 	return Readout{
 		name: "distance", label: "DISTANCE", unit: "km", metric: inspect.MetricDistance,
-		template: "88.88",
+		template: distanceTemplate,
 		value: func(s fitactivity.Sample) (float64, bool) {
 			return s.Distance / 1000, s.HasDistance
 		},
 		format: func(v float64) string { return fmt.Sprintf("%.2f", v) },
 		bind:   bindDistancePrecision,
 	}
+}
+
+// distanceTemplate is the widest string a SHORT activity's distance draws:
+// two integer digits and two decimals, four digit places in all.
+// bindDistancePrecision trades one of those decimals for an extra integer
+// digit as a reading (or a render's own churn) demands more room, which is
+// what lets a hundred-kilometre ride grow into a box no wider than this one.
+const distanceTemplate = "88.88"
+
+// distanceDigitCount counts the digit characters in a template, ignoring the
+// point -- so distanceLayout reads distanceTemplate's own shape (its total
+// digit budget, and how many of those digits sit before the point) rather
+// than restating either as a bare number that could drift from it. Compare
+// maxPaceSeconds, which does the same for the pace template.
+func distanceDigitCount(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			n++
+		}
+	}
+	return n
+}
+
+// distanceTemplateIntDigits is how many integer-part digits template itself
+// reserves, read off the template rather than assumed.
+func distanceTemplateIntDigits(template string) int {
+	i := strings.IndexByte(template, '.')
+	if i < 0 {
+		i = len(template)
+	}
+	return distanceDigitCount(template[:i])
 }
 
 // coarseDistanceStep is how much activity a frame must cover before distance
@@ -322,23 +378,154 @@ func Distance() Readout {
 // metres, which the second decimal can still track without flickering.
 const coarseDistanceStep = 5 * time.Second
 
-// bindDistancePrecision drops distance to one decimal on a heavily compressed
-// render.
+// distanceDecimalsFor is the one place that turns an integer-digit count
+// into a decimal count: whatever the budget has left once intDigits places
+// are spent on the integer part, and never fewer than zero. distanceLayout
+// calls this every time it needs decimals rather than restating "budget minus
+// intDigits, floored at zero" itself, which is what keeps its two call sites
+// below -- the ordinary case and the coarse override -- from being two
+// hand-written rules that could quietly drift apart.
+func distanceDecimalsFor(intDigits int) int {
+	d := distanceDigitCount(distanceTemplate) - intDigits
+	if d < 0 {
+		d = 0
+	}
+	return d
+}
+
+// distanceLayout picks how many integer digits and how many decimals a
+// distance readout shows, from two pressures resolved by ONE rule rather
+// than two independent ones that could disagree:
 //
-// It changes the FORMAT and not the value, so the number is still the distance
-// at this instant -- shown to the precision the render can display, rather than
-// to a precision that only produces flicker.
+//   - maxKm, the widest reading the ACTIVITY will actually reach, known from
+//     the report before the render starts. Past 99.99 the default template
+//     ("88.88") has no room for a third integer digit, and printing one
+//     anyway ("100.00") draws six characters into a box sized for five --
+//     the same class of overflow the pace fix closed, but for distance the
+//     honest fix is to trade a decimal for the extra digit, not to hide a
+//     hundred-kilometre ride behind a placeholder the way a stopped runner
+//     hides behind PacePlaceholder. A hundred-kilometre activity is real
+//     data, not a runner standing still.
+//   - coarse, whether the render is compressed past coarseDistanceStep, where
+//     even a SHORT activity's second decimal changes every frame and is
+//     unreadable. This is not about the activity's length at all, so it sets
+//     its own floor of one extra integer digit -- matching what this readout
+//     always reserved under compression before magnitude was considered --
+//     and lets the magnitude pressure above win when the activity genuinely
+//     needs more.
+//
+// Past 1000 km the decimal goes entirely rather than the reserved width
+// growing. At that scale a tenth of a kilometre is noise, and dropping it
+// keeps four integer digits inside the SAME four-digit budget the template
+// always had, so the box never has to reserve more room than it started
+// with. The ladder is therefore two decimals below 100 km, one below 1000,
+// and none at or above it, which holds the width until 99999 km -- past any
+// activity anyone records.
+//
+// Stated as a rule rather than three thresholds, because the thresholds are
+// consequences and the rule is the thing that must stay true: the decimals
+// are whatever the digits the activity actually reaches leave room for
+// inside the budget (distanceDecimalsFor, above). Rewriting this as three
+// hand-written cases would let them drift out of step with the budget the
+// way a derivation cannot.
+//
+// The loop re-derives decimals from intDigits on every pass and checks the
+// ROUNDED reading against the new threshold, not the raw one: a reading like
+// 999.96 rounds to "1000.0" at one decimal, which needs a fourth integer
+// digit that the raw value's own three-digit magnitude would not have asked
+// for. Checking the rounded figure is what keeps the boundary itself safe.
+func distanceLayout(maxKm float64, coarse bool) (intDigits, decimals int) {
+	baseInt := distanceTemplateIntDigits(distanceTemplate)
+
+	intDigits = baseInt
+	for {
+		decimals = distanceDecimalsFor(intDigits)
+		scale := math.Pow10(decimals)
+		rounded := math.Round(maxKm*scale) / scale
+		if rounded < math.Pow10(intDigits) {
+			break
+		}
+		intDigits++
+	}
+
+	if coarse && intDigits < baseInt+1 {
+		intDigits = baseInt + 1
+		decimals = distanceDecimalsFor(intDigits)
+	}
+	return intDigits, decimals
+}
+
+// bindDistancePrecision resolves distanceLayout against this render's
+// timeline (for coarse) and this activity's own recorded maximum (for
+// magnitude), then builds the template and format that layout implies.
+//
+// It changes the FORMAT and not the value, so the number is still the
+// distance at this instant -- shown to the precision the render and the
+// activity's own scale can support, rather than a precision that either
+// flickers or overflows.
 func bindDistancePrecision(ctx *Context, r Readout) Readout {
-	if ctx.Timeline.FPS() <= 0 {
-		return r
+	coarse := false
+	if ctx.Timeline.FPS() > 0 {
+		step := time.Duration(ctx.Timeline.MaxSpeedup() / ctx.Timeline.FPS() * float64(time.Second))
+		coarse = step >= coarseDistanceStep
 	}
-	step := time.Duration(ctx.Timeline.MaxSpeedup() / ctx.Timeline.FPS() * float64(time.Second))
-	if step < coarseDistanceStep {
-		return r
+
+	maxKm := 0.0
+	if m, ok := ctx.Report.Metric(inspect.MetricDistance); ok && m.Present > 0 {
+		maxKm = m.Max / 1000
 	}
-	r.template = "888.8"
-	r.format = func(v float64) string { return fmt.Sprintf("%.1f", v) }
+
+	intDigits, decimals := distanceLayout(maxKm, coarse)
+	r.template = distanceTemplateFor(intDigits, decimals)
+	r.format = func(v float64) string { return fmt.Sprintf("%.*f", decimals, v) }
 	return r
+}
+
+// distanceTemplateFor builds the widest string a distance with this many
+// integer digits and decimals can print. No decimal point when there are no
+// decimals: "%.0f" prints none, and a template carrying one would reserve a
+// column the value never fills.
+func distanceTemplateFor(intDigits, decimals int) string {
+	t := strings.Repeat("8", intDigits)
+	if decimals > 0 {
+		t += "." + strings.Repeat("8", decimals)
+	}
+	return t
+}
+
+// paceTemplate is the widest string the pace readout ever draws: two digits
+// of minutes and two of seconds. It is the single place that shape lives --
+// the box sizing in Prepare and the speed floor below (maxPaceSeconds,
+// minPaceSpeed) both derive from this one string, so the two cannot drift
+// into disagreeing about what the panel is actually capable of printing.
+const paceTemplate = "88:88"
+
+// maxPaceSeconds is the greatest seconds-per-kilometre paceTemplate has room
+// for, read off the template's own shape rather than restated as a number of
+// its own: however many digit places sit before the colon (two, for
+// "88:88") bound the minutes at all-nines, and the seconds column -- always
+// a mod-60 remainder, so always two digits and under sixty -- adds 59. For
+// "88:88" that is 99 minutes and 59 seconds, 99*60+59 = 5999.
+func maxPaceSeconds(template string) int {
+	i := strings.IndexByte(template, ':')
+	if i <= 0 {
+		// No minutes column to read a width from -- nothing to bound, so
+		// let every positive speed through rather than refuse all of them.
+		return math.MaxInt32
+	}
+	maxMinutes := 1
+	for range template[:i] {
+		maxMinutes *= 10
+	}
+	maxMinutes--
+	return maxMinutes*60 + 59
+}
+
+// minPaceSpeed is the slowest speed, in m/s, whose pace still fits
+// paceTemplate: 1000 metres divided by the template's own ceiling. Below it
+// the reciprocal needs more minutes than the template reserves digits for.
+func minPaceSpeed(template string) float64 {
+	return 1000 / float64(maxPaceSeconds(template))
 }
 
 // Pace reads speed and shows it as time per kilometre.
@@ -354,18 +541,29 @@ func bindDistancePrecision(ctx *Context, r Readout) Readout {
 // direction, since here the reading is present and it is the DERIVED value
 // that does not exist.
 //
+// A bare "speed > 0" is not enough to catch every such case, though: the
+// render loop smooths speed over a window (see render.smoothSample), and a
+// window that is mostly a stopped runner with a handful of moving samples
+// averages to a speed that is genuinely positive -- never zero -- while
+// still being far too small for a real pace. minPaceSpeed is the floor below
+// which that reciprocal no longer fits paceTemplate, and it is applied here,
+// in the presence decision, rather than left as a formatting special case:
+// see the value closure below.
+//
 // The format matches videofx's, M:SS per kilometre, since both programs read
 // the same activities.
 func Pace() Readout {
+	minSpeed := minPaceSpeed(paceTemplate)
 	return Readout{
 		name: "pace", label: "PACE", unit: "min/km", metric: inspect.MetricSpeed,
-		template: "88:88", absent: PacePlaceholder,
+		template: paceTemplate, absent: PacePlaceholder,
 		value: func(s fitactivity.Sample) (float64, bool) {
 			// Speed itself is carried through; the reciprocal happens in
 			// format. The presence decision belongs here, which is why the
-			// zero-speed case is answered as "no reading" rather than as a
-			// formatting special case downstream.
-			return s.Speed, s.HasSpeed && s.Speed > 0
+			// zero-speed case -- and now the case of a speed too small for
+			// its pace to fit the template -- is answered as "no reading"
+			// rather than as a formatting special case downstream.
+			return s.Speed, s.HasSpeed && s.Speed >= minSpeed
 		},
 		format: FormatPace,
 	}
@@ -373,13 +571,21 @@ func Pace() Readout {
 
 // FormatPace renders a speed in m/s as M:SS per kilometre.
 //
-// A non-positive speed returns the placeholder rather than dividing by it. See
-// Pace: standing still has no pace, and any figure printed for it would be
-// invented.
+// A non-positive speed, or one slow enough that its pace would not fit
+// paceTemplate, returns the placeholder rather than printing a reciprocal
+// the template has no digits for. See Pace: standing still has no pace, and
+// neither -- for the panel's own purposes -- does a speed so close to it
+// that the figure would need six characters where "88:88" reserves five.
+// This mirrors the guard in Pace's value closure rather than replacing it:
+// value decides presence (and therefore colour), this is the belt-and-braces
+// half that keeps FormatPace itself safe for any caller.
 func FormatPace(speedMS float64) string {
 	if speedMS <= 0 {
 		return PacePlaceholder
 	}
 	totalSec := int(math.Round(1000 / speedMS))
+	if totalSec > maxPaceSeconds(paceTemplate) {
+		return PacePlaceholder
+	}
 	return fmt.Sprintf("%d:%02d", totalSec/60, totalSec%60)
 }

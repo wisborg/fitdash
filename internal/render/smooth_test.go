@@ -238,6 +238,59 @@ func TestSmoothSample_AveragesOnlyWhatIsPresent(t *testing.T) {
 	}
 }
 
+// TestSmoothSample_StationaryOpeningYieldsATinyPositiveSpeed pins the
+// precondition the pace readout's fix depends on: real smoothing, over a
+// real mostly-stationary opening, does not average down to zero. A zero
+// would already be caught by the OLD "speed > 0" guard; the bug this test
+// backs is a mean that is small and genuinely POSITIVE.
+//
+// The fixture is nineteen seconds recorded at zero speed -- a runner idling
+// at the start of a recording before setting off, an ordinary thing to
+// record -- followed by one second at a running pace. smoothSample's own
+// rule is "average only what is present" (see its doc comment), and every
+// sample here HAS a speed reading, so a twenty-second window spanning all
+// twenty samples averages all twenty: (19*0 + 1*3.0) / 20 = 0.15 m/s.
+func TestSmoothSample_StationaryOpeningYieldsATinyPositiveSpeed(t *testing.T) {
+	var samples []fitactivity.Sample
+	for i := 0; i < 19; i++ {
+		samples = append(samples, fitactivity.Sample{
+			Time:     smoothEpoch.Add(time.Duration(i) * time.Second),
+			HasSpeed: true, Speed: 0,
+		})
+	}
+	samples = append(samples, fitactivity.Sample{
+		Time:     smoothEpoch.Add(19 * time.Second),
+		HasSpeed: true, Speed: 3.0,
+	})
+	track := &fitactivity.Track{Samples: samples}
+
+	// Centred at 9.5s, half of the 20s window either side spans [-0.5s,
+	// 19.5s] -- wide enough to catch all twenty native samples, from the
+	// first stationary one to the single moving one at the end.
+	at := smoothEpoch.Add(9500 * time.Millisecond)
+	got := smoothSample(track, at, 20*time.Second, samples[0])
+	if !got.HasSpeed {
+		t.Fatal("no speed resolved from a window that contains readings")
+	}
+	if want := 3.0 / 20; math.Abs(got.Speed-want) > 1e-9 {
+		t.Fatalf("smoothed speed = %v, want %v (3.0 m/s over 20 samples, 19 of them zero)", got.Speed, want)
+	}
+	if got.Speed <= 0 {
+		t.Fatal("the fixture averaged to zero; it cannot reproduce a bug that only a genuinely positive tiny mean produces")
+	}
+
+	// The pace readout's template, "88:88", has room for at most 99 minutes
+	// and 59 seconds per kilometre (see panel.maxPaceSeconds): 1000/5999 m/s.
+	// A smoothed speed below that renders a pace the template cannot hold.
+	const minRenderablePace = 1000.0 / 5999.0
+	if got.Speed >= minRenderablePace {
+		t.Fatalf("smoothed speed %v m/s is fast enough for the pace template to hold; want less than %v to reproduce the overflow",
+			got.Speed, minRenderablePace)
+	}
+	t.Logf("nineteen stationary seconds and one at 3.0 m/s smooth to %v m/s, whose naive reciprocal pace is %.0f s/km",
+		got.Speed, 1000/got.Speed)
+}
+
 // TestSmoothSample_ZeroWindowIsIdentity pins that --smoothing off shows what
 // was recorded, byte for byte.
 func TestSmoothSample_ZeroWindowIsIdentity(t *testing.T) {
