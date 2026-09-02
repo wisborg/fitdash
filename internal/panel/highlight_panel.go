@@ -244,41 +244,22 @@ func (MarkerPanel) Prepare(ctx *Context, box Box) Painter {
 	// rule clockTemplate follows in elapsed.go. Sizing per-highlight would
 	// make the text grow and shrink as the render moved from one highlight
 	// to the next, which is exactly the jitter the rule exists to prevent.
-	if ctx.Fonts != nil {
-		var longest string
-		var longestW float64
-		for _, h := range ctx.Highlights {
-			if h.Name == "" {
-				continue
-			}
-			if w, _, err := ctx.Fonts.Measure(h.Name, p.namePx); err == nil && w > longestW {
-				longest, longestW = h.Name, w
-			}
-		}
-		if longest != "" {
-			if px, err := ctx.Fonts.FitSize(longest, box.W*0.92, p.namePx); err == nil {
-				p.namePx = px
-			}
-		}
+	// fitLongestName (marks.go) is this rule, extracted once ElevationPanel
+	// needed it a second time.
+	highlightNames := make([]string, len(ctx.Highlights))
+	for i, h := range ctx.Highlights {
+		highlightNames[i] = h.Name
 	}
+	p.namePx = fitLongestName(ctx.Fonts, highlightNames, p.namePx, box.W*0.92)
 
 	// Same template rule, applied to the label row: sized once against the
 	// longest label name across every --label, never against whichever one
 	// is active.
-	if ctx.Fonts != nil {
-		var longest string
-		var longestW float64
-		for _, l := range ctx.Labels {
-			if w, _, err := ctx.Fonts.Measure(l.Name, p.labelNamePx); err == nil && w > longestW {
-				longest, longestW = l.Name, w
-			}
-		}
-		if longest != "" {
-			if px, err := ctx.Fonts.FitSize(longest, box.W*0.92, p.labelNamePx); err == nil {
-				p.labelNamePx = px
-			}
-		}
+	labelNames := make([]string, len(ctx.Labels))
+	for i, l := range ctx.Labels {
+		labelNames[i] = l.Name
 	}
+	p.labelNamePx = fitLongestName(ctx.Fonts, labelNames, p.labelNamePx, box.W*0.92)
 
 	minBlockW := math.Max(2, p.ribbon.H*minBlockFraction)
 	p.names = make([]string, len(ctx.Highlights))
@@ -289,10 +270,7 @@ func (MarkerPanel) Prepare(ctx *Context, box Box) Painter {
 
 		x0 := p.ribbon.X + frameFraction(ctx.Timeline, h.From)*p.ribbon.W
 		x1 := p.ribbon.X + frameFraction(ctx.Timeline, h.To)*p.ribbon.W
-		if x1-x0 < minBlockW {
-			mid := (x0 + x1) / 2
-			x0, x1 = mid-minBlockW/2, mid+minBlockW/2
-		}
+		x0, x1 = widenToMinimum(x0, x1, minBlockW)
 		p.blocks[i] = Box{X: x0, Y: p.ribbon.Y, W: x1 - x0, H: p.ribbon.H}
 
 		// The name sits centred over its block, clamped so it cannot run
@@ -303,16 +281,7 @@ func (MarkerPanel) Prepare(ctx *Context, box Box) Painter {
 		anchor := (x0 + x1) / 2
 		if ctx.Fonts != nil && h.Name != "" {
 			if w, _, err := ctx.Fonts.Measure(h.Name, p.namePx); err == nil {
-				half := w / 2
-				lo, hi := box.X+inset+half, box.X+box.W-inset-half
-				switch {
-				case lo > hi:
-					anchor = p.centerX
-				case anchor < lo:
-					anchor = lo
-				case anchor > hi:
-					anchor = hi
-				}
+				anchor = clampAnchor(anchor, w/2, box.X+inset, box.X+box.W-inset, p.centerX)
 			}
 		}
 		p.anchorX[i] = anchor
@@ -323,17 +292,9 @@ func (MarkerPanel) Prepare(ctx *Context, box Box) Painter {
 	// abutting highlights read as two blocks rather than one bar. Highlights
 	// are already sorted by From (resolveHighlights' own contract), and so
 	// are the blocks derived from them, so only ADJACENT pairs can possibly
-	// touch -- a single left-to-right sweep is enough.
-	gap := p.ribbon.H * blockGapFraction
-	for i := 1; i < len(p.blocks); i++ {
-		short := gap - (p.blocks[i].X - (p.blocks[i-1].X + p.blocks[i-1].W))
-		if short <= 0 {
-			continue
-		}
-		p.blocks[i-1].W -= short / 2
-		p.blocks[i].X += short / 2
-		p.blocks[i].W -= short / 2
-	}
+	// touch -- separateSpans (marks.go) is a single left-to-right sweep,
+	// which is enough.
+	separateSpans(p.blocks, p.ribbon.H*blockGapFraction)
 
 	// Labels have no span of their own to occupy on the ribbon -- an
 	// instant, not a range -- so each gets a tick at its own resolved
@@ -360,16 +321,7 @@ func (MarkerPanel) Prepare(ctx *Context, box Box) Painter {
 		anchor := p.tickX[i]
 		if ctx.Fonts != nil {
 			if w, _, err := ctx.Fonts.Measure(l.Name, p.labelNamePx); err == nil {
-				half := w / 2
-				lo, hi := box.X+inset+half, box.X+box.W-inset-half
-				switch {
-				case lo > hi:
-					anchor = p.centerX
-				case anchor < lo:
-					anchor = lo
-				case anchor > hi:
-					anchor = hi
-				}
+				anchor = clampAnchor(anchor, w/2, box.X+inset, box.X+box.W-inset, p.centerX)
 			}
 		}
 		p.labelAnchorX[i] = anchor
