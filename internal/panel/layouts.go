@@ -114,7 +114,48 @@ func LandscapeLayout() Layout {
 			{Dir: Row, Weight: 4, Children: []Slot{
 				{Dir: Col, Weight: 3, Children: []Slot{
 					{Panel: RoutePanel{}, Weight: 3, Pad: 0.01},
-					{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+					// Elapsed time and distance are the pair on this
+					// dashboard that only ever increase across the
+					// activity -- heart rate, pace, power and cadence all
+					// fluctuate -- which is why distance sits here beside
+					// the clock rather than in the gauge column to the
+					// right, splitting the box the way this row used to
+					// before the readout moved into the bottom band (see
+					// bb11c73).
+					//
+					// The 2:1 weight is not the 3:2 split that row once
+					// used, and the change is not cosmetic: measured with
+					// the two Prepare methods actually called (synthetic
+					// boxes, no real activity involved), at 1920x1080 and
+					// at 3840x2160 the clock's own fitted digit size is
+					// IDENTICAL under both ratios -- it is bounded by the
+					// box's HEIGHT there, not its width, so giving it more
+					// width buys it nothing -- while distance's fitted
+					// value shrinks about 15% under 2:1 versus 3:2 (from
+					// matching the clock's own size at 3:2 down to roughly
+					// seven-eighths of it). Landscape and 4K therefore
+					// favour 3:2 on this measure alone. Portrait inverts
+					// it: there the ROW's total width is scarce enough
+					// that the clock template itself is width-bound under
+					// both ratios, and 3:2's wider distance share starves
+					// it -- the clock's own fitted size drops by roughly a
+					// tenth going from 2:1 to 3:2, while distance's own
+					// value, already the smaller number on a portrait
+					// frame, loses proportionally more of its share than
+					// it gains height. 2:1 is the ratio that keeps the
+					// CLOCK -- the panel this pairing exists to keep
+					// beside, and unconditionally placed where distance is
+					// not -- from shrinking in the tree where space is
+					// tightest, at a real but smaller cost to distance's
+					// own digit size in the tree where space is not.
+					// Restating the old ratio from memory would have been
+					// a guess dressed as a derivation; retuning either
+					// number again means re-running this same measurement,
+					// not eyeballing a render.
+					{Dir: Row, Weight: 2, Children: []Slot{
+						{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+						{Panel: Distance(), Weight: 1, Pad: 0.01},
+					}},
 				}},
 				{Dir: Col, Weight: 1, Children: []Slot{
 					{Panel: HeartRate(), Pad: 0.01},
@@ -181,7 +222,18 @@ func PortraitLayout() Layout {
 		FontScale: 0.05,
 		Root: Slot{Dir: Col, Children: []Slot{
 			{Panel: RoutePanel{}, Weight: 4, Pad: 0.01},
-			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+			// See LandscapeLayout's own comment beside this same pairing:
+			// elapsed time and distance are the two metrics that only ever
+			// increase, which is why distance sits beside the clock here
+			// too rather than in one of the gauge rows below, at the same
+			// 2:1 weight, measured the same way -- and it is THIS tree
+			// where 2:1 earns its keep: with the row's total width scarce,
+			// 2:1 is what keeps the clock's own template from shrinking
+			// below what 3:2 gave it here, per that same comment's numbers.
+			{Dir: Row, Weight: 2, Children: []Slot{
+				{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+				{Panel: Distance(), Weight: 1, Pad: 0.01},
+			}},
 			{Dir: Row, Weight: 2, Children: []Slot{
 				{Panel: HeartRate(), Pad: 0.01},
 				{Panel: Pace(), Pad: 0.01},

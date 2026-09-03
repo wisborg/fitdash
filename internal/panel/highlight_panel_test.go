@@ -990,7 +990,22 @@ func TestMarkerPanel_TickClearsTheLabelNameRowAcrossEveryBoxShape(t *testing.T) 
 // no highlight, no label -- deliberately gained elevation-profile height by
 // this change. That is exactly what going red here is reporting, and it is
 // the reason these two functions are updated rather than the assertion
-// weakened. What this test still guards, unchanged, is the mechanism, not
+// weakened.
+//
+// This is the THIRD deliberate move: the elapsed-time panel and the distance
+// readout are now placed side by side, splitting the clock's own box, because
+// they are the two metrics on this dashboard that only ever increase across
+// the activity -- see layouts.go's comment beside the split for the full
+// reasoning and captionOffset's own comment (panel.go) for the caption-
+// baseline fix that came with it. This move does not touch MarkerPanel's row
+// or its weight at all, so it looks unrelated to what this test guards -- but
+// "independently-written statement of the current real layout" means EVERY
+// shape change to LandscapeLayout/PortraitLayout has to be mirrored here,
+// not only the ones that touch the marker row, or this test would silently
+// start comparing two layouts that differ for a reason it was never built to
+// notice.
+//
+// What this test still guards, unchanged, is the mechanism, not
 // the specific weight: that MarkerPanel's row, whenever pruned, costs its
 // siblings nothing beyond what the band's own weight already accounts for.
 func oldLandscapeLayout() Layout {
@@ -1002,7 +1017,10 @@ func oldLandscapeLayout() Layout {
 			{Dir: Row, Weight: 4, Children: []Slot{
 				{Dir: Col, Weight: 3, Children: []Slot{
 					{Panel: RoutePanel{}, Weight: 3, Pad: 0.01},
-					{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+					{Dir: Row, Weight: 2, Children: []Slot{
+						{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+						{Panel: Distance(), Weight: 1, Pad: 0.01},
+					}},
 				}},
 				{Dir: Col, Weight: 1, Children: []Slot{
 					{Panel: HeartRate(), Pad: 0.01},
@@ -1026,7 +1044,10 @@ func oldPortraitLayout() Layout {
 		FontScale: 0.05,
 		Root: Slot{Dir: Col, Children: []Slot{
 			{Panel: RoutePanel{}, Weight: 4, Pad: 0.01},
-			{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+			{Dir: Row, Weight: 2, Children: []Slot{
+				{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
+				{Panel: Distance(), Weight: 1, Pad: 0.01},
+			}},
 			{Dir: Row, Weight: 2, Children: []Slot{
 				{Panel: HeartRate(), Pad: 0.01},
 				{Panel: Pace(), Pad: 0.01},

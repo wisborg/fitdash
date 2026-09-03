@@ -74,15 +74,32 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 	// pull the label and the sub-line away from the clock they belong to.
 	centerY := box.Y + box.H/2
 	e.clockY = centerY
-	e.labelY = centerY - unit*0.34
-	e.ruleY = centerY - unit*0.26
 	e.subY = centerY + unit*0.30
-	e.ruleH = unit * 0.012
-	if e.ruleH < 1 {
-		e.ruleH = 1
-	}
 	e.centerX = box.X + box.W/2
-	e.ruleW = box.W * 0.72
+
+	// The CAPTION alone is the exception: it is positioned off box.H, not
+	// off `unit` above, because this panel always sits beside Distance() in
+	// a Row (layouts.go) and Row siblings are guaranteed the same box
+	// HEIGHT -- never the same width, which is what `unit` collapses to
+	// the moment this panel's own box is narrower than it is tall. See
+	// captionOffset's own doc comment for the mismatch that fell out of
+	// multiplying the shared fraction by each panel's own `unit` instead.
+	//
+	// This is safe rather than merely convenient: box.H >= unit always (unit
+	// IS min(box.W, box.H)), so this can only move the caption FURTHER from
+	// centre than `unit` would have, never closer -- and TestReadout_
+	// RowsClearOneAnother's whole point is that a caption too CLOSE to the
+	// value is the failure mode, never one with room to spare. In the
+	// ordinary case this panel is placed in, box.W comfortably exceeds
+	// box.H (a clock reads wide, not tall), so unit already equals box.H and
+	// this changes nothing; it only diverges in the narrow case the pairing
+	// exists to fix.
+	e.labelY = centerY - box.H*captionOffset
+	// The rule beneath the label shares box.H the same way, and shares its
+	// own geometry with Readout's rule via captionRuleGeometry -- see that
+	// function's doc comment for why the gap and the thickness take the
+	// same basis as the caption while the width does not.
+	e.ruleY, e.ruleW, e.ruleH = captionRuleGeometry(box.H, box, e.labelY)
 	return e
 }
 

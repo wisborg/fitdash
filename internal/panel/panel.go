@@ -219,6 +219,91 @@ type Context struct {
 	BottomBand string
 }
 
+// captionOffset is how far above a panel's own centre a caption sits, as a
+// fraction of a "capUnit" each caller resolves for itself -- see
+// ElapsedPanel.Prepare and Readout.Prepare, both of which use this same
+// fraction so that a panel of either kind placed beside one of the other
+// draws its caption on the same baseline.
+//
+// It used to be two independent constants, 0.34 on ElapsedPanel and 0.30 on
+// Readout, each multiplying that panel's OWN box's unit (min(box.W,
+// box.H)), chosen when the two never sat in the same row and so never had
+// to agree. Once the clock and the distance readout became a deliberate
+// pair (layouts.go), the mismatch showed up as DISTANCE's caption sitting
+// visibly lower than ELAPSED's, and sharing only the fraction -- one
+// constant, still multiplying each panel's own box's unit -- fixed it only
+// conditionally. Row siblings are guaranteed the same box HEIGHT (the
+// layout engine only ever varies a row's X and W dividing it), so the two
+// units still agreed as long as both boxes stayed wider than that shared
+// height. Forcing LandscapeLayout onto a portrait frame -- SelectLayout's
+// own documented escape hatch for a shape the auto choice would not have
+// picked -- narrows the distance box past its own height, the unit silently
+// switches from the shared height to that panel's own narrower width, and
+// the captions separate again: the exact defect sharing the fraction alone
+// claimed to have closed.
+//
+// The premise the fix now depends on: ElapsedPanel, and the one Readout
+// that is paired with it (Distance, via its rule field), both resolve
+// their capUnit -- the quantity captionOffset actually multiplies -- as
+// box.H rather than min(box.W, box.H). Row siblings are guaranteed an
+// IDENTICAL box.H by construction (the layout engine only ever divides a
+// row's WIDTH between its children, never its height), so two panels that
+// both read it agree always, not "while both boxes stay wider than their
+// shared height". box.H is never less than min(box.W, box.H), so this can
+// only move a caption FURTHER from its panel's own centre than the old
+// basis did, never closer -- it cannot reintroduce the collision
+// TestReadout_RowsClearOneAnother guards, only widen the margin -- and it
+// equals the old basis outright in the ordinary case either panel is
+// placed in, where the box reads wider than it is tall.
+//
+// Every OTHER Readout (HeartRate, Pace, Power, Cadence) keeps capUnit at
+// min(box.W, box.H), unchanged: none of the four is placed beside anything
+// it needs to agree with, box.H there is free to grow on its own account
+// (a sibling's decline, in a Col rather than a Row, can grow a box's height
+// with its width held fixed), and TestReadout_RowsClearOneAnother is what
+// keeps their own three rows a group as that happens. Applying box.H to
+// every Readout indiscriminately was tried and reverted -- it separated
+// HeartRate's own label from its value the moment its box's height
+// exceeded its width, which is the ordinary shape a gauge-column readout
+// takes whenever a neighbouring gauge has declined. The distinction this
+// constant's callers now have to make -- "is my box's height a quantity a
+// SIBLING also has, or one that can move independently of my own width" --
+// is exactly the Row-versus-Col distinction the layout engine already
+// enforces, so it is answerable per caller rather than guessed at.
+const captionOffset = 0.30
+
+// captionRuleGeometry is the rule drawn beneath a caption already placed at
+// labelY by captionOffset: an 8% gap under the caption, a thickness of 1.2%
+// of capUnit (never below 1px) -- the SAME capUnit the caller resolved for
+// its own captionOffset (see that constant's doc comment), passed in rather
+// than recomputed, so a caller cannot use one basis for the caption and
+// another for the rule beneath it. Two rules that scaled their gap or
+// thickness off their own box's unit independently would separate by
+// exactly the amount ELAPSED's and DISTANCE's captions separated by before
+// captionOffset shared its own basis.
+//
+// width is deliberately NOT part of capUnit: it is 72% of the CALLER's own
+// box width, because a rule reads as proportional to the box it decorates,
+// not as a fixed length matching a neighbour's. ElapsedPanel's box and
+// Distance's box are a 2:1 split (see layouts.go), so their rules are
+// correspondingly different lengths by design -- only the gap beneath the
+// caption and the stroke's thickness are shared chrome.
+//
+// Both ElapsedPanel and the one Readout that draws a rule (Distance) call
+// this from Prepare rather than each restating the same three numbers,
+// which is what let the two disagree the first time distance-beside-elapsed
+// landed: the geometry was copied, not shared, related only by a comment
+// saying one mirrored the other.
+func captionRuleGeometry(capUnit float64, box Box, labelY float64) (y, w, h float64) {
+	y = labelY + capUnit*0.08
+	w = box.W * 0.72
+	h = capUnit * 0.012
+	if h < 1 {
+		h = 1
+	}
+	return y, w, h
+}
+
 // BasePx is the layout's base text size in pixels for this frame size.
 func (c *Context) BasePx() float64 {
 	unit := float64(c.Width)

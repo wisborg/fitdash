@@ -44,6 +44,12 @@ type Readout struct {
 	// Power needs it: which sensor to read is a render-wide choice, and a
 	// closure fixed at construction could not know it.
 	bind func(*Context, Readout) Readout
+
+	// rule draws a rule beneath the caption, matching ElapsedPanel's own --
+	// see Distance's doc comment for why it is the one readout that sets
+	// this. Every other Readout leaves it false and keeps its plainer,
+	// unruled chrome.
+	rule bool
 }
 
 // HeartRate reads the standard FIT heart rate field.
@@ -265,9 +271,40 @@ func (r Readout) Prepare(ctx *Context, box Box) Painter {
 	// of a Box being a rectangle a panel must fit.
 	centerY := box.Y + box.H/2
 	p.valueY = centerY
-	p.labelY = centerY - unit*0.30
 	p.unitY = centerY + unit*0.30
 	p.centerX = box.X + box.W/2
+
+	// The CAPTION alone departs from `unit`: for every OTHER Readout it stays
+	// centerY - unit*captionOffset, unchanged, because HeartRate/Pace/Power/
+	// Cadence are not placed beside anything they need to agree with, and
+	// TestReadout_RowsClearOneAnother is what keeps their three rows a group
+	// as their own box grows. r.rule is true only for Distance, the one
+	// readout layouts.go seats beside ElapsedPanel in a Row, and Row
+	// siblings are guaranteed the same box HEIGHT -- never the same width,
+	// which is what `unit` collapses to the moment this readout's own box is
+	// narrower than it is tall. See captionOffset's own doc comment for the
+	// mismatch that using `unit` here produced. box.H >= unit always, so this
+	// can only push the caption further from the value than `unit` would
+	// have, never closer, and equals `unit` outright in the ordinary case
+	// this readout is placed in, where its box is comfortably wider than it
+	// is tall.
+	capUnit := unit
+	if p.rule {
+		capUnit = box.H
+	}
+	p.labelY = centerY - capUnit*captionOffset
+
+	if p.rule {
+		// Shares its geometry with ElapsedPanel's own rule via
+		// captionRuleGeometry, so that when this readout sits beside the
+		// clock (layouts.go), the two rules read as a matched pair rather
+		// than one panel having a rule and its neighbour having none, and
+		// retuning the gap or the thickness cannot happen in only one of
+		// the two files. Each rule is still confined to its own box; see
+		// Distance's doc comment for why that is the chosen answer rather
+		// than one rule spanning both.
+		p.ruleY, p.ruleW, p.ruleH = captionRuleGeometry(capUnit, box, p.labelY)
+	}
 	return p
 }
 
@@ -281,12 +318,19 @@ type readoutPainter struct {
 	valueY  float64
 	unitY   float64
 	centerX float64
+	ruleY   float64
+	ruleW   float64
+	ruleH   float64
 }
 
-// Static draws the label and the unit, neither of which changes.
+// Static draws the label and the unit, neither of which changes, and --
+// for the readouts that opt in -- the rule beneath the caption.
 func (p *readoutPainter) Static(c *Canvas) {
 	_ = c.Text(p.label, p.centerX, p.labelY, 0.5, 0.5, p.labelPx, c.Theme.Dim)
 	_ = c.Text(p.unit, p.centerX, p.unitY, 0.5, 0.5, p.unitPx, c.Theme.Dim)
+	if p.rule {
+		c.Rect(Box{X: p.centerX - p.ruleW/2, Y: p.ruleY, W: p.ruleW, H: p.ruleH}, c.Theme.Dim)
+	}
 }
 
 // Dynamic draws the reading, or a placeholder where there is none.
@@ -320,10 +364,24 @@ const PacePlaceholder = "--:--"
 // began in metres and crossed into kilometres would leave "m" rasterized under
 // a figure that had become kilometres, and nothing would report it. "0.34 km"
 // is a slightly odd way to start a run and an honest one.
+//
+// This is the one Readout that sets rule: true. Elapsed time and distance are
+// the two metrics that only ever increase across an activity -- everything
+// else on the dashboard fluctuates -- which is why layouts.go seats this
+// readout beside ElapsedPanel rather than in the ordinary gauge column, and a
+// panel cannot reach into a sibling's box to draw a rule spanning both (Box's
+// own contract: a panel draws inside its box and never outside it, and
+// Prepare never sees a sibling to begin with). Giving this readout the same
+// rule ElapsedPanel already draws, at the same offset beneath the caption, is
+// what makes the two read as a matched pair through repetition of the same
+// chrome rather than through one continuous stroke neither panel could draw
+// alone. It costs nothing where Distance is placed alone (the bottom band's
+// fallback slot): a lone rule under a lone caption looks exactly like
+// ElapsedPanel's own, not out of place.
 func Distance() Readout {
 	return Readout{
 		name: "distance", label: "DISTANCE", unit: "km", metric: inspect.MetricDistance,
-		template: distanceTemplate,
+		template: distanceTemplate, rule: true,
 		value: func(s fitactivity.Sample) (float64, bool) {
 			return s.Distance / 1000, s.HasDistance
 		},

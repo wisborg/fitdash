@@ -676,17 +676,22 @@ func namesRejecting(names ...string) func(Panel) bool {
 // here as reconstructed area short of the frame; real overlap would show up
 // as two reconstructed boxes overlapping by more than a shared boundary.
 //
-// wantDistance pins WHICH of the bottom strip's two Alt candidates actually
-// drew, in the case that geometry alone cannot distinguish: the strip's total
-// area is identical whether the profile or the readout took it, so a
-// regression that put them back in a Row beside each other -- restoring the
-// second distance indicator this branch removed -- would satisfy every
-// geometric assertion below and still be wrong. "All present" must show the
-// elevation profile and NOT the readout (elevation is the first Alt
-// candidate and, given a real track, always accepts here); "no elevation"
-// must show the readout, since the Alt slot falls through to it. The other
-// cases follow the same rule mechanically once elevation's own presence in
-// the keep predicate is known.
+// wantDistanceCount pins WHICH of the bottom strip's two Alt candidates
+// actually drew, in the case that geometry alone cannot distinguish: the
+// strip's total area is identical whether the profile or the readout took
+// it, so a regression that put them back in a Row beside each other --
+// restoring the second distance indicator this branch removed -- would
+// satisfy every geometric assertion below and still be wrong. It is a count
+// rather than a bool because "distance" now names two leaves in both real
+// trees: the pair leaf beside ElapsedPanel (layouts.go), placed whenever
+// keep does not reject the name outright, and the bottom strip's own Alt
+// candidate. "All present" must show the elevation profile and NOT the
+// readout in the Alt slot (elevation is the first Alt candidate and, given a
+// real track, always accepts here) -- so the count is 1, from the pair leaf
+// alone. "No elevation" must show the readout there too, since the Alt slot
+// falls through to it -- so the count is 2. The other cases follow the same
+// rule mechanically once elevation's own presence in the keep predicate is
+// known.
 //
 // The last case is --bottom-band distance's own coverage at this layer:
 // render.New's keep filter for that flag is nothing more than rejecting
@@ -698,23 +703,36 @@ func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(
 	const leafPad = 0.01
 
 	cases := []struct {
-		name         string
-		keep         func(Panel) bool
-		wantDistance bool // whether the "distance" panel itself must be among placed
+		name              string
+		keep              func(Panel) bool
+		wantDistanceCount int // how many "distance" panels must be among placed
 	}{
-		{"all present", nil, false},
-		{"no GPS (indoor ride)", namesRejecting("route"), false},
-		{"no elevation, distance present", namesRejecting("elevation"), true},
+		// "distance" now names TWO leaves in both real trees, not one: the
+		// readout beside ElapsedPanel (layouts.go's elapsed/distance split,
+		// unconditional -- it is not one of the bottom strip's Alt
+		// candidates) and the readout inside the bottom strip's Alt slot
+		// (conditional on elevation losing or being absent). A keep that
+		// rejects "distance" by name removes BOTH, because Resolve cannot
+		// tell the two apart by name any more than a real activity's own
+		// Accepts could -- an activity missing the distance metric is
+		// missing it everywhere it would be read, not just in one box. Every
+		// count below is therefore "1 for the always-present pair leaf" plus
+		// "1 more if the Alt slot's own candidate is distance", unless
+		// "distance" itself is rejected, which drops straight to 0.
+		{"all present", nil, 1},
+		{"no GPS (indoor ride)", namesRejecting("route"), 1},
+		{"no elevation, distance present", namesRejecting("elevation"), 2},
 		// Elevation cannot survive without distance in reality (its own
 		// Accepts requires Carries(MetricDistance)), so an activity with
 		// no distance also has no elevation. Both are rejected explicitly
-		// here, so neither Alt candidate survives and distance is absent
+		// here, so neither Alt candidate survives, the pair leaf is also
+		// rejected by the same name, and distance is absent everywhere --
 		// exactly as it would be from a real activity with no distance.
-		{"no distance", namesRejecting("distance", "elevation"), false},
-		{"no highlights and no labels", namesRejecting("markers"), false},
-		{"no GPS + no elevation + no power (rower)", namesRejecting("route", "elevation", "power"), true},
+		{"no distance", namesRejecting("distance", "elevation"), 0},
+		{"no highlights and no labels", namesRejecting("markers"), 1},
+		{"no GPS + no elevation + no power (rower)", namesRejecting("route", "elevation", "power"), 2},
 		{"distance only, nothing else", namesRejecting(
-			"route", "heart-rate", "pace", "power", "cadence", "elevation", "markers"), true},
+			"route", "heart-rate", "pace", "power", "cadence", "elevation", "markers"), 2},
 		// --bottom-band distance is render.New's own keep filter rejecting
 		// "elevation" by name (see internal/render's elevationPanelName and
 		// its keep closure in New) -- geometrically identical to "no
@@ -728,7 +746,7 @@ func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(
 		// with no interaction: the bottom band still swaps to distance and
 		// the marker row still closes up, and neither one's rectangle
 		// leaks into the other's.
-		{"--bottom-band distance, and no highlights or labels either", namesRejecting("elevation", "markers"), true},
+		{"--bottom-band distance, and no highlights or labels either", namesRejecting("elevation", "markers"), 2},
 	}
 
 	sizes := []struct {
@@ -752,16 +770,16 @@ func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(
 						t.Fatal("nothing placed -- ElapsedPanel accepts unconditionally, so every combination here keeps at least one panel")
 					}
 
-					gotDistance := false
+					gotDistanceCount := 0
 					for _, p := range placed {
 						if p.Panel.Name() == "distance" {
-							gotDistance = true
+							gotDistanceCount++
 						}
 					}
-					if gotDistance != c.wantDistance {
-						t.Errorf("distance placed = %v, want %v -- the bottom strip's Alt slot must show exactly "+
-							"one of the elevation profile or the distance readout, never both and never neither "+
-							"when at least one candidate survives keep", gotDistance, c.wantDistance)
+					if gotDistanceCount != c.wantDistanceCount {
+						t.Errorf("distance placed %d time(s), want %d -- one is the pair leaf beside ElapsedPanel "+
+							"(present whenever keep does not reject \"distance\" by name), the other is the bottom "+
+							"strip's Alt slot showing the readout rather than the elevation profile", gotDistanceCount, c.wantDistanceCount)
 					}
 
 					// Positive, disjoint, exactly as drawn.
