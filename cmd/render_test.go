@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"image/color"
 	"io"
 	"os"
@@ -420,6 +421,240 @@ func TestResolveSpeedup_TakesEitherFlagButNotBoth(t *testing.T) {
 	}
 }
 
+// TestResolveElevationTuning_FourLevelPrecedenceAndItsSourceLabel pins both
+// halves of resolveElevationTuning's own contract: the fitactivity.ElevationOptions
+// it resolves to, AND the source label it attaches, at each of the four
+// documented precedence levels.
+//
+// The label half is the one a pixel-comparing render test cannot catch. The
+// third level (the file's own totals) and the fourth (the library default)
+// both resolve their fitactivity.ElevationOptions by calling
+// panel.DefaultElevationTuning(track) -- which internally re-checks the
+// identical track.HasElevationTotals condition the switch below already
+// branched on -- so for a GIVEN track the returned Options are always
+// whatever that one function returns, regardless of which case of the switch
+// "chose" it. Swapping elevationTuningSourceFile and elevationTuningSourceDefault
+// between those two branches would not change a single byte any render
+// produces: only the printed label would lie. Asserting the label here,
+// beside the options, is what makes that swap a test failure instead of an
+// invisible one -- see this test's own "beats-the-label" subtests below,
+// which is where a source-label swap would actually be caught.
+//
+// The gain/loss level is checked in BOTH directions -- gain alone, then loss
+// alone -- because the flags' own help text promises "either one" (an OR):
+// a guard written as "gain > 0 && loss > 0", or one copy-pasted to check
+// gain twice, would still pass a test that only ever set both fields
+// together, or only ever set gain.
+//
+// The nil-track case exercises resolveElevationTuning's own doc comment,
+// which explicitly claims a nil track "simply never matches" the file-totals
+// case rather than panicking on track.HasElevationTotals -- a claim with no
+// test of its own before this one.
+func TestResolveElevationTuning_FourLevelPrecedenceAndItsSourceLabel(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+
+	// TotalAscent/TotalDescent chosen independently of DefaultElevationTuning's
+	// own arithmetic (TargetGain = TotalAscent, TargetLoss = TotalDescent) --
+	// they are what that arithmetic is checked against below, not copied from it.
+	trackWithTotals := &fitactivity.Track{HasElevationTotals: true, TotalAscent: 120, TotalDescent: 80}
+	trackWithoutTotals := &fitactivity.Track{}
+
+	cases := []struct {
+		name       string
+		smoothing  float64
+		gain, loss float64
+		track      *fitactivity.Track
+		wantOpts   fitactivity.ElevationOptions
+		wantSource string
+	}{
+		{
+			name:       "an explicit --elevation-smoothing wins outright",
+			smoothing:  12,
+			track:      trackWithTotals,
+			wantOpts:   fitactivity.ElevationOptions{Sigma: 12},
+			wantSource: elevationTuningSourceExplicit,
+		},
+		{
+			name:      "an explicit --elevation-smoothing beats --elevation-gain/-loss too",
+			smoothing: 12, gain: 500, loss: 500,
+			track:      trackWithTotals,
+			wantOpts:   fitactivity.ElevationOptions{Sigma: 12},
+			wantSource: elevationTuningSourceExplicit,
+		},
+		{
+			// gain alone -- one direction of the documented "either one".
+			name:       "--elevation-gain alone sets the targets",
+			gain:       300,
+			track:      trackWithTotals,
+			wantOpts:   fitactivity.ElevationOptions{TargetGain: 300, TargetLoss: 0},
+			wantSource: elevationTuningSourceTargets,
+		},
+		{
+			// loss alone -- the OTHER direction. A guard checking gain twice,
+			// or an "&&" where the help text promises "either one", would
+			// pass the case above and fail only this one.
+			name:       "--elevation-loss alone sets the targets",
+			loss:       150,
+			track:      trackWithTotals,
+			wantOpts:   fitactivity.ElevationOptions{TargetGain: 0, TargetLoss: 150},
+			wantSource: elevationTuningSourceTargets,
+		},
+		{
+			name: "--elevation-gain/-loss together beat the file's own totals",
+			gain: 300, loss: 200,
+			track:      trackWithTotals,
+			wantOpts:   fitactivity.ElevationOptions{TargetGain: 300, TargetLoss: 200},
+			wantSource: elevationTuningSourceTargets,
+		},
+		{
+			// Level 3: derived independently from trackWithTotals' own fields
+			// above, not from DefaultElevationTuning's implementation.
+			name:       "the file's own totals, with no flag typed",
+			track:      trackWithTotals,
+			wantOpts:   fitactivity.ElevationOptions{TargetGain: 120, TargetLoss: 80},
+			wantSource: elevationTuningSourceFile,
+		},
+		{
+			// Level 4: the file carries no totals, so this falls all the way
+			// through to the library's own untuned default -- the zero value,
+			// since Sigma <= 0 there means "auto" to the library itself.
+			name:       "the library default when the file carries no totals",
+			track:      trackWithoutTotals,
+			wantOpts:   fitactivity.ElevationOptions{},
+			wantSource: elevationTuningSourceDefault,
+		},
+		{
+			// The function's own doc comment claims a nil track falls
+			// through to the default rather than dereferencing
+			// track.HasElevationTotals; this is that claim's only test.
+			name:       "a nil track also falls through to the default",
+			track:      nil,
+			wantOpts:   fitactivity.ElevationOptions{},
+			wantSource: elevationTuningSourceDefault,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			renderOpts = renderOptions{
+				elevationSmoothing: c.smoothing,
+				elevationGain:      c.gain,
+				elevationLoss:      c.loss,
+			}
+			gotOpts, gotSource := resolveElevationTuning(c.track)
+			if gotOpts != c.wantOpts {
+				t.Errorf("resolveElevationTuning(...) options = %+v, want %+v", gotOpts, c.wantOpts)
+			}
+			if gotSource != c.wantSource {
+				t.Errorf("resolveElevationTuning(...) source = %q, want %q", gotSource, c.wantSource)
+			}
+		})
+	}
+}
+
+// elevationSummaryTrack builds a track with enough (distance, elevation)
+// samples for fitactivity.BuildElevationModel to produce a non-empty model --
+// synthetic data with no bearing on any real recording, since only its
+// length and monotone distance matter to the tests below, not its shape.
+func elevationSummaryTrack() *fitactivity.Track {
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	samples := make([]fitactivity.Sample, 10)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{
+			Time:         start.Add(time.Duration(i) * time.Second),
+			HasDistance:  true,
+			Distance:     float64(i) * 10,
+			HasElevation: true,
+			Elevation:    float64(i),
+		}
+	}
+	return &fitactivity.Track{Samples: samples}
+}
+
+// TestWriteElevationSummary_ReportsSigmaAndSourceOrNothingAtAll pins the one
+// summary line resolveElevationTuning's own resolution feeds -- the sigma
+// BuildElevation actually used, and which of the four precedence levels
+// produced it -- and the three cases that must print NOTHING at all, the
+// same discipline writeHighlightSummary and writeLabelSummary already apply
+// to their own flags: an ordinary render without a reason to speak stays
+// silent rather than growing a line about a feature that never engaged.
+func TestWriteElevationSummary_ReportsSigmaAndSourceOrNothingAtAll(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+
+	track := elevationSummaryTrack()
+	// Sigma fixed by an explicit ElevationOptions rather than left to the
+	// library's own auto-tuning, so the expected text below is independent
+	// of whatever sigma the tuning search happens to land on.
+	m := fitactivity.BuildElevationModel(track, fitactivity.ElevationOptions{Sigma: 3})
+	if m.Empty() {
+		t.Fatal("precondition: the fixture track must produce a non-empty elevation model")
+	}
+
+	for _, source := range []string{
+		elevationTuningSourceExplicit,
+		elevationTuningSourceTargets,
+		elevationTuningSourceFile,
+		elevationTuningSourceDefault,
+	} {
+		t.Run(source, func(t *testing.T) {
+			renderOpts.quiet = false
+			var buf bytes.Buffer
+			c := &cobra.Command{}
+			c.SetErr(&buf)
+
+			writeElevationSummary(c, m, source)
+
+			want := fmt.Sprintf("elevation: smoothing sigma %.1f samples, %s\n", m.Sigma(), source)
+			if got := buf.String(); got != want {
+				t.Errorf("writeElevationSummary(source=%q) = %q, want %q", source, got, want)
+			}
+		})
+	}
+
+	t.Run("nothing under --quiet", func(t *testing.T) {
+		renderOpts.quiet = true
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetErr(&buf)
+
+		writeElevationSummary(c, m, elevationTuningSourceFile)
+
+		if got := buf.String(); got != "" {
+			t.Errorf("writeElevationSummary under --quiet printed %q, want nothing", got)
+		}
+	})
+
+	t.Run("nothing with no model", func(t *testing.T) {
+		renderOpts.quiet = false
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetErr(&buf)
+
+		writeElevationSummary(c, nil, elevationTuningSourceFile)
+
+		if got := buf.String(); got != "" {
+			t.Errorf("writeElevationSummary(nil model) printed %q, want nothing", got)
+		}
+	})
+
+	t.Run("nothing with an empty model", func(t *testing.T) {
+		renderOpts.quiet = false
+		empty := fitactivity.BuildElevationModel(&fitactivity.Track{}, fitactivity.ElevationOptions{})
+		if !empty.Empty() {
+			t.Fatal("precondition: an empty track must produce an Empty() elevation model")
+		}
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetErr(&buf)
+
+		writeElevationSummary(c, empty, elevationTuningSourceDefault)
+
+		if got := buf.String(); got != "" {
+			t.Errorf("writeElevationSummary(empty model) printed %q, want nothing", got)
+		}
+	})
+}
+
 // TestSpeedupNote_IsSilentAtRealTime keeps the summary from drawing attention
 // to a fact the two equal durations beside it already state.
 func TestSpeedupNote_IsSilentAtRealTime(t *testing.T) {
@@ -489,9 +724,19 @@ func TestBaseSpeedupNote_LabelsTheBaseOnlyWhenHighlightsExist(t *testing.T) {
 	}
 }
 
-// TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay covers two
-// review findings, both cases of a flag quietly doing something other than
-// what its help text promised.
+// TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay covers
+// several review findings, every one a case of a flag quietly doing
+// something other than what its help text promised. The three
+// --elevation-smoothing/-gain/-loss cases were added on the identical model
+// as the --crf 0 case above them -- a negative value there means "auto"
+// inside fitactivity's own ElevationOptions (see resolveElevationTuning),
+// exactly the same class of defect as 0 silently meaning "unset" for --crf --
+// but had no case of their own until now, so a copy-paste that dropped the
+// "< 0" guard on any one of the three, or wrote it against the wrong field,
+// would have passed every existing test. Zero itself is also pinned as
+// ACCEPTED, not merely left untested by omission: the flags' own help text
+// documents zero as meaning automatic, so a future change that tightened
+// the guard to "<= 0" would silently start rejecting the documented default.
 func TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay(t *testing.T) {
 	defer func(o renderOptions) { renderOpts = o }(renderOpts)
 
@@ -528,6 +773,33 @@ func TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay(t *testing.
 			// accepted or the advice is wrong.
 			name: "--crf 1 is accepted",
 			set:  func() { renderOpts.frames, renderOpts.output, renderOpts.crf = false, "", 1 },
+		},
+		{
+			// The error must name THIS flag, not merely say "negative" -- a
+			// guard copy-pasted from one of its two neighbours and left
+			// checking the wrong field would still say "negative" but about
+			// the wrong flag, and a looser assertion would not catch it.
+			name:    "--elevation-smoothing negative",
+			set:     func() { renderOpts.crf, renderOpts.elevationSmoothing = 20, -1 },
+			wantErr: "--elevation-smoothing",
+		},
+		{
+			name:    "--elevation-gain negative",
+			set:     func() { renderOpts.crf, renderOpts.elevationGain = 20, -1 },
+			wantErr: "--elevation-gain",
+		},
+		{
+			name:    "--elevation-loss negative",
+			set:     func() { renderOpts.crf, renderOpts.elevationLoss = 20, -1 },
+			wantErr: "--elevation-loss",
+		},
+		{
+			// Zero means "automatic" for all three (documented in the flags'
+			// own help text), not an error -- the fresh renderOptions every
+			// other case above already starts from, made explicit here so it
+			// is pinned rather than merely assumed.
+			name: "--elevation-smoothing/-gain/-loss at zero (automatic) is fine",
+			set:  func() { renderOpts.crf = 20 },
 		},
 	}
 	for _, c := range cases {
@@ -1252,10 +1524,17 @@ func elevationAbsorptionTestContext(t *testing.T, highlights []panel.Highlight) 
 	if err != nil {
 		t.Fatalf("NewFaceCache: %v", err)
 	}
+	// Elevation is built here, once, the same way runRender now builds it:
+	// ElevationPanel's own Accepts and Prepare read Context.Elevation rather
+	// than building a copy of the model themselves, so a Context that left
+	// this nil would make the real ElevationPanel this test places decline
+	// regardless of what the fixture's own track carries.
+	elevTuning := panel.DefaultElevationTuning(track)
 	return &panel.Context{
 		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
 		Width: 1920, Height: 1080, FontScale: 0.05, Fonts: fonts,
 		Highlights: highlights,
+		Elevation:  panel.BuildElevation(track, elevTuning),
 	}
 }
 

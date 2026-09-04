@@ -118,6 +118,39 @@ type Context struct {
 	// should be there.
 	Report inspect.Report
 
+	// Elevation is the whole-activity elevation-vs-distance model, built
+	// ONCE by whoever constructs this Context -- cmd/render.go for a real
+	// render, a test fixture for a unit test -- via BuildElevation, and only
+	// ever READ from here, never rebuilt.
+	//
+	// Before this field existed, ElevationPanel's own Accepts, its own
+	// Prepare, and internal/render's profileTakesTheBand each built an
+	// independent copy of the same model from the same track, three builds
+	// of something that is not free: a target-tuned build (see
+	// cmd's resolveElevationTuning, which resolves the target) runs up to
+	// forty full Gaussian smoothing passes hunting for the sigma that
+	// matches a known gain/loss total, measured at roughly fifty times an
+	// untuned build on a short run. Three builds a render is one thing; the
+	// climb and gradient panels this field exists to let land without
+	// raising that count to eight are the reason it could not stay three
+	// either.
+	//
+	// nil on a Context nobody populated it on -- Accepts and Prepare both
+	// treat that exactly like an empty model (nothing to plot, so the panel
+	// declines), never as licence to build one themselves: a second build
+	// site is a second place the SAME track and the SAME tuning could
+	// silently stop agreeing, which is the one failure this field exists to
+	// close off.
+	//
+	// The tuning that produced it (--elevation-smoothing / --elevation-gain
+	// and -loss / the file's own totals / the library default) is NOT kept
+	// on this Context: nothing here reads it back, and the render summary's
+	// "which of the four levels produced this" is carried separately, as a
+	// plain string threaded through cmd's own renderInputs (see
+	// resolveElevationTuning and writeElevationSummary), which is where a
+	// future consumer belongs too rather than a second, unread field here.
+	Elevation *fitactivity.ElevationModel
+
 	// Timer resolves the activity's window and its elapsed-versus-active time.
 	Timer *fitactivity.TimerModel
 

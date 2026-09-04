@@ -44,6 +44,9 @@ type renderOptions struct {
 	highlightStyle      string
 	highlightTransition time.Duration
 	labels              []string
+	elevationSmoothing  float64
+	elevationGain       float64
+	elevationLoss       float64
 }
 
 // validateRenderOptions rejects flag combinations that cannot mean what they
@@ -65,6 +68,20 @@ func validateRenderOptions() error {
 	// quality instead, with nothing reported.
 	if renderOpts.crf == 0 {
 		return fmt.Errorf("render: --crf 0 is x264's lossless, which this program's zero value already means \"unset\"; use 1 for near-lossless")
+	}
+	// A negative value in any of the three means "auto" inside fitactivity's
+	// own ElevationOptions (see resolveElevationTuning), so passing one
+	// through unchecked would silently do something other than what was
+	// typed -- the same class of defect the --crf 0 check above guards
+	// against.
+	if renderOpts.elevationSmoothing < 0 {
+		return fmt.Errorf("render: --elevation-smoothing %v is negative; 0 already means auto", renderOpts.elevationSmoothing)
+	}
+	if renderOpts.elevationGain < 0 {
+		return fmt.Errorf("render: --elevation-gain %v is negative", renderOpts.elevationGain)
+	}
+	if renderOpts.elevationLoss < 0 {
+		return fmt.Errorf("render: --elevation-loss %v is negative", renderOpts.elevationLoss)
 	}
 	return nil
 }
@@ -168,6 +185,17 @@ func bindRenderFlags(c *cobra.Command) {
 			"\"auto\" (default: prefer Stryd, fall back to native), \"stryd\" (force the footpod's developer field), or "+
 			"\"native\" (force the standard FIT power field). The two can disagree since they are different sensors, and a forced "+
 			"source that is absent shows a placeholder rather than the other sensor's number")
+	f.Float64Var(&renderOpts.elevationSmoothing, "elevation-smoothing", 0,
+		"Gaussian smoothing width (in FIT samples, ~seconds) applied to the noisy GPS/barometric elevation before the "+
+			"profile, the gain/loss bars and the gradient use it. 0 (default) = auto: tuned from --elevation-gain / "+
+			"--elevation-loss, or the FIT device's own totals, or a mild default")
+	f.Float64Var(&renderOpts.elevationGain, "elevation-gain", 0,
+		"known total elevation GAIN (metres) for the activity -- the smoothing is auto-tuned so the computed total "+
+			"matches (GPS elevation overcounts, so a known figure is the most reliable target). 0 = use the FIT's own "+
+			"total. Paired with --elevation-loss. Ignored when --elevation-smoothing is set")
+	f.Float64Var(&renderOpts.elevationLoss, "elevation-loss", 0,
+		"known total elevation LOSS (metres) for the activity; see --elevation-gain. 0 = use the FIT's own total. "+
+			"Ignored when --elevation-smoothing is set")
 	f.StringArrayVar(&renderOpts.highlights, "highlight", nil,
 		"mark a stretch of the activity for its own on-screen pace and treatment (repeatable). Comma-separated "+
 			"key=value fields: from=DURATION and to=DURATION (both required, Go duration syntax into the activity's "+
@@ -279,9 +307,15 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Resolved before Context is built, the way Report already is here, so
+	// ElevationPanel (and the panels this field exists to let land) read a
+	// model already built rather than each building their own copy of it --
+	// see panel.Context.Elevation's own doc comment.
+	elevTuning, elevSource := resolveElevationTuning(track)
 	rctx := &panel.Context{
 		Track:               track,
 		Report:              inspect.Build(track),
+		Elevation:           panel.BuildElevation(track, elevTuning),
 		Timer:               timer,
 		Timeline:            timeline,
 		Width:               w,
@@ -305,6 +339,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		track: track, tl: timeline, w: w, h: h,
 		layoutName: layout.Name, theme: theme, smoothing: smoothing,
 		highlights: highlights, labels: labels,
+		elevation: rctx.Elevation, elevationSource: elevSource,
 	}
 	if renderOpts.frames {
 		return runFrames(cmd, r, in)
@@ -344,6 +379,14 @@ type renderInputs struct {
 	smoothing  panel.Smoothing
 	highlights []panel.Highlight
 	labels     []panel.Label
+
+	// elevation and elevationSource are rctx.Elevation and
+	// resolveElevationTuning's own source string, carried here for
+	// writeElevationSummary rather than through *panel.Context itself -- see
+	// this type's own doc comment for why Context is deliberately not reused
+	// as this bundle.
+	elevation       *fitactivity.ElevationModel
+	elevationSource string
 }
 
 // runVideo encodes the whole render to a video file.
@@ -412,6 +455,57 @@ func resolveSmoothing() (panel.Smoothing, error) {
 		return panel.Smoothing{}, fmt.Errorf("render: --smoothing %v is negative", d)
 	}
 	return panel.Smoothing{Window: d}, nil
+}
+
+// elevationTuningSource* name the four levels resolveElevationTuning can
+// resolve to, in the exact wording the render summary prints (see
+// writeElevationSummary). Named constants rather than string literals
+// scattered across the switch below and the summary, so the two cannot
+// silently say different things about the same case.
+const (
+	elevationTuningSourceExplicit = "set by --elevation-smoothing"
+	elevationTuningSourceTargets  = "tuned to --elevation-gain/--elevation-loss"
+	elevationTuningSourceFile     = "tuned to the file's own totals"
+	elevationTuningSourceDefault  = "default (no totals in the file)"
+)
+
+// resolveElevationTuning is the ONE place --elevation-smoothing,
+// --elevation-gain and --elevation-loss are turned into the
+// fitactivity.ElevationOptions BuildElevation is given, in the four-level
+// precedence the flags' own help text promises. Resolving it once here,
+// rather than letting each of the elevation profile, the climb bars and the
+// gradient reach their own conclusion from the same three flags, is what
+// keeps three panels from disagreeing about the same activity's smoothing --
+// the identical argument Context.Elevation's own doc comment makes for
+// building the model once, extended here to cover the flags that choose its
+// tuning.
+//
+// 1. An explicit --elevation-smoothing wins outright; --elevation-gain and
+// --elevation-loss are ignored, matching what the library itself already
+// does once Sigma > 0 -- this just documents it rather than leaving a user
+// to discover it by trial.
+// 2. Otherwise a known --elevation-gain or --elevation-loss (either one) sets
+// the targets the smoothing is tuned to match.
+// 3. Otherwise the FIT file's own reported totals, when it carried them --
+// today's silent default, unchanged in effect, now named in the summary
+// rather than left for a user to infer from a profile that looks a
+// particular amount of smooth.
+// 4. Otherwise fitactivity's own library default (a mild, untuned sigma).
+//
+// track may be nil (a render whose Decode already failed never reaches this
+// point in practice, but the function makes no assumption of its own) --
+// case 3 simply never matches a nil track, falling through to the default.
+func resolveElevationTuning(track *fitactivity.Track) (fitactivity.ElevationOptions, string) {
+	switch {
+	case renderOpts.elevationSmoothing > 0:
+		return fitactivity.ElevationOptions{Sigma: renderOpts.elevationSmoothing}, elevationTuningSourceExplicit
+	case renderOpts.elevationGain > 0 || renderOpts.elevationLoss > 0:
+		return fitactivity.ElevationOptions{TargetGain: renderOpts.elevationGain, TargetLoss: renderOpts.elevationLoss}, elevationTuningSourceTargets
+	case track != nil && track.HasElevationTotals:
+		return panel.DefaultElevationTuning(track), elevationTuningSourceFile
+	default:
+		return panel.DefaultElevationTuning(track), elevationTuningSourceDefault
+	}
 }
 
 // resolveSpeedup turns --speedup or --video-duration into one compression
@@ -535,9 +629,29 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs)
 		baseSpeedupNote(in.tl.BaseSpeedup(), len(in.highlights) > 0), strconv.FormatFloat(in.tl.FPS(), 'f', -1, 64), in.w, in.h)
 
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
+	writeElevationSummary(cmd, in.elevation, in.elevationSource)
 	markersOnProfile := markersAbsorbedIntoProfile(r)
 	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
 	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
+}
+
+// writeElevationSummary reports the smoothing sigma BuildElevation actually
+// used and which of the four --elevation-smoothing / --elevation-gain and
+// --elevation-loss / the file's own totals / the library's default precedence
+// levels produced it (see resolveElevationTuning) -- today entirely silent,
+// so a user looking at a flatter-than-expected profile has no way to tell
+// whether that is the terrain or the tuning.
+//
+// Printed only when the activity actually carries an elevation model:
+// nothing to report on a track with no elevation, or no distance, or too few
+// samples carrying both -- the same discipline writeHighlightSummary and
+// writeLabelSummary already apply to their own flags, printing nothing at
+// all rather than a line about a feature that never engaged.
+func writeElevationSummary(cmd *cobra.Command, m *fitactivity.ElevationModel, source string) {
+	if renderOpts.quiet || m == nil || m.Empty() {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "elevation: smoothing sigma %.1f samples, %s\n", m.Sigma(), source)
 }
 
 // writePanelSummary reports the arrangement and, crucially, which panels were
@@ -1053,6 +1167,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, in renderInputs) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
+	writeElevationSummary(cmd, in.elevation, in.elevationSource)
 	// The fast visual loop is where a transition actually gets looked at
 	// (see --frame-at-video), so it gets the same base/highlight
 	// decomposition and warnings the video path prints -- otherwise the one

@@ -43,16 +43,28 @@ func hillTrack(startD, endD float64, n int) *fitactivity.Track {
 	return &fitactivity.Track{Samples: samples}
 }
 
+// elevationContext builds *Context the way cmd/render.go now does: Track,
+// Report, and Elevation populated via BuildElevation -- here, with
+// DefaultElevationTuning, the same "no flag typed" tuning every test in this
+// file exercised before Context.Elevation existed, back when Accepts and
+// Prepare built the model themselves. Centralised here so this file's tests
+// build the identical model a real render's Context would carry, rather than
+// each call site re-deriving the same tuning rule on its own.
+func elevationContext(track *fitactivity.Track) *Context {
+	return &Context{
+		Track: track, Report: inspect.Build(track),
+		Elevation: BuildElevation(track, DefaultElevationTuning(track)),
+	}
+}
+
 func elevationPainterFor(t *testing.T, track *fitactivity.Track, box Box, fw, fh int) *elevationPainter {
 	t.Helper()
 	faces, err := NewFaceCache()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := &Context{
-		Track: track, Report: inspect.Build(track),
-		Width: fw, Height: fh, FontScale: 0.05, Fonts: faces,
-	}
+	ctx := elevationContext(track)
+	ctx.Width, ctx.Height, ctx.FontScale, ctx.Fonts = fw, fh, 0.05, faces
 	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
 	if !ok {
 		t.Fatal("Prepare did not return an elevation painter")
@@ -452,7 +464,7 @@ func TestElevationPanel_AcceptsDeclinesFlatOrZeroSpanProfile(t *testing.T) {
 		{Time: base.Add(time.Second), HasDistance: true, Distance: 100, HasElevation: true, Elevation: 50},
 		{Time: base.Add(2 * time.Second), HasDistance: true, Distance: 200, HasElevation: true, Elevation: 50},
 	}}
-	if (ElevationPanel{}).Accepts(&Context{Track: flat, Report: inspect.Build(flat)}) {
+	if (ElevationPanel{}).Accepts(elevationContext(flat)) {
 		t.Error("accepted a flat profile; with the fill as the sole distance indicator it would show distance nowhere")
 	}
 
@@ -461,12 +473,12 @@ func TestElevationPanel_AcceptsDeclinesFlatOrZeroSpanProfile(t *testing.T) {
 		{Time: base.Add(time.Second), HasDistance: true, Distance: 500, HasElevation: true, Elevation: 40},
 		{Time: base.Add(2 * time.Second), HasDistance: true, Distance: 500, HasElevation: true, Elevation: 25},
 	}}
-	if (ElevationPanel{}).Accepts(&Context{Track: zeroSpan, Report: inspect.Build(zeroSpan)}) {
+	if (ElevationPanel{}).Accepts(elevationContext(zeroSpan)) {
 		t.Error("accepted a zero-distance-span profile; there is no axis to place a fill on")
 	}
 
 	ok := hillTrack(0, 1000, 50)
-	if !(ElevationPanel{}).Accepts(&Context{Track: ok, Report: inspect.Build(ok)}) {
+	if !(ElevationPanel{}).Accepts(elevationContext(ok)) {
 		t.Error("declined an ordinary hilly profile, which has both a real elevation range and a real distance span")
 	}
 }
@@ -1091,20 +1103,22 @@ func TestElevationPanel_AcceptsNeedsDistanceToo(t *testing.T) {
 		{Time: base.Add(time.Second), HasDistance: true, Distance: 3},
 	}}
 
-	// Track as well as Report: Accepts builds the elevation model to check it
-	// is not empty, which a report alone cannot tell it. See its doc comment.
-	if (ElevationPanel{}).Accepts(&Context{Track: elevOnly, Report: inspect.Build(elevOnly)}) {
+	// Track and Elevation both, via elevationContext: Accepts checks
+	// ctx.Elevation's own emptiness, which a report alone cannot tell it. See
+	// its doc comment.
+	if (ElevationPanel{}).Accepts(elevationContext(elevOnly)) {
 		t.Error("accepted elevation with no distance; there is no axis to plot against")
 	}
-	if (ElevationPanel{}).Accepts(&Context{Track: distOnly, Report: inspect.Build(distOnly)}) {
+	if (ElevationPanel{}).Accepts(elevationContext(distOnly)) {
 		t.Error("accepted distance with no elevation")
 	}
 	both := hillTrack(0, 1000, 50)
-	if !(ElevationPanel{}).Accepts(&Context{Track: both, Report: inspect.Build(both)}) {
+	if !(ElevationPanel{}).Accepts(elevationContext(both)) {
 		t.Error("declined an activity carrying both")
 	}
 	// And a context with no track at all declines rather than panicking in
-	// BuildElevationModel, which ranges over the samples without a nil check.
+	// BuildElevation, which refuses a nil track before it ever reaches
+	// fitactivity.BuildElevationModel.
 	if (ElevationPanel{}).Accepts(&Context{Report: inspect.Build(both)}) {
 		t.Error("accepted a context with no track")
 	}
@@ -1218,7 +1232,10 @@ func TestElevationPanel_DeclinesWhenTheModelWouldBeEmpty(t *testing.T) {
 		t.Fatal("precondition: the report should report both metrics present")
 	}
 
-	ctx := &Context{Track: track, Report: rep}
+	ctx := elevationContext(track)
+	if !ctx.Elevation.Empty() {
+		t.Fatal("precondition: elevation and distance land on disjoint samples, so the model should be empty")
+	}
 	if (ElevationPanel{}).Accepts(ctx) {
 		t.Error("the panel accepted an activity whose model cannot be built; " +
 			"it would take a box and draw nothing in it")
@@ -1245,7 +1262,7 @@ func TestElevationPanel_AcceptsAgreesWithWhatPrepareCanDraw(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ctx := &Context{Track: c.track, Report: inspect.Build(c.track)}
+			ctx := elevationContext(c.track)
 			if !(ElevationPanel{}).Accepts(ctx) {
 				t.Skip("declined, which is a decision this test does not second-guess")
 			}
@@ -1352,7 +1369,12 @@ func TestElevationPanel_AcceptsImpliesDistanceReadoutAccepts(t *testing.T) {
 					{Name: inspect.MetricDistance, Present: present(c.distance)},
 				},
 			}
-			ctx := &Context{Track: track, Report: rep}
+			// Elevation is built from the SAME whole track regardless of what
+			// this case's hand-built Report claims -- exactly what isolates
+			// the report-coverage relation this test checks from whether the
+			// model itself could be built, which is the point of hand-
+			// building Report rather than calling elevationContext outright.
+			ctx := &Context{Track: track, Report: rep, Elevation: BuildElevation(track, DefaultElevationTuning(track))}
 
 			elevationAccepts := (ElevationPanel{}).Accepts(ctx)
 			distanceAccepts := Distance().Accepts(ctx)
@@ -1379,7 +1401,7 @@ func TestElevationPanel_AcceptsImpliesDistanceReadoutAccepts(t *testing.T) {
 			{Time: base.Add(time.Second), HasDistance: true, Distance: 100, HasElevation: true, Elevation: 50},
 			{Time: base.Add(2 * time.Second), HasDistance: true, Distance: 200, HasElevation: true, Elevation: 50},
 		}}
-		ctx := &Context{Track: flat, Report: inspect.Build(flat)}
+		ctx := elevationContext(flat)
 
 		if (ElevationPanel{}).Accepts(ctx) {
 			t.Fatal("precondition failed: a flat profile must decline (see TestElevationPanel_AcceptsDeclinesFlatOrZeroSpanProfile)")
@@ -1546,11 +1568,10 @@ func elevMarkContext(t *testing.T, track *fitactivity.Track, highlights []Highli
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Context{
-		Track: track, Report: inspect.Build(track),
-		Width: 1200, Height: 300, FontScale: 0.05, Fonts: faces,
-		Timeline: tl, Highlights: highlights, Labels: labels,
-	}
+	ctx := elevationContext(track)
+	ctx.Width, ctx.Height, ctx.FontScale, ctx.Fonts = 1200, 300, 0.05, faces
+	ctx.Timeline, ctx.Highlights, ctx.Labels = tl, highlights, labels
+	return ctx
 }
 
 // TestElevationPanel_MarkPositionComesFromDistanceNotFromTimeFraction pins
@@ -1655,11 +1676,9 @@ func TestElevationPanel_MarkIsUnplaceableWhenAnEndpointHasNoDistance(t *testing.
 	// DefaultMaxGap of hi0 at 101s, resolvable) -- one known endpoint, one
 	// not.
 	highlights := []Highlight{{Name: "Unplaceable", From: 51 * time.Second, To: 101500 * time.Millisecond}}
-	ctx := &Context{
-		Track: track, Report: inspect.Build(track),
-		Width: 1200, Height: 300, FontScale: 0.05, Fonts: faces,
-		Timeline: tl, Highlights: highlights,
-	}
+	ctx := elevationContext(track)
+	ctx.Width, ctx.Height, ctx.FontScale, ctx.Fonts = 1200, 300, 0.05, faces
+	ctx.Timeline, ctx.Highlights = tl, highlights
 	box := Box{X: 0, Y: 0, W: 1200, H: 300}
 
 	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
@@ -2184,11 +2203,9 @@ func TestElevationPanel_UnplaceableMarkDrawsNothingEvenWhenClaimedActive(t *test
 		t.Fatal(err)
 	}
 	highlights := []Highlight{{Name: "Unplaceable", From: 51 * time.Second, To: 101500 * time.Millisecond}}
-	ctx := &Context{
-		Track: track, Report: inspect.Build(track),
-		Width: 1200, Height: 300, FontScale: 0.05, Fonts: faces,
-		Timeline: tl, Highlights: highlights,
-	}
+	ctx := elevationContext(track)
+	ctx.Width, ctx.Height, ctx.FontScale, ctx.Fonts = 1200, 300, 0.05, faces
+	ctx.Timeline, ctx.Highlights = tl, highlights
 	box := Box{X: 0, Y: 0, W: 1200, H: 300}
 
 	p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
@@ -2313,11 +2330,9 @@ func TestElevationPanel_MarkNameRowsAreLargerThanTheAxisChrome(t *testing.T) {
 				t.Fatalf("elevation panel was not placed in %s", c.name)
 			}
 
-			ctx := &Context{
-				Track: track, Report: inspect.Build(track),
-				Width: c.fw, Height: c.fh, FontScale: c.layout.FontScale, Fonts: faces,
-				Timeline: tl, Highlights: highlights, Labels: labels,
-			}
+			ctx := elevationContext(track)
+			ctx.Width, ctx.Height, ctx.FontScale, ctx.Fonts = c.fw, c.fh, c.layout.FontScale, faces
+			ctx.Timeline, ctx.Highlights, ctx.Labels = tl, highlights, labels
 			p, ok := ElevationPanel{}.Prepare(ctx, box).(*elevationPainter)
 			if !ok {
 				t.Fatal("Prepare did not return an elevation painter")
@@ -2399,5 +2414,56 @@ func TestElevationPanel_ThreeLabelsAtTheIdenticalDistanceUnderSeparateAndAreRepo
 	if !seen[1] {
 		t.Errorf("OverlappingLabels() = %v, want the middle label (index 1) included -- every "+
 			"adjacent pair's under-separation touches it", overlapping)
+	}
+}
+
+// TestGradeWindowFor_FloorAndWidening pins gradeWindowFor's two branches on
+// cases that reach each of them, per its own doc comment: the 30 m floor
+// holding for an ordinary compressed run, and a longer activity squeezed by
+// the SAME factor widening it -- so neither branch is merely decorative.
+//
+// Case one, a 5 km run compressed 480x at 30 fps over its real 1560 s
+// (26 min): one frame's stride is
+// totalDistance*maxSpeedup/(fps*activitySeconds) = 5000*480/(30*1560) =
+// 2,400,000/46,800 ~= 51.3 m, half of which, ~25.6 m, sits under the 30 m
+// floor -- the floor wins and the widening never fires.
+//
+// Case two, a 100 km ride compressed by the SAME 480x over its real
+// 14,400 s (4 h): the stride is 100000*480/(30*14400) = 48,000,000/432,000
+// ~= 111.1 m, half of which, ~55.6 m, clears the floor -- the window opens
+// to that half exactly, not merely past the floor.
+func TestGradeWindowFor_FloorAndWidening(t *testing.T) {
+	cases := []struct {
+		name                                            string
+		totalDistance, activitySeconds, maxSpeedup, fps float64
+		want                                            float64
+	}{
+		{"short run: stride's half sits under the floor", 5000, 1560, 480, 30, gradeWindowMeters},
+		{"long ride: stride's half clears the floor", 100000, 14400, 480, 30, 100000.0 * 480 / (30 * 14400) / 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := gradeWindowFor(c.totalDistance, c.activitySeconds, c.maxSpeedup, c.fps)
+			if math.Abs(got-c.want) > 1e-9 {
+				t.Errorf("gradeWindowFor(%v, %v, %v, %v) = %v, want %v",
+					c.totalDistance, c.activitySeconds, c.maxSpeedup, c.fps, got, c.want)
+			}
+		})
+	}
+}
+
+// TestGradeWindowFor_ZeroActivitySecondsOrFPSFallsBackToTheFloor pins the
+// guard against a division by zero: a caller asking for the window before
+// this render's own activity duration or frame rate is known (neither
+// should happen once Prepare has a real Timeline, but gradeWindowFor is a
+// pure function with no way to enforce that on its own) gets the plain
+// floor rather than a NaN or an infinite stride silently propagating into
+// GradeAtDistance.
+func TestGradeWindowFor_ZeroActivitySecondsOrFPSFallsBackToTheFloor(t *testing.T) {
+	if got := gradeWindowFor(100000, 0, 480, 30); got != gradeWindowMeters {
+		t.Errorf("gradeWindowFor with activitySeconds=0 = %v, want the floor %v", got, gradeWindowMeters)
+	}
+	if got := gradeWindowFor(100000, 14400, 480, 0); got != gradeWindowMeters {
+		t.Errorf("gradeWindowFor with fps=0 = %v, want the floor %v", got, gradeWindowMeters)
 	}
 }

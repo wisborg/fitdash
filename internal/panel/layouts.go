@@ -164,6 +164,69 @@ func LandscapeLayout() Layout {
 					{Panel: Cadence(), Pad: 0.01},
 				}},
 			}},
+			// climb and gradient share a strip directly above the elevation
+			// band, its own full-width row rather than folded into the Alt
+			// slot below -- see docs/architecture.md's "the placement
+			// rejected" for the two reasons a Row{Profile, Climb, Gradient}
+			// inside the band was rejected instead (--bottom-band would
+			// have to reject three more names by hand, and the Alt slot's
+			// first-survivor rule would delete distance from the render
+			// outright if the profile ever declined while these accepted).
+			//
+			// Weight 1 of this tree's total of 8 (Row 4, Strip 1, Alt 2,
+			// Marker 1) -- an EIGHTH, chosen as a fraction of the tree
+			// rather than measured against the four gauges specifically,
+			// which is the mistake this comment's own neighbour below
+			// warns about: the moment a user drops a gauge, "measured
+			// against four gauges" is stale where "an eighth of the
+			// tree" is not. See PortraitLayout's own Strip weight for why
+			// it is 2, not 1, there: the SAME fraction, not the same
+			// number, because portrait's tree sums to a larger total.
+			//
+			// Inside the strip, climb on the left and gradient on the
+			// right -- the frame's existing grammar (see the elapsed/distance
+			// pairing above, and its own comment): metrics that only ever
+			// increase sit left (clock, distance, and now gain/loss), metrics
+			// that fluctuate sit right (the gauge column, and now the current
+			// grade).
+			//
+			// An even split, and it is even because ClimbPanel's content now
+			// FILLS its box rather than occupying a fixed fraction of it.
+			//
+			// That was not always true, and the history is worth keeping because
+			// two plausible weightings were tried and both failed. While the
+			// track was a fixed fraction of the box, this panel always left the
+			// remainder empty at its own right edge -- so a BIGGER box grew that
+			// emptiness into a gulf between the two groups, and a SMALLER box
+			// shortened the gain/loss bars instead. The bar's length is the whole
+			// reading the panel exists for (see its "shared scale" section), so
+			// neither direction was acceptable, and no weight could have been:
+			// the slack was inside the panel, not in the split.
+			//
+			// With the track taking whatever width remains (see ClimbPanel's own
+			// trackW comment), the panel has no structural slack left, so the two
+			// groups sit adjacent at ANY weights and this number goes back to
+			// meaning only what it should: how much width the bars get relative
+			// to the gradient's line and reading. Even reads well at 1080p and
+			// 4K -- a gate call, not a derivation.
+			//
+			// GradientPanel's line and reading are sized off unit
+			// (min(box.W, box.H), see gradient.go's "Scaling" section), so they
+			// are bounded by the STRIP'S OWN HEIGHT rather than by however much
+			// width the row hands them. Width beyond what that template needs is
+			// daylight inside gradient's own box, and because gradient anchors
+			// its content at its own box's left edge that daylight lands at the
+			// row's outer right edge rather than between the groups.
+			//
+			// The alternative -- pushing either panel's content against its own
+			// box edge to sit nearer its neighbour -- was rejected outright: it
+			// would depend on the NEIGHBOUR's box being where it happens to sit
+			// today, which is a layout fact no panel can see, so it would break
+			// silently the next time these weights moved.
+			{Dir: Row, Weight: 1, Children: []Slot{
+				{Panel: ClimbPanel{}, Weight: 1, Pad: 0.01},
+				{Panel: GradientPanel{}, Weight: 1, Pad: 0.01},
+			}},
 			// Weight 2, not the 1 this slot carried when the profile and the
 			// standalone marker strip below were still two separate rows.
 			// Once ElevationPanel started drawing the configured highlights
@@ -251,13 +314,54 @@ func PortraitLayout() Layout {
 			// why --bottom-band needs it to be Alt rather than a shared
 			// predicate on Distance's own Accepts.
 			//
+			// climb and gradient share a strip directly above the elevation
+			// band here too, for the identical reason LandscapeLayout places
+			// it there -- see that function's own comment on the row for the
+			// two-part case against folding it into the Alt slot below
+			// instead, and for why climb sits left of gradient.
+			//
+			// Weight 2 of this tree's total of 16 (Route 4, Elapsed+Distance 2,
+			// HR+Pace 2, Power+Cadence 2, Strip 2, Alt 3, Marker 1) -- the SAME
+			// eighth LandscapeLayout's own Strip weight is of ITS total of 8,
+			// not the same NUMBER: this tree's rows sum to twice landscape's
+			// total, so the single unit of weight that is an eighth there is a
+			// sixteenth here, and 2 is what an eighth actually costs in this
+			// tree. Copying landscape's raw weight (1) into this tree would be
+			// exactly the mistake the Alt band's own weight comment below
+			// already names: the same unit of weight is worth less once the
+			// tree's own total is larger.
+			//
+			// The two children split evenly, the same as LandscapeLayout's own
+			// strip, and for the same reason: see that function's row comment for
+			// why no weight could close the gap while ClimbPanel's track was a
+			// fixed fraction of its box, and why an even split became the right
+			// answer once the track took whatever width remained instead.
+			//
+			// Worth stating that this tree agreeing with landscape is a RESULT
+			// here, not an assumption. Earlier versions of this row needed a
+			// milder ratio than landscape's, because portrait hands the strip a
+			// narrower absolute width for the identical fraction of a taller
+			// frame, so a split tuned against landscape's much wider strip
+			// crowded gradient's line and reading against its own box edges
+			// here. That pressure is gone with the slack removed -- neither
+			// panel now depends on the surplus -- and the two trees converged on
+			// their own, each judged on its own rendered frame. If a future
+			// change reintroduces a fixed-width element in either panel, expect
+			// them to diverge again, and judge portrait on a 1080x1920 frame
+			// rather than copying landscape's number across.
+			{Dir: Row, Weight: 2, Children: []Slot{
+				{Panel: ClimbPanel{}, Weight: 1, Pad: 0.01},
+				{Panel: GradientPanel{}, Weight: 1, Pad: 0.01},
+			}},
 			// Weight 3, not the 2 this slot carried before MarkerPanel's row
 			// below was folded into it -- one more than LandscapeLayout's own
 			// Alt weight, because this tree's rows sum to a larger total
-			// (13, against landscape's 6) and the SAME single unit of weight
-			// the marker row vacated is worth less here proportionally; +1 is
-			// what measured out to the marker row's own vacated share in
-			// THIS tree specifically, not landscape's weight copied over.
+			// (14, against landscape's 7, before climb joined either -- see
+			// that row's own comment above for the totals now that it has) and
+			// the SAME single unit of weight the marker row vacated is worth
+			// less here proportionally; +1 is what measured out to the marker
+			// row's own vacated share in THIS tree specifically, not
+			// landscape's weight copied over.
 			// Judged on its own gate: at 1080x1920 this keeps the "no marks"
 			// case's plot comfortably tall, and a highlight-and-label render
 			// legible without the plot collapsing the way it did before this

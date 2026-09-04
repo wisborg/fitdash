@@ -48,9 +48,18 @@ func contextFor(t testing.TB, opts fittest.Options, w, h int, fps float64) *pane
 	if err != nil {
 		t.Fatalf("NewTimelineForActivity: %v", err)
 	}
+	// Elevation is built here, once, the same way cmd/render.go now builds it
+	// for a real render -- with no --elevation-smoothing/-gain/-loss typed, the
+	// "auto" tuning panel.DefaultElevationTuning derives from the track's own
+	// totals. ElevationPanel's Accepts and Prepare read this field rather than
+	// building their own copy (see internal/panel/elevation.go), so a fixture
+	// that left it nil would make every test below see an activity with no
+	// elevation model regardless of what the fixture's own track carries.
+	elevTuning := panel.DefaultElevationTuning(track)
 	return &panel.Context{
 		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
 		Width: w, Height: h, FontScale: 0.05, Fonts: mustFaces(t),
+		Elevation: panel.BuildElevation(track, elevTuning),
 	}
 }
 
@@ -192,6 +201,118 @@ func countDiff(a, b *image.RGBA) int {
 		}
 	}
 	return n
+}
+
+// stripElevationEdges clears HasElevation on ctx.Track.Samples[0:first] and
+// ctx.Track.Samples[len-last:], leaving distance untouched, and rebuilds
+// ctx.Report and ctx.Elevation to match -- the same rebuild withoutElevation
+// (below) performs for "no elevation at all", narrowed to the two edges so
+// the model gains a real PRE-DATA region at the start (elevation.go's own
+// term: distance recorded, elevation not, because BuildElevationModel keeps
+// only samples carrying both) and a real stretch PAST the model's own axis
+// end at the finish, rather than losing the model outright.
+func stripElevationEdges(ctx *panel.Context, first, last int) {
+	for i := 0; i < first; i++ {
+		ctx.Track.Samples[i].HasElevation = false
+	}
+	for i := len(ctx.Track.Samples) - last; i < len(ctx.Track.Samples); i++ {
+		ctx.Track.Samples[i].HasElevation = false
+	}
+	ctx.Report = inspect.Build(ctx.Track)
+	ctx.Elevation = panel.BuildElevation(ctx.Track, panel.DefaultElevationTuning(ctx.Track))
+}
+
+// firstFrameIndex returns the index of the first frame (0..r.Frames()-1)
+// carrying a sample for which pred is true, and false when none does --
+// callers treat that as a broken test fixture (see its own precondition
+// checks), never as licence to guess an index instead.
+func firstFrameIndex(r *Renderer, pred func(fitactivity.Sample) bool) (int, bool) {
+	for i := 0; i < r.Frames(); i++ {
+		f := r.Frame(i)
+		if f.HasSample && pred(f.Sample) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// TestRenderer_StaticPlusDynamicEqualsRenderExactly_RealLayout closes a gap
+// the test above leaves open: that test's own panels are markerPainter, a
+// test double resolved against a synthetic one-row Layout, so ElevationPanel,
+// ClimbPanel and GradientPanel -- the three panels whose own doc comments
+// (see elevation.go's Dynamic, climb.go's Dynamic, gradient.go's "no easing"
+// section) forbid caching a value across frames PRECISELY because this
+// equality test is supposed to catch it -- were never actually resolved by
+// either test in this file. A per-frame cache smuggled into any of the three
+// would have sailed through both untouched.
+//
+// This resolves a REAL layout (panel.LandscapeLayout) over a REAL Context
+// carrying a real elevation model, so all three panels sit in the tree this
+// asserts against, and picks frame indices that visit every branch their own
+// absence policy has to answer honestly rather than from a cache: the very
+// first frame, one still inside the pre-data region, the midpoint, one past
+// the elevation model's own axis end (the "known, honestly" case past
+// TotalDistance -- see elevation.go's Dynamic doc comment), and the very
+// last frame. docs/architecture.md's "equality test" section names this case
+// explicitly; keep the two in sync if either changes.
+func TestRenderer_StaticPlusDynamicEqualsRenderExactly_RealLayout(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 640, 360, 10)
+	// 3 of 60 samples at each edge: enough width, in this synthetic
+	// constant-pace track, for the pre-data and past-axis-end regions to
+	// span several frames rather than a single one this test could not
+	// reliably land a frame inside of.
+	const stripFirst, stripLast = 3, 3
+	stripElevationEdges(ctx, stripFirst, stripLast)
+	if ctx.Elevation == nil || ctx.Elevation.Empty() {
+		t.Fatal("precondition: the fixture must still carry an elevation model after stripping only its edges")
+	}
+	profileStart, axisEnd := ctx.Elevation.StartDistance(), ctx.Elevation.TotalDistance()
+	if profileStart <= 0 {
+		t.Fatalf("precondition: profileStart = %v, want > 0 (a real pre-data region)", profileStart)
+	}
+
+	r, err := New(ctx, panel.LandscapeLayout(), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	preDataIdx, ok := firstFrameIndex(r, func(s fitactivity.Sample) bool {
+		return s.HasDistance && s.Distance > 0 && s.Distance < profileStart
+	})
+	if !ok {
+		t.Fatal("precondition: no frame found inside the pre-data region")
+	}
+	pastEndIdx, ok := firstFrameIndex(r, func(s fitactivity.Sample) bool {
+		return s.HasDistance && s.Distance > axisEnd
+	})
+	if !ok {
+		t.Fatal("precondition: no frame found past the elevation model's own axis end")
+	}
+
+	base := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+	if err := r.RenderStatic(base); err != nil {
+		t.Fatalf("RenderStatic: %v", err)
+	}
+
+	for _, i := range []int{0, preDataIdx, r.Frames() / 2, pastEndIdx, r.Frames() - 1} {
+		f := r.Frame(i)
+
+		whole := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.Render(whole, f); err != nil {
+			t.Fatalf("Render(%d): %v", i, err)
+		}
+
+		split := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		copy(split.Pix, base.Pix)
+		if err := r.RenderDynamic(split, f); err != nil {
+			t.Fatalf("RenderDynamic(%d): %v", i, err)
+		}
+
+		if !bytes.Equal(whole.Pix, split.Pix) {
+			t.Errorf("frame %d: the one-shot and static+dynamic paths differ in %d pixels under the real landscape layout",
+				i, countDiff(whole, split))
+		}
+	}
 }
 
 // buildHighlightContext is buildContext with one highlight configured and
@@ -969,17 +1090,26 @@ func TestNew_BottomBandProfileLeavesElevationToItsOwnAccepts(t *testing.T) {
 }
 
 // withoutElevation strips every sample's elevation from ctx.Track in place
-// and rebuilds ctx.Report to match, standing in for an activity that never
-// carried elevation at all (a treadmill session, an indoor ride) -- the
-// "profile absent" half of the two cases below. Mutating a fittest-built
-// track after decode, rather than reaching for a second fixture generator,
-// keeps this test on the same fixture the "profile present" case uses,
-// differing only in the one field this feature cares about.
+// and rebuilds ctx.Report AND ctx.Elevation to match, standing in for an
+// activity that never carried elevation at all (a treadmill session, an
+// indoor ride) -- the "profile absent" half of the two cases below. Mutating
+// a fittest-built track after decode, rather than reaching for a second
+// fixture generator, keeps this test on the same fixture the "profile
+// present" case uses, differing only in the one field this feature cares
+// about.
+//
+// Rebuilding ctx.Elevation here is not optional now that ElevationPanel reads
+// it rather than building its own copy: contextFor already built one from
+// the ORIGINAL track, before this mutation ran, and a Context carrying that
+// stale, still-populated model would leave Accepts seeing an activity that
+// carries elevation regardless of what this function just stripped from
+// ctx.Track.
 func withoutElevation(ctx *panel.Context) {
 	for i := range ctx.Track.Samples {
 		ctx.Track.Samples[i].HasElevation = false
 	}
 	ctx.Report = inspect.Build(ctx.Track)
+	ctx.Elevation = panel.BuildElevation(ctx.Track, panel.DefaultElevationTuning(ctx.Track))
 }
 
 // TestNew_MarkerPanelUnaffectedWhenTheProfileCannotTakeTheBand is the first

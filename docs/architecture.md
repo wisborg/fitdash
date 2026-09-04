@@ -148,7 +148,7 @@ portrait frame produces boxes with absurd aspect ratios. Layouts are built by fu
 they always carry a `Name` — videofx learned that a struct-literal layout with an empty name
 makes a log line lie about what is on screen.
 
-### What panel number eight costs
+### What one more panel costs
 
 One new file in `internal/panel/`, and one line in each layout that wants it. Nothing in
 `internal/render` changes: the loop iterates the resolved placements and calls two methods,
@@ -157,6 +157,14 @@ because the weight denominator grew.
 
 That gives the panel contract a reviewable tripwire with a yes/no answer: **did the diff
 touch `internal/render`?** If adding a panel did, the contract has sprung a leak.
+
+(The heading used to name a specific panel number, which went stale the moment the count
+moved. The claim it makes has since been paid out twice at once by the climb and gradient
+panels — two new files, one line in each tree, and `internal/render.go` untouched. That
+is worth recording as evidence rather than as a restatement: the reason the tripwire held
+there is *not* that the panels are simple, since one of them reads a model that had to be
+lifted onto `Context` to land at all. The lift was a change to `Context` and to the tests
+that build one, and to nothing in the frame loop.)
 
 ### The alternative that was rejected
 
@@ -286,7 +294,14 @@ finds nothing at all, which is a worse experience than either answer. Closing it
 third outcome in the engine, "superseded", reported to the caller alongside placed and
 declined; that is more machinery than one slot justifies, and it should be revisited the
 day a second `Alt` appears. Until then it is written down here and in `Alt`'s own doc
-comment so it is a known cost rather than a surprise.
+comment so it is a known cost rather than a surprise. **What will force it is panel
+selection by name.** Panel names are already the key `keep` rejects on, so the flag that
+lets a user ask for a specific set of panels is that same filter with a user-supplied set
+— and on the day it exists, typing the name of a superseded panel and getting neither that
+panel nor a word about why stops being a cosmetic gap in a summary and becomes a support
+question, asked by someone with no way to discover from the program that the answer is
+"something else is already showing you that". The cost of the gap is a function of how
+specifically a user can ask, and that is about to change.
 
 **What makes the ordering safe.** Putting the profile first can only lose a display if
 there is an activity the profile accepts and the readout does not, and there is not:
@@ -416,6 +431,318 @@ not: the motion is the content, the video is the product, and a single exported 
 panel will always look sparser than the render it came from. The painter's own `Static`
 comment says the same thing, and this paragraph exists so the two do not come to disagree.
 
+## The elevation widgets: climb and gradient
+
+Two panels share a full-width row directly above the elevation band, in both trees.
+`climb` answers "how much climbing has this activity done so far", as two horizontal
+tracks — gain above, loss below, up is up, so no legend says which is which — each filled
+to the cumulative figure over a dim ghost showing the activity's own total. `gradient`
+answers "how steep is it right now", as a single line that tilts with the terrain beside a
+signed percentage. Both read the same elevation model the profile plots, and neither draws
+any part of the other's content: three panels on one model, each placeable and — once
+panels can be selected by name — each selectable on its own.
+
+Three flags borrowed verbatim from videofx choose how that model is smoothed:
+`--elevation-smoothing` sets the Gaussian width directly, `--elevation-gain` and
+`--elevation-loss` give the smoothing a known total to tune itself against. The names, and
+the help text minus its videofx-only prefix, are the sibling's, for the reason
+`--power-source` already gives: a user moving between the two programs should not have to
+learn the same idea twice under two spellings.
+
+### One model, built once, and one tuning resolved once
+
+The elevation model used to be built wherever it was needed. `ElevationPanel.Accepts`
+built one to decide whether there was anything worth plotting, `Prepare` built another to
+plot it, and `internal/render`'s `profileTakesTheBand` built a third to decide whether the
+marker strip was absorbed. That was defensible while the cost was one pass over the
+samples and the model had exactly one consumer. It stops being defensible on both counts
+at once here: a *tuned* build is not one pass but a search — the library runs full
+smoothing passes repeatedly, hunting the sigma whose computed totals match the target it
+was given — and two more panels calling `Accepts` and `Prepare` apiece would have taken
+the count from three builds a render to eight.
+
+So `Context` gained `Elevation`, built once by whoever constructs the context.
+`panel.BuildElevation` is the single spelling, and it is the only place a nil track is
+turned into a nil model rather than handed to a library function that would range over
+it.
+
+**The cost argument is the smaller half.** The real one is that a second build site is a
+second place the same track can produce a different model — the moment the tuning is
+threaded through one call and not another, `Accepts` and `Prepare` are answering questions
+about two different curves, and the failure is a panel that accepts an activity and then
+draws something the acceptance test never saw. Building once removes the possibility
+rather than documenting the requirement.
+
+**The flags resolve in exactly one place too**, `cmd`'s `resolveElevationTuning`, in a
+four-level precedence: an explicit `--elevation-smoothing` wins outright and the targets
+are ignored (which is what the library already does once a sigma is set — the help says so
+rather than leaving it to be found by experiment); otherwise a known gain or loss sets the
+targets; otherwise the FIT file's own reported totals, which is today's silent behaviour,
+unchanged in effect; otherwise the library's default. Letting each of three panels reach
+its own conclusion from the same three flags is the disagreement this whole section exists
+to prevent, one level up from the model itself.
+
+That resolution is now **reported** rather than silent: one summary line naming the sigma
+actually used and which of the four levels produced it, printed only when the activity
+carries a model at all. It is the difference between a user being able to reason about why
+a profile looks flatter than the ride felt and having to guess whether that is the terrain
+or the tuning. The source label is carried as a plain string through `cmd`'s own
+`renderInputs`, not on `Context`: a sigma the library derived and a sigma a user typed can
+be the same number, so which of the two happened is a fact about how `resolveElevationTuning`
+resolved the flags, not about anything a panel reads back off the model, and no panel has a
+reason to see it.
+
+### The strip row, and the two placements rejected
+
+The row is placed as **the same fraction of each tree's total**, not the same number:
+weight 1 in the landscape tree, whose rows sum to 8, and weight 2 in the portrait tree,
+whose rows sum to 16. An eighth in both. Writing it as a fraction of the tree is the form
+that survives editing — "measured against the four gauges" would be stale the first time
+a user drops a gauge — and it is the answer to the mistake the `Alt` band's own weight
+comment already records, where copying a landscape weight into portrait gave the same
+number a smaller share of a larger total.
+
+The cost is stated plainly rather than buried: everything above the row loses an eighth of
+its height — the route, the clock, the distance readout and all four gauges. That is a
+smaller and far more evenly spread cost than a fifth gauge would take out of the gauge
+column alone.
+
+**Inside the row, climb sits left and gradient right**, following the grammar the frame
+already has: metrics that only ever increase on the left (the clock, distance, and now
+gain and loss), metrics that fluctuate on the right (the gauges, and now the current
+grade).
+
+**The placement that costs nothing was rejected, and the second reason is a real bug.**
+Putting all three panels inside the existing band as `Row{Profile, Climb, Gradient}` would
+have taken no height from anything. It fails twice. First, `--bottom-band distance`
+rejects `elevation` **by name** inside `internal/render`'s keep filter, so two more names
+would have to be added there or the flag would half-work — and that is a change to
+`internal/render`, which is precisely the tripwire adding a panel is supposed to leave
+shut. Second, and worse: the band is an `Alt` slot, and an `Alt` slot hands its whole box
+to the **first child surviving pruning**. If the profile ever declined while the two new
+panels accepted, the row would prune to them, they would take the band, the distance
+readout below them would never be asked, and **distance would disappear from the render** —
+the exact failure "the cheaper alternative, and why it is a trap" above is about, arrived
+at one panel later. Guarding it would mean yoking three `Accepts` methods together by hand
+and keeping them yoked.
+
+Folding all three into `ElevationPanel`'s own chrome was rejected for a different reason:
+zero layout cost, one `Accepts`, one model — and one **name**, so a user could never
+afterwards ask for the gradient without the profile.
+
+### The layout episode: the slack was inside the panel, not in the split
+
+This is the most useful thing here for anyone who touches the row next, because the
+symptom presents as a layout problem and two rounds were spent treating it as one.
+
+The two panels' content read as two groups with a gulf between them. The row's weights
+were changed twice, in **opposite** directions, and neither worked. Giving climb more
+width grew the gulf; giving it less shortened the gain and loss bars, which are the entire
+reading the panel exists for. **No weight could have worked**, and it is worth being
+precise about why: `climb` reserved its track a *fixed fraction* of its own box, so
+whatever width it was handed, a fixed proportion of it was left over as empty space at the
+panel's own right edge. A bigger box scaled that emptiness up. A smaller box scaled the
+bars down. The slack was inside the panel; the split was never the thing that was wrong,
+and no ratio between two boxes can remove space that one of them is going to leave empty
+regardless.
+
+The fix was to let the track take **whatever width remains** after the caption column, the
+gaps and the reading column, and to anchor the reading immediately past the track's own
+end rather than at the box's far edge. That removed the second rule competing with the
+first: nothing downstream depends on where the box's edge is, only on where the track's
+edge is. With no structural slack left, the two groups sit adjacent at *any* weights, and
+the weights go back to meaning only what a weight should mean — how much width the bars
+get relative to the gradient's line and reading. An even split was then a judgement made
+on a rendered frame rather than an attempt to compensate for something.
+
+Two consequences worth keeping. The gradient's content is sized off `min(box.W, box.H)`,
+so on a wide, short strip it is bounded by the row's **height**; surplus width is daylight
+inside its own box, and because it anchors its content at its own left edge that daylight
+lands at the row's outer edge rather than between the two groups. And the alternative fix
+— pushing each panel's content toward its neighbour — was rejected outright, because it
+would depend on where the *neighbour's* box happens to sit, which is a layout fact no
+panel can see, and it would therefore break silently the next time the weights moved.
+
+### The gradient window: a distance, never a time
+
+**The premise the request came with needed correcting, and the correction is the reason
+the number is what it is.** The gradient was asked to be averaged "over a little period"
+because elevation readings are notoriously inaccurate. That is true of raw readings, but
+almost all of that averaging has already happened by the time this panel sees the data:
+the model's own Gaussian smoothing is tuned against the file's totals, and on a tuned file
+widening this window across an order of magnitude barely moves the reading at all. So the
+window is not what rescues a noisy barometer — that job is done upstream — it is a
+**second-stage filter choosing the run of ground the slope is measured over**. Planning to
+the request while choosing the number on that understanding is the whole of the ruling.
+
+**It is a distance window, and a time window was rejected on its merits rather than for
+convenience.** Gradient is a property of terrain, not of the clock. A time window covers
+whatever ground the athlete happened to cross in that time, so it shrinks the length of
+road considered exactly where they are slowest — on the steep climb, which is where the
+reading matters most and where a short window is noisiest — and smears hundreds of metres
+into one figure on a fast descent. It would systematically under-report climbs and
+over-smooth descents, in opposite directions on the same activity, and nothing on screen
+would say which of the two you were looking at.
+
+**Thirty metres is videofx's constant, taken verbatim, and the defence is agreement rather
+than derivation.** The library query reads ±window, so this is a sixty-metre run of
+ground. A freshly derived number might well be individually better; it would also mean two
+programs reading the same file through the same library reporting different grades for the
+same instant, which is worse than either number being suboptimal. That is the argument
+`--power-source` already makes about shared vocabulary, extended from a word to a
+constant.
+
+**One widening, for one reason.** When a render is compressed hard enough that a single
+frame stands for more ground than the window covers, the window opens to half that stride.
+This is `smoothSample`'s own argument applied to distance: a reading measured over less
+ground than the frame it is drawn on covers is an arbitrary pick from a span the render is
+presenting as an instant. The stride is computed from the render's *coarsest* segment —
+the timeline's maximum speedup, not its base rate — for the reason
+`bindDistancePrecision` already uses the same figure: a highlight slowed toward real time
+must never widen a window sized for the rest of the render. Half the stride, not all of
+it, because the window is the radius of the span queried and the stride is its diameter.
+
+The branch is known to be reachable rather than assumed to be. Take a hypothetical
+ten-kilometre run of an hour, rendered at 480×, 30 fps: a frame advances something over
+forty metres, half of that is under thirty, and the floor wins — the widening is inert.
+Take a hypothetical hundred-kilometre ride of four hours at the same settings: a frame
+advances a little over a hundred metres and the window opens to roughly fifty-five. It
+bites on heavily compressed long rides and nowhere else.
+
+**The consequence is a consistency guarantee, and it is why the two panels can sit beside
+each other.** The gradient line reports the slope of the profile under the playhead over a
+span of roughly a couple of dozen pixels at 1080p on an activity of a few kilometres —
+wider on a shorter activity, narrower on a longer one. The two panels are showing the
+same terrain at the same resolution, so they cannot visibly disagree about it.
+
+Deriving the window from the model's own sigma was rejected: sigma is expressed in samples
+rather than metres, converting it needs a point count the library does not expose, and it
+is partly circular anyway, since sigma is tuned to match *vertical* totals rather than to
+choose a *horizontal* resolution. A raw two-point slope was rejected because at real-time
+pace two points a tenth of a metre apart on a barometric trace produce noise wearing a
+number's clothes.
+
+### The tilt is amplified by a constant, and the constant never moves
+
+**A line drawn at the terrain's true angle is invisible at every gradient anyone actually
+rides.** Ten percent is 5.7 degrees; twenty percent is 11.3. On a strip a few dozen pixels
+tall both read as flat, and a panel whose whole design is "the line leans the way the
+ground does" would lean imperceptibly for the entire render.
+
+So the drawn angle is the **true** angle — `atan(grade)`, the honest geometric tilt that a
+rise over a run actually has — multiplied by a fixed factor and clamped at 45 degrees.
+Using `atan` rather than the grade fraction itself matters: grade *is* the tangent of the
+slope angle by definition, so treating the fraction as though it were already an angle
+would over-tilt shallow ground and under-tilt steep. Multiplying afterwards preserves
+proportionality: double the gradient is double the drawn tilt, right up to the clamp,
+which keeps the exaggeration a single stated constant rather than a curve nobody can
+invert by eye.
+
+The factor is 4, and it is chosen rather than merely asserted: solving for the grade at
+which the amplified angle first reaches the 45-degree clamp gives just under 20%, which is
+about the steepest sustained gradient a paved road or maintained trail reaches. The clamp
+lands where the terrain does.
+
+**Why it is fixed, and why this is the part a future reader will want to "improve".** The
+original design derived the amplification from the activity's own steepest section, so
+every render used its full range. That was honest — but only because that design drew a
+labelled dial with limit rays to read the tilt against. Once the visual became a bare line,
+the scale went with the dial, and a derived amplification would mean **the same tilt on
+screen represented a different real gradient on a different activity, with nothing on
+screen saying so**. A viewer comparing two of their own renders would be comparing two
+scales they were never told about. Comparability was chosen deliberately: the same tilt
+means the same gradient in every render fitdash produces, which is only true while the
+constant is a constant.
+
+A per-activity scale is the natural thing to reach for — it uses the available range, it
+is one line — and it is only wrong in the absence of the dial. That is exactly why it is
+recorded here rather than left as an obvious optimisation somebody performs on a Tuesday.
+
+**What keeps an exaggerated line honest is the division of labour.** The line is a
+qualitative signal — climbing, level, descending, and roughly how hard — and the signed
+percentage beside it is the measurement, printed unexaggerated in videofx's own format
+string (`%+.1f%%`) so the same instant reads identically in both programs. Neither half
+would be defensible on its own: the line alone overstates, and the number alone is exactly
+the bare readout the request asked for something more interesting than.
+
+### No easing between frames, which is unavailable as well as unnecessary
+
+The obvious refinement to a value that tilts a line is to ease it toward its target rather
+than snapping. It is not done here, and it is the one place in this panel a reviewer will
+reach for the forbidden thing.
+
+**It is unavailable.** Easing needs the previous frame's value kept somewhere, and
+`Dynamic` must not mutate its `Painter` — the rule that holds the door open for parallel
+frame rendering, and the same rule that already forbids holding a stale fill extent (see
+"When the placeholder is an area"). There is nowhere honest to keep the state.
+
+**It is also unnecessary, which is what makes the restriction cost nothing here.** The
+window is sixty metres of ground, and at running pace a frame at 30 fps advances on the
+order of a tenth of a metre against it. Each frame's reading therefore differs from the
+last by a fraction of a percent of the window's own local variation: the line is smooth
+**by construction**, and there is nothing left to ease toward. Choosing a distance window
+is what bought that property, which is why the two rulings are best read together.
+
+### The gradient carries no caption, and what makes that safe
+
+The panel draws no `GRADIENT` heading. The word names the *panel*, not the thing on
+screen, and a line leaning beside a signed percentage is legible without being told it is
+a gradient — the same argument that deleted the marker strip's `MARKERS` caption, and the
+same disposal: deleted rather than switched off.
+
+**The structural half of the argument is what makes it safe rather than merely tidy, and
+it is a dependency between two panels that nothing in the type system records.** Both
+panels' `Accepts` is the *identical* shared predicate, so the gradient is never placed
+without the climb panel's captioned gain and loss bars beside it in the same row. The
+context a viewer uses to read a bare `+6.1%` — "this sits next to a climb readout, so it
+is a grade" — is guaranteed by that shared predicate rather than by luck: the two accept
+and decline together, so an activity that gets a gradient gets the captioned bars too.
+Where the row happens to put them is a separate and weaker guarantee, about adjacency
+only; the predicate is the one that matters, because it is what keeps "a bare percentage
+never appears alone" true of layouts nobody has written yet. **Anyone who later gives the
+two panels different accept conditions silently removes the thing that makes the missing
+caption defensible**, and nothing will fail: the render will simply contain a number with
+no unit and no context on an activity where climb declined and gradient did not. That is
+why the dependency is written down in both directions, here and in the panel's own doc
+comment.
+
+### One shared scale for gain and loss
+
+The two tracks are drawn against **one** scale, the larger of the activity's own total
+gain and total loss. This is the misreading the design exists to prevent: a viewer
+compares the two bars on sight, and normalising each to its own total would make two bars
+of equal length mean two different numbers of metres — a lie told in the one dimension the
+panel is asking to be read in. Under a shared scale the shorter track's ghost simply ends
+short, which states the ratio between the two for free, with no legend and no second
+number.
+
+There is no colour coding of up against down. `Theme` has no such role, and a panel
+inventing one is the "eight panels each picking their own grey" failure `canvas.go` names.
+Sign, caption and vertical position carry it already.
+
+The ghost track is also the cleanest instance of the static/dynamic split in the project:
+`Static` draws the destination — the activity's totals, fixed for the whole render — and
+`Dynamic` draws the progress. That is what makes a single exported PNG of this panel
+legible on its own, which is the weakness the marker strip's own comment records about a
+design that only reads in motion.
+
+### Absent data for both panels
+
+Both panels use the **same** accept predicate as the profile, extracted so all three ask
+one question rather than each keeping a copy that can drift: elevation and distance both
+carried, a model that exists and is not empty, and a real elevation range over a real
+distance span. A model the profile declines to plot but the climb bars happily draw from
+is the two-panels-disagree failure reached at a different seam.
+
+Activity-level absence is therefore a **decline** for both — an indoor ride's row prunes
+entirely and the layout closes up around it. Per-frame absence is a **placeholder**, and
+deliberately not a plausible-looking zero: the climb tracks wash their full length in the
+profile's own absent fill colour with both readings showing `--`, and the gradient draws
+**no line at all** rather than parking one level, because 0% is a real, drawable grade and
+parking there is the confident lie in geometric form. The per-frame branch fires on an
+ordinary distance dropout and on the pre-data region that "The pre-data trap" below
+is about.
+
 ## Absent data
 
 The two policies map onto the two phases, and the mapping follows from *when* each kind of
@@ -518,6 +845,49 @@ no position dot for the same reason. A reader who sees the absent colour learns 
 terrain data here", which is the fact that matters; *which* of the two mechanisms produced
 it is not something the pixels should be trying to say.
 
+### The pre-data trap: a confident answer that has to be refused
+
+Every absent case above announces itself. A missing heart rate arrives as
+`HasHeartRate == false`; a distance dropout arrives as a zero `Sample`. The panel has to
+check, but it cannot fail to notice that there is something to check.
+
+**The elevation model's distance queries are not like that, and this is the sharpest edge
+in the whole render path.** `ElevationModel.AtDistance` and `GradeAtDistance` both *clamp*
+their argument to the profile's own ends. Asked for a distance before `StartDistance()` —
+the metres between the distance stream starting and the barometer's first usable reading,
+which is an ordinary opening on a real recording rather than a corner case — they return
+the profile's first values: gain 0, loss 0, grade 0. No error, no second return value, no
+flag. A cumulative-gain reading of zero at the start of an activity is also exactly what a
+*correct* answer looks like there, which is what makes the trap a trap: the wrong number
+and the right number are the same number, and only the distance the caller passed in
+distinguishes them.
+
+The clamp is not a defect. It is the right behaviour for a plotting query that must not
+panic on an out-of-range x, and it is the right answer at the *other* end, past
+`TotalDistance()`, where the clamped values are the activity's own finished totals and its
+last measured slope. All three panels keep drawing live readings past the axis end for
+exactly that reason.
+
+**What makes the near end different is that a second panel is already saying otherwise in
+the same frame.** The profile washes that opening stretch in `Theme.Absent` and refuses its
+position dot (see "The structurally missing stretch" above). If the climb bars printed
+`0 m` and the gradient printed `+0.0%` over that same span, the frame would contain two
+panels contradicting each other about one instant — one saying "no terrain data here", the
+others stating terrain facts with a decimal place — with nothing on screen to adjudicate
+and nothing in the code that failed. So both new panels compare `f.Sample.Distance`
+against the model's own `StartDistance()` **before** calling into the model at all, and
+take their placeholder branch when it is below: the climb bars wash their full length,
+both readings show `--`, and the gradient draws no line and reads `--`.
+
+**The generalisation, which is why this sits in the absent-data chapter rather than in a
+panel's own comments: absence policy is not only about the flags on `Sample`.** A library
+call that cannot express "I do not know" pushes that judgement back onto its caller, and a
+caller that simply prints what it was handed will produce a confident lie without ever
+writing a line of code that looks wrong. Here the honest region is knowable — it is a
+comparison against a number the model publishes — but it has to be *written*, because the
+default is the lie. Any future panel reading a clamping model owes the same check, and any
+future model here that clamps should be read with this paragraph in mind.
+
 ### One rule for absence
 
 `Context` carries an `inspect.Report`. `internal/inspect` already computes, per metric,
@@ -537,16 +907,16 @@ dropouts honestly. A percentage threshold would need a defensible number and the
 
 ```go
 type Context struct {                  // computed ONCE, identical on every frame
-	Track       *fitactivity.Track
-	Report      inspect.Report
-	Timer       *fitactivity.TimerModel
-	Elevation   *fitactivity.ElevationModel
-	Splits      *fitactivity.Splits
-	Route       []GeoPoint
-	Timeline    Timeline
-	Width, Height int
-	FontScale   float64
-	PowerSource fitactivity.PowerSource
+	Track           *fitactivity.Track
+	Report          inspect.Report
+	Timer           *fitactivity.TimerModel
+	Elevation       *fitactivity.ElevationModel
+	Splits          *fitactivity.Splits        // not built
+	Route           []GeoPoint                 // not built
+	Timeline        Timeline
+	Width, Height   int
+	FontScale       float64
+	PowerSource     fitactivity.PowerSource
 }
 
 type Frame struct {                    // NOTHING constant across the render
@@ -558,6 +928,20 @@ type Frame struct {                    // NOTHING constant across the render
 	Paused          bool
 }
 ```
+
+**This sketch is partly aspirational, and which parts is worth saying rather than leaving
+a reader to discover by compiling.** `Track`, `Report`, `Timer`, `Timeline`, the
+dimensions, `FontScale` and `PowerSource` are real and read by panels today. `Elevation`
+became real when the climb and gradient panels landed — see "One model, built once, and
+one tuning resolved once" above for why the field exists at all, and why `Accepts` was not
+a sustainable place to keep building it. The tuning that produced it is deliberately *not*
+a field here — see that same section for why it is a plain string threaded through `cmd`'s
+own `renderInputs` instead. `Splits` and `Route` are **still not built**: no code
+populates them and no panel reads them. They are listed
+because the shape of the context is the design's claim about what is per-render, and a
+splits panel or a projected route cached on the context would go here rather than being
+recomputed per frame — but nothing about them is decided, and neither field should be
+treated as an interface anything depends on.
 
 Four things keep the static-layer trap shut, and the first is load-bearing:
 
@@ -575,8 +959,20 @@ Four things keep the static-layer trap shut, and the first is load-bearing:
    loop uses. videofx has both and never compares them. **fitdash asserts they are
    pixel-identical** for a fixture activity at several frame indices. If any panel's static
    content ever depends on something that differs between the paths, the images differ and
-   the test fails. It is two small buffers and a byte comparison, and it is the only thing
-   that catches this class of bug automatically.
+   the test fails. It is two small buffers and a byte comparison.
+
+   The claim only holds for panels the test actually resolves. The original version of
+   this test built its own mock panels over a synthetic `Layout`, never `panel.LandscapeLayout`
+   or `panel.PortraitLayout`, so `ElevationPanel`, `ClimbPanel` and `GradientPanel` — the
+   three panels whose own doc comments forbid caching a value across frames, precisely
+   *because* they trusted this net to catch a smuggled-in cache — were never exercised by
+   it at all. A second case resolves a **real** layout tree over a **real** elevation model
+   and runs the identical byte comparison, at frame indices chosen to visit every branch
+   those panels' own absence policy would otherwise let a per-frame cache hide behind: the
+   first frame, one inside the pre-data region (`elevation.go`), the midpoint, one past the
+   elevation model's own axis end, and the last frame. Between the mock-panel case (generic
+   frame-loop machinery, the highlight wash) and this one (the panels that actually rely on
+   the guarantee), every panel in both shipped layouts is now covered.
 
 ### Cost
 

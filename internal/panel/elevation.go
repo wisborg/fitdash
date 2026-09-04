@@ -90,29 +90,54 @@ func (ElevationPanel) Name() string { return "elevation" }
 // summary because it had not declined. That is precisely the third option
 // CLAUDE.md calls a bug.
 //
-// So the model itself is the test. Building it twice -- here and again in
-// Prepare -- costs one extra pass over the samples once per render, which is
-// nothing beside rendering a strip of background for the whole video.
-func (ElevationPanel) Accepts(ctx *Context) bool {
+// So the model itself is the test -- ctx.Elevation, built once by whoever
+// constructed ctx (see Context.Elevation's own doc comment), never rebuilt
+// here. An earlier version of this method called BuildElevationModel itself,
+// which meant Accepts, Prepare and internal/render's profileTakesTheBand each
+// built an independent copy of the same model from the same track -- three
+// builds of something a target-tuned tuning makes genuinely expensive (up to
+// forty full Gaussian smoothing passes), and three places the same track
+// could in principle disagree about the same model if the tuning were ever
+// threaded through differently.
+//
+// The actual test lives in elevationIsPlottable, shared with every other
+// panel built on the same model -- see that function's own doc comment for
+// why a shared function, not a shared comment saying "keep this in sync",
+// is what keeps them from disagreeing.
+func (ElevationPanel) Accepts(ctx *Context) bool { return elevationIsPlottable(ctx) }
+
+// elevationIsPlottable is the ONE accept test for every panel that reads
+// ctx.Elevation -- ElevationPanel here, ClimbPanel in climb.go, and the
+// gradient panel to follow -- extracted so all three ask the identical
+// question rather than each carrying its own copy that could quietly stop
+// agreeing. A model that ElevationPanel declines to plot but ClimbPanel
+// happily draws gain and loss bars from is exactly the two-panels-disagree
+// failure the panel contract's Accepts/Prepare split exists to prevent at a
+// different seam: one panel would be drawing on data the other has already
+// judged not worth showing, with nothing on screen explaining why the
+// profile is missing while the bars beside it are not.
+//
+// Requires BOTH elevation and distance, on the same samples -- distance is
+// not incidental, it is every one of these panels' x axis (see
+// ElevationPanel's own doc comment for why asking the coverage report about
+// each metric independently is not enough) -- and a model with a real
+// elevation range and a real distance span. A flat or zero-span profile
+// still has a model (m != nil, not Empty) and would still take a panel's
+// box, but with nothing to show a range or a distance progressing against:
+// declining hands that box to whatever the layout falls through to instead,
+// which is the honest outcome for every panel built on this model, not only
+// the profile.
+func elevationIsPlottable(ctx *Context) bool {
 	if ctx.Track == nil {
 		return false
 	}
 	if !ctx.Report.Carries(inspect.MetricElevation) || !ctx.Report.Carries(inspect.MetricDistance) {
 		return false
 	}
-	m := fitactivity.BuildElevationModel(ctx.Track, elevationOptions(ctx))
+	m := ctx.Elevation
 	if m == nil || m.Empty() {
 		return false
 	}
-	// A flat or zero-span profile also declines, and this is new since the
-	// fill became the panel's only distance indicator. A flat profile still
-	// has a model and would still take the band, but with nothing left to
-	// draw except two identical elevation labels it would show distance
-	// nowhere -- the unexplained-hole bug reached from a different
-	// direction. Declining hands the band to the distance readout instead,
-	// which is the honest outcome. Prepare keeps the equivalent `flat` guard
-	// as the same species of defensive check its `m == nil || m.Empty()`
-	// guard already is, in case a caller places the panel without asking.
 	minElev, maxElev := m.Range()
 	profileStart, axisEnd := m.StartDistance(), m.TotalDistance()
 	if maxElev <= minElev || axisEnd <= profileStart {
@@ -121,21 +146,104 @@ func (ElevationPanel) Accepts(ctx *Context) bool {
 	return true
 }
 
-// elevationOptions tunes the smoothing against the device's own ascent and
-// descent totals where the file reported them.
+// DefaultElevationTuning is the smoothing this panel tuned against, absent
+// any user-typed override: the device's own ascent and descent totals where
+// the file reported them, or the library's own default sigma otherwise.
 //
 // Barometric elevation is noisy enough that a raw per-sample sum wildly
 // overcounts climbing, and matching a figure the watch already published is
-// more trustworthy than any constant chosen here. It is a function rather than
-// inline so Accepts and Prepare build the SAME model -- one deciding to place
-// the panel on a model the other did not build would be the disagreement this
-// change exists to remove.
-func elevationOptions(ctx *Context) fitactivity.ElevationOptions {
+// more trustworthy than any constant chosen here. Exported because
+// cmd/render.go's four-level --elevation-smoothing / --elevation-gain /
+// --elevation-loss precedence bottoms out at exactly this derivation on its
+// own third and fourth levels (see cmd's resolveElevationTuning), and this
+// project's own test fixtures build the identical Context.Elevation a real
+// render would by calling this rather than re-deriving the same rule a
+// second time.
+func DefaultElevationTuning(track *fitactivity.Track) fitactivity.ElevationOptions {
 	var opts fitactivity.ElevationOptions
-	if ctx.Track != nil && ctx.Track.HasElevationTotals {
-		opts.TargetGain, opts.TargetLoss = ctx.Track.TotalAscent, ctx.Track.TotalDescent
+	if track != nil && track.HasElevationTotals {
+		opts.TargetGain, opts.TargetLoss = track.TotalAscent, track.TotalDescent
 	}
 	return opts
+}
+
+// BuildElevation is the single spelling for constructing a render's
+// elevation model: cmd/render.go calls it once, into Context.Elevation, and
+// every consumer -- ElevationPanel today, the climb and gradient panels this
+// field exists to let land -- reads that field rather than calling
+// fitactivity.BuildElevationModel a second time on the same track and risking
+// a second answer.
+//
+// A nil track (Context.Track never set) returns nil rather than reaching
+// fitactivity.BuildElevationModel, which ranges over track.Samples and has no
+// nil guard of its own -- the same case ElevationPanel.Accepts already
+// refuses before this function existed, moved here so every caller gets the
+// same refusal rather than each panel re-deriving it.
+func BuildElevation(track *fitactivity.Track, tuning fitactivity.ElevationOptions) *fitactivity.ElevationModel {
+	if track == nil {
+		return nil
+	}
+	return fitactivity.BuildElevationModel(track, tuning)
+}
+
+// gradeWindowMeters is the +/- distance a grade reading is averaged over --
+// fitactivity.ElevationModel.GradeAtDistance reads d-window..d+window -- taken
+// verbatim from videofx's own gradeWindowMeters rather than derived fresh
+// here. The defence is agreement with the sibling, not a fresh derivation:
+// both programs read the same files through the same library, and reporting
+// different grades for the same instant of the same activity is worse than
+// either number being individually optimal on its own -- the same argument
+// this project's own --power-source already makes about shared vocabulary,
+// extended to a constant.
+//
+// Most of a grade reading's own averaging is already done by the model's
+// Gaussian smoothing, tuned to the file's totals (see DefaultElevationTuning
+// and cmd's resolveElevationTuning) -- widening this window from 10 m to 120 m barely
+// moves the reading on a tuned file. So this is a SECOND-STAGE filter
+// choosing the run of ground a grade is measured over, not what rescues the
+// reading from a noisy barometer; that job is already done upstream.
+const gradeWindowMeters = 30.0
+
+// gradeWindowFor is gradeWindowMeters, widened when this render's own
+// compression makes one frame's worth of ground exceed it -- smoothSample's
+// own argument (internal/render/smooth.go), applied to distance rather than
+// to a gauge reading: a grade measured over less ground than a single frame
+// covers is an arbitrary pick from a span the render presents as one instant,
+// not an average of it.
+//
+// A DISTANCE window, deliberately, never a time one. Grade is a property of
+// terrain: a time window shrinks the road length considered exactly where a
+// runner is slowest -- the steep climb, where the reading matters most --
+// while smearing hundreds of metres of a fast descent into one figure. That
+// systematically under-reports climbs and over-smooths descents, in opposite
+// directions on the same activity.
+//
+// strideMetres is the ground one frame advances at this render's COARSEST
+// segment -- maxSpeedup is Timeline.MaxSpeedup(), not the base rate, the same
+// choice bindDistancePrecision (readout.go) already makes and for the
+// identical reason: a highlight slowed toward real time must never widen a
+// window sized for the rest of the render. Only half of that stride is
+// spent, because GradeAtDistance already reads +/-window -- window is the
+// RADIUS of the span queried, strideMetres its DIAMETER.
+//
+// All four inputs are render-wide and available once Prepare runs, which is
+// the precedent bindDistancePrecision already sets for resolving a per-render
+// quantity there rather than per frame.
+//
+// Consequence for the animation, worth stating where a reviewer will look for
+// the easing this design deliberately omits: at running pace a 30 fps frame
+// advances a small fraction of the window's own local variation, so the
+// reading this window produces is already smooth from one frame to the next
+// -- there is nothing left to ease toward.
+func gradeWindowFor(totalDistance, activitySeconds, maxSpeedup, fps float64) float64 {
+	if activitySeconds <= 0 || fps <= 0 {
+		return gradeWindowMeters
+	}
+	strideMetres := totalDistance * maxSpeedup / (fps * activitySeconds)
+	if half := strideMetres / 2; half > gradeWindowMeters {
+		return half
+	}
+	return gradeWindowMeters
 }
 
 // profileSampleStep is how many pixels apart the profile is sampled.
@@ -360,12 +468,13 @@ func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 	if ctx.Track == nil {
 		return p
 	}
-	m := fitactivity.BuildElevationModel(ctx.Track, elevationOptions(ctx))
+	m := ctx.Elevation
 	if m == nil || m.Empty() {
-		// Accepts builds the same model and declines on this, so reaching here
-		// means a caller placed the panel without asking. Drawing nothing is
-		// then the least-wrong option available, but it is not one this panel
-		// chooses for itself.
+		// Accepts checks the same field and declines on this, so reaching
+		// here means a caller placed the panel without asking, or without
+		// having populated ctx.Elevation at all. Drawing nothing is then the
+		// least-wrong option available, but it is not one this panel chooses
+		// for itself.
 		return p
 	}
 
@@ -604,11 +713,28 @@ const elevTickFraction = 0.14
 // the axis chrome it sits above -- and the two are fractions of DIFFERENT
 // bases (unit here, ctx.BasePx() for the axis chrome), so retuning one
 // without checking the other can silently invert that hierarchy. 0.115 and
-// 0.09 keep the highlight name clearly larger than the axis labels and the
+// 0.10 keep the highlight name clearly larger than the axis labels and the
 // label name a step below the highlight's, at every resolution checked,
 // while still leaving the real trace the bulk of the plot's own height.
+//
+// elevLabelNamePx moved from 0.09 to 0.10 when ClimbPanel joined the bottom
+// stack (layouts.go): unit is this Painter's own box, and the box the Alt
+// band resolves to is a FRACTION of the tree's total weight that shrank
+// once climb's row joined it as a sibling with its own weight -- 2/7 of the
+// landscape tree's total before, 2/8 after, the identical accepted cost
+// every OTHER sibling in that Col pays too. elevAxisLabelFraction's own
+// text size does not move with it (it is sized from ctx.BasePx(), the
+// frame's own dimensions, precisely so it would not inherit an unrelated
+// re-weighting -- see that constant's own doc comment), so the margin
+// between the two closed until TestElevationPanel_MarkNameRowsAreLargerThanTheAxisChrome
+// caught the label name row actually landing AT the axis chrome's own size
+// on a 1080p and a 4K landscape render, inverting the hierarchy this
+// constant exists to keep. 0.10 was measured, not merely bumped until the
+// test passed: it restores comfortable headroom at every resolution that
+// test checks, including the portrait tree, which had never lost its own
+// margin (portrait's Alt weight grew rather than shrank in the same change).
 const elevNamePx = 0.115
-const elevLabelNamePx = 0.09
+const elevLabelNamePx = 0.10
 
 // elevNameRowPadding multiplies a name row's own font size into the row's
 // reserved height, leaving ascender/descender clearance around the glyph.

@@ -705,7 +705,9 @@ func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(
 	cases := []struct {
 		name              string
 		keep              func(Panel) bool
-		wantDistanceCount int // how many "distance" panels must be among placed
+		wantDistanceCount int  // how many "distance" panels must be among placed
+		wantClimb         bool // whether "climb" must be among placed
+		wantGradient      bool // whether "gradient" must be among placed
 	}{
 		// "distance" now names TWO leaves in both real trees, not one: the
 		// readout beside ElapsedPanel (layouts.go's elapsed/distance split,
@@ -719,20 +721,42 @@ func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(
 		// count below is therefore "1 for the always-present pair leaf" plus
 		// "1 more if the Alt slot's own candidate is distance", unless
 		// "distance" itself is rejected, which drops straight to 0.
-		{"all present", nil, 1},
-		{"no GPS (indoor ride)", namesRejecting("route"), 1},
-		{"no elevation, distance present", namesRejecting("elevation"), 2},
+		//
+		// wantClimb and wantGradient follow a SEPARATE rule from
+		// wantDistanceCount, and that is the point of adding them here rather
+		// than trusting the geometry checks alone: both ClimbPanel.Accepts
+		// and GradientPanel.Accepts are elevationIsPlottable(ctx), the
+		// identical predicate ElevationPanel.Accepts uses (see elevation.go),
+		// so wherever a case's own keep predicate is standing in for "this
+		// activity has no elevation" -- by naming "elevation" among the
+		// panels it rejects -- a REAL Context would have BOTH climb and
+		// gradient decline alongside it too, and this test's keep must
+		// reject "climb" and "gradient" in the identical cases or it would
+		// place a panel no real render ever would. wantGradient is always
+		// equal to wantClimb in every case below, which is itself the
+		// property being pinned: the two panels share one predicate and
+		// this table would catch either being wired to a different one. The
+		// one exception is the LAST case: --bottom-band distance hides
+		// ElevationPanel by NAME in internal/render's own keep filter
+		// without touching ctx.Elevation at all (see Context.BottomBand's own
+		// doc comment), so a real render's climb and gradient still accept
+		// there -- and that is the case this table exists to prove does not
+		// regress.
+		{"all present", nil, 1, true, true},
+		{"no GPS (indoor ride)", namesRejecting("route"), 1, true, true},
+		{"no elevation, distance present", namesRejecting("elevation", "climb", "gradient"), 2, false, false},
 		// Elevation cannot survive without distance in reality (its own
 		// Accepts requires Carries(MetricDistance)), so an activity with
-		// no distance also has no elevation. Both are rejected explicitly
-		// here, so neither Alt candidate survives, the pair leaf is also
-		// rejected by the same name, and distance is absent everywhere --
-		// exactly as it would be from a real activity with no distance.
-		{"no distance", namesRejecting("distance", "elevation"), 0},
-		{"no highlights and no labels", namesRejecting("markers"), 1},
-		{"no GPS + no elevation + no power (rower)", namesRejecting("route", "elevation", "power"), 2},
+		// no distance also has no elevation, and therefore no climb or
+		// gradient either. All four are rejected explicitly here, so
+		// neither Alt candidate survives, the pair leaf is also rejected by
+		// the same name, and distance is absent everywhere -- exactly as it
+		// would be from a real activity with no distance.
+		{"no distance", namesRejecting("distance", "elevation", "climb", "gradient"), 0, false, false},
+		{"no highlights and no labels", namesRejecting("markers"), 1, true, true},
+		{"no GPS + no elevation + no power (rower)", namesRejecting("route", "elevation", "climb", "gradient", "power"), 2, false, false},
 		{"distance only, nothing else", namesRejecting(
-			"route", "heart-rate", "pace", "power", "cadence", "elevation", "markers"), 2},
+			"route", "heart-rate", "pace", "power", "cadence", "elevation", "climb", "gradient", "markers"), 2, false, false},
 		// --bottom-band distance is render.New's own keep filter rejecting
 		// "elevation" by name (see internal/render's elevationPanelName and
 		// its keep closure in New) -- geometrically identical to "no
@@ -745,8 +769,12 @@ func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(
 		// otherwise carries everything -- proving the two prunings compose
 		// with no interaction: the bottom band still swaps to distance and
 		// the marker row still closes up, and neither one's rectangle
-		// leaks into the other's.
-		{"--bottom-band distance, and no highlights or labels either", namesRejecting("elevation", "markers"), 2},
+		// leaks into the other's. "climb" and "gradient" are deliberately
+		// NOT rejected here: this flag hides the profile without touching
+		// whether the activity carries elevation, so their shared row must
+		// survive it -- the property that justified giving the strip its
+		// own row rather than folding it into the Alt band (see layouts.go).
+		{"--bottom-band distance, and no highlights or labels either", namesRejecting("elevation", "markers"), 2, true, true},
 	}
 
 	sizes := []struct {
@@ -780,6 +808,32 @@ func TestResolve_DeclineCombinationsOverTheRealLayoutsLeaveNoUnclaimedRectangle(
 						t.Errorf("distance placed %d time(s), want %d -- one is the pair leaf beside ElapsedPanel "+
 							"(present whenever keep does not reject \"distance\" by name), the other is the bottom "+
 							"strip's Alt slot showing the readout rather than the elevation profile", gotDistanceCount, c.wantDistanceCount)
+					}
+
+					gotClimb := false
+					gotGradient := false
+					for _, p := range placed {
+						switch p.Panel.Name() {
+						case "climb":
+							gotClimb = true
+						case "gradient":
+							gotGradient = true
+						}
+					}
+					if gotClimb != c.wantClimb {
+						t.Errorf("climb placed=%v, want %v -- this pins WHICH panels were placed, not merely that "+
+							"the boxes tile, which is what would catch climb's own row surviving (or vanishing) when "+
+							"a real activity's elevationIsPlottable would have decided otherwise", gotClimb, c.wantClimb)
+					}
+					if gotGradient != c.wantGradient {
+						t.Errorf("gradient placed=%v, want %v -- the identical pin as climb's own check, above, "+
+							"since both share the one elevationIsPlottable predicate and must never disagree about "+
+							"whether this case's activity carries data worth showing", gotGradient, c.wantGradient)
+					}
+					if gotClimb != gotGradient {
+						t.Errorf("climb placed=%v but gradient placed=%v -- the two share one Accepts predicate "+
+							"(elevationIsPlottable) and must always agree with EACH OTHER, not merely with their "+
+							"own expectation above", gotClimb, gotGradient)
 					}
 
 					// Positive, disjoint, exactly as drawn.

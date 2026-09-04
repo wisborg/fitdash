@@ -3,15 +3,16 @@
 Render a recorded exercise as a dashboard video: read a Garmin FIT activity, and
 produce a video in which the metrics animate as the activity progresses — the route
 drawing itself, an elevation profile with a moving playhead, pace, heart rate, power,
-splits.
+cumulative climb and the gradient underfoot.
 
 ```
 fitdash activity.fit --video-duration 3m
 ```
 
-Eight panels ship today: the route, an elapsed/active clock, distance, heart rate, pace,
-power, cadence, and an elevation profile — plus a ninth, the marker strip, which appears
-only when `--highlight` or `--label` gives it something to mark. The distance readout is
+Ten panels ship today: the route, an elapsed/active clock, distance, heart rate, pace,
+power, cadence, an elevation profile, cumulative gain and loss, and the current gradient
+— plus an eleventh, the marker strip, which appears only when `--highlight` or `--label`
+gives it something to mark. The distance readout is
 conditional in its own way: the area under the elevation profile fills as the activity
 progresses and is itself the distance indicator, so the readout is drawn only on an
 activity that has no profile to fill — a rowing machine, or a course flat enough that
@@ -151,6 +152,15 @@ this was built against, by more than fifty watts at the same instant. `--power-s
 takes `auto` (prefer the footpod, fall back to native), `stryd`, or `native`, using the
 same vocabulary as [videofx][videofx]. A forced source the activity lacks shows a
 placeholder rather than quietly substituting the other sensor's number.
+
+**GPS and barometric elevation overcount climbing badly**, so the profile, the gain and
+loss bars and the gradient are all read from a smoothed model rather than from the raw
+trace. By default the smoothing is tuned so the computed totals match whatever the watch
+itself recorded, and the render summary now names the value it settled on and where it
+came from. `--elevation-gain` and `--elevation-loss` tune it against figures you trust
+instead — an official course total is usually the most reliable target there is — and
+`--elevation-smoothing` sets the width directly when you would rather say it outright.
+The names and the reasoning are [videofx][videofx]'s.
 
 ## Requirements
 
