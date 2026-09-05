@@ -128,9 +128,9 @@ func HeartRate() Readout {
 //
 // A FIT file can carry two: the standard Record.power field, and a developer
 // field a footpod such as a Stryd registers under its own name. They are
-// different sensors and they disagree -- on the recording this was built
-// against, native peaks at 568 W and Stryd at 374 -- so this is a choice about
-// which instrument to believe, not about formatting.
+// different sensors and they disagree, by enough at the same instant to change
+// what the gauge says -- so this is a choice about which instrument to believe,
+// not about formatting.
 //
 // The resolution rule is fitactivity's ResolvedPower, shared with videofx
 // rather than reimplemented, including its strictness: asking for one source

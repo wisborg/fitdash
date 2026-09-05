@@ -558,8 +558,8 @@ func TestPanelNames_AreConsistentAndDistinct(t *testing.T) {
 // sensor, on a fixture carrying BOTH -- which is the only case where the
 // choice is observable, and the case the real recording presents.
 //
-// The two sources disagree by design: on the activity this was built against,
-// native peaks at 568 W and the footpod's field at 374. Showing one when the
+// The two sources disagree by design, by enough at the same instant to change
+// the number on screen. Showing one when the
 // user asked for the other is not a formatting slip; it is displaying a
 // different instrument's measurement under the label they chose.
 func TestPower_FollowsTheSelectedSource(t *testing.T) {
@@ -890,7 +890,7 @@ func TestDistance_IsAlwaysKilometres(t *testing.T) {
 		{0, "0.00"},
 		{340, "0.34"},
 		{1000, "1.00"},
-		{5049, "5.05"},
+		{3049, "3.05"},
 		{42195, "42.20"},
 	}
 	for _, c := range cases {
@@ -974,11 +974,11 @@ func TestReadouts_SizeAgainstTheirOwnWidestString(t *testing.T) {
 		r        Readout
 		examples []string
 	}{
-		{HeartRate(), []string{"48", "161", "205"}},
-		{Power(), []string{"0", "332", "568"}},
-		{Cadence(), []string{"87", "174"}},
-		{Distance(), []string{"0.00", "5.05", "42.20"}},
-		{Pace(), []string{"3:20", "5:24", "11:54", PacePlaceholder}},
+		{HeartRate(), []string{"48", "152", "205"}},
+		{Power(), []string{"0", "285", "499"}},
+		{Cadence(), []string{"84", "168"}},
+		{Distance(), []string{"0.00", "3.05", "42.20"}},
+		{Pace(), []string{"3:20", "5:45", "11:54", PacePlaceholder}},
 	}
 	for _, c := range cases {
 		t.Run(c.r.Name(), func(t *testing.T) {

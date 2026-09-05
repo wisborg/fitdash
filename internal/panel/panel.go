@@ -170,10 +170,9 @@ type Context struct {
 	// power field. The zero value is fitactivity.PowerAuto: prefer the
 	// footpod, fall back to native.
 	//
-	// The two are different sensors and routinely disagree -- on the
-	// recording this was built against, native peaks at 568 W and the Stryd
-	// field at 374 -- so which one is shown is a real choice rather than a
-	// formatting preference.
+	// The two are different sensors and routinely disagree, by enough to
+	// change what the gauge says at the same instant -- so which one is
+	// shown is a real choice rather than a formatting preference.
 	PowerSource fitactivity.PowerSource
 
 	// Smoothing controls how much a gauge reading is averaged over. See
