@@ -1659,6 +1659,218 @@ func TestParseBottomBand_RefusesUnknownValues(t *testing.T) {
 	}
 }
 
+// TestParseGauges_RefusesUnknownValues mirrors
+// TestParseBottomBand_RefusesUnknownValues for --gauges: both legal values
+// round-trip, and a typo is refused rather than silently rendering the
+// default -- the same precedent parseBottomBand, parseHighlightStyle,
+// SelectLayout and SelectTheme all follow.
+func TestParseGauges_RefusesUnknownValues(t *testing.T) {
+	for _, g := range []string{panel.GaugesMetrics, panel.GaugesBalance} {
+		got, err := parseGauges(g)
+		if err != nil {
+			t.Errorf("parseGauges(%q): %v", g, err)
+		}
+		if got != g {
+			t.Errorf("parseGauges(%q) = %q", g, got)
+		}
+	}
+	if _, err := parseGauges("bars"); err == nil {
+		t.Error("parseGauges accepted an unknown value")
+	}
+}
+
+// --- the --gauges summary ---------------------------------------------------
+
+// gaugeSelectionTestContext builds a Context over a track that carries pace
+// and heart rate, plus -- when withBalance is true -- a genuine
+// StanceTimeBalance too. false is what stands in for "this activity carries
+// none of the four balance metrics" for
+// TestWriteGaugeSelectionSummary_ReportsTheFallbackWhenNoBalanceDataExists,
+// below: withBalance false never sets the field at all, rather than setting
+// it to a refused zero, so that test is about the ordinary "no such field"
+// case rather than the separate "field present but every value refused" one
+// balance_test.go already covers at the panel layer.
+func gaugeSelectionTestContext(t *testing.T, withBalance bool) *panel.Context {
+	t.Helper()
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	const n = 30
+	samples := make([]fitactivity.Sample, n)
+	for i := range samples {
+		s := fitactivity.Sample{
+			Time: start.Add(time.Duration(i) * time.Second),
+			// So Pace's own Accepts (and ContactBalance's, whether or not it
+			// is expected to matter here) both have something to walk.
+			HasHeartRate: true, HeartRate: uint8(140 + i%10),
+			HasSpeed: true, Speed: 3.0,
+		}
+		if withBalance {
+			s.HasStanceTimeBalance, s.StanceTimeBalance = true, 55
+		}
+		samples[i] = s
+	}
+	track := &fitactivity.Track{Samples: samples}
+	timer := fitactivity.BuildTimerModel(track)
+	tl, err := panel.NewTimelineForActivityWithHighlights(timer, 30, 1, nil)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithHighlights: %v", err)
+	}
+	fonts, err := panel.NewFaceCache()
+	if err != nil {
+		t.Fatalf("NewFaceCache: %v", err)
+	}
+	return &panel.Context{
+		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
+		Width: 1920, Height: 1080, FontScale: 0.05, Fonts: fonts,
+		Gauges: panel.GaugesBalance,
+	}
+}
+
+// gaugeSelectionTestLayout places panel.ContactBalance() and panel.HeartRate()
+// side by side, standing in for the real gauge Alt slot's own two candidates
+// without needing the full real tree: this test's own subject is
+// writeGaugeSelectionSummary's own two messages, which read back r.Placed()
+// and ctx.Gauges alone, not the layout that produced them.
+func gaugeSelectionTestLayout() panel.Layout {
+	return panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.ContactBalance()},
+		{Panel: panel.HeartRate()},
+	}}}
+}
+
+// TestWriteGaugeSelectionSummary_ReportsBalanceIsShowing pins the first of
+// --gauges balance's two outcomes: the activity carries a balance metric, it
+// is placed, and the summary names that pace was kept and that heart rate,
+// power and cadence are not shown.
+func TestWriteGaugeSelectionSummary_ReportsBalanceIsShowing(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSelectionTestContext(t, true)
+	r, err := render.New(ctx, gaugeSelectionTestLayout(), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSelectionSummary(c, r, ctx)
+
+	out := buf.String()
+	if !strings.Contains(out, "gauges: balance") {
+		t.Fatalf("summary does not report balance is showing; got:\n%s", out)
+	}
+	if !strings.Contains(out, "pace") {
+		t.Errorf("summary does not name that pace was kept; got:\n%s", out)
+	}
+	if !strings.Contains(out, "heart rate, power and cadence") {
+		t.Errorf("summary does not name the three gauges that are not shown; got:\n%s", out)
+	}
+}
+
+// TestWriteGaugeSelectionSummary_ReportsTheFallbackWhenNoBalanceDataExists
+// pins the second outcome: an activity carrying none of the four falls back
+// to the ordinary gauges, and the summary says so rather than staying
+// silent, which would be the confusing outcome the plan this feature came
+// from explicitly calls out.
+func TestWriteGaugeSelectionSummary_ReportsTheFallbackWhenNoBalanceDataExists(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSelectionTestContext(t, false)
+	r, err := render.New(ctx, gaugeSelectionTestLayout(), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+	for _, p := range r.Placed() {
+		if p.Panel.Name() == "contact-balance" {
+			t.Fatal("precondition failed: contact-balance was placed despite carrying no genuine reading")
+		}
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSelectionSummary(c, r, ctx)
+
+	out := buf.String()
+	if !strings.Contains(out, "gauges: balance was requested") {
+		t.Fatalf("summary does not report the fallback; got:\n%s", out)
+	}
+	if !strings.Contains(out, "none of the four balance") {
+		t.Errorf("summary does not say why it fell back; got:\n%s", out)
+	}
+}
+
+// TestWriteGaugeSelectionSummary_SilentUnderMetricsSelection pins that an
+// ordinary --gauges metrics render (the default) prints nothing here at
+// all -- the same discipline every other flag-gated summary line in this
+// file follows, so a render that never asked for --gauges balance sees a
+// summary identical to one from before this flag existed.
+func TestWriteGaugeSelectionSummary_SilentUnderMetricsSelection(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSelectionTestContext(t, true)
+	ctx.Gauges = panel.GaugesMetrics
+	r, err := render.New(ctx, gaugeSelectionTestLayout(), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSelectionSummary(c, r, ctx)
+	if buf.String() != "" {
+		t.Errorf("writeGaugeSelectionSummary printed something under --gauges metrics: %q", buf.String())
+	}
+}
+
+// TestWriteGaugeSelectionSummary_SilentUnderQuiet mirrors every other
+// summary writer's own --quiet check.
+func TestWriteGaugeSelectionSummary_SilentUnderQuiet(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = true
+
+	ctx := gaugeSelectionTestContext(t, true)
+	r, err := render.New(ctx, gaugeSelectionTestLayout(), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSelectionSummary(c, r, ctx)
+	if buf.String() != "" {
+		t.Errorf("writeGaugeSelectionSummary printed something under --quiet: %q", buf.String())
+	}
+}
+
+// TestWriteGaugeSelectionSummary_NilContextPrintsNothing mirrors the
+// identical defensive check writeGaugeSummary's own test makes: this
+// function must not be called with anything but the render's own non-nil
+// Context in practice, but a nil one must not panic.
+func TestWriteGaugeSelectionSummary_NilContextPrintsNothing(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSelectionTestContext(t, true)
+	r, err := render.New(ctx, gaugeSelectionTestLayout(), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSelectionSummary(c, r, nil)
+	if buf.String() != "" {
+		t.Errorf("writeGaugeSelectionSummary printed something with a nil ctx: %q", buf.String())
+	}
+}
+
 // --- the --gauge-style summary ----------------------------------------------
 
 // gaugeSummaryTestContext builds a Context styled GaugeStyleTrack over a
@@ -1891,5 +2103,63 @@ func TestWriteGaugeSummary_NilContextPrintsNothing(t *testing.T) {
 	writeGaugeSummary(c, r, nil)
 	if buf.Len() != 0 {
 		t.Errorf("writeGaugeSummary printed something with a nil ctx: %q", buf.String())
+	}
+}
+
+// TestWritePanelSummary_ANameThatAlsoDrewIsNotReportedAsMissingData pins the
+// one rule that keeps the two summary lines from contradicting each other.
+//
+// --gauges balance seats pace in the balance branch as well as in the metrics
+// branch. When a file carries none of the four balance metrics the balance
+// branch loses the Alt, so that copy of pace declines while the metrics
+// branch's own pace draws -- and the summary printed `pace` under "carries no
+// such data" on the very same render whose `panels:` line listed pace as
+// drawn. Both statements cannot be true, and the false one is the decline:
+// the activity plainly carries pace, because a pace panel just drew from it.
+//
+// The rule under test is about the two lists rather than about pace, so it
+// keeps holding for the next panel seated in two branches. The fallback is
+// still explained -- writeGaugeSelectionSummary says balance was requested and
+// the activity has none -- so nothing is silently dropped here, only moved out
+// of a heading that would be lying about it.
+func TestWritePanelSummary_ANameThatAlsoDrewIsNotReportedAsMissingData(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := summaryTestContext(t, nil)
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: summaryAccepter("pace")},  // the metrics branch's copy: draws
+		{Panel: summaryDecliner("pace")},  // the balance branch's copy: declines
+		{Panel: summaryDecliner("power")}, // a genuine absence, must survive
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writePanelSummary(c, r, ctx.Timeline, layout.Name, "dark", panel.Smoothing{})
+	out := buf.String()
+
+	if !strings.Contains(out, "panels: pace") {
+		t.Fatalf("the drawn pace panel is missing from the panels line; got:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "declined (this activity carries no such data):") {
+			continue
+		}
+		for _, n := range strings.Split(strings.SplitN(line, ": ", 2)[1], ", ") {
+			if n == "pace" {
+				t.Errorf("a name that also drew was reported as missing data; got:\n%s", out)
+			}
+		}
+	}
+	// The filter must be surgical: a panel that genuinely declined and did
+	// NOT draw is still the user's news, and swallowing it would trade one
+	// dishonest line for a silent one.
+	if !strings.Contains(out, "declined (this activity carries no such data): power") {
+		t.Errorf("a genuine decline was swallowed along with the Alt loser; got:\n%s", out)
 	}
 }

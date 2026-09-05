@@ -157,11 +157,27 @@ func LandscapeLayout() Layout {
 						{Panel: Distance(), Weight: 1, Pad: 0.01},
 					}},
 				}},
-				{Dir: Col, Weight: 1, Children: []Slot{
-					{Panel: HeartRate(), Pad: 0.01},
-					{Panel: Pace(), Pad: 0.01},
-					{Panel: Power(), Pad: 0.01},
-					{Panel: Cadence(), Pad: 0.01},
+				// An Alt, not a plain Col, since --gauges (gauges.go) added a
+				// second candidate for this box: gaugeBalanceColumn's own
+				// balance bars, tried first, or this plain Col of the four
+				// ordinary readouts exactly as before this flag existed.
+				// Weight 1 moved here from the Col it used to sit on --
+				// Validate rejects a weight on an Alt CHILD, so the weight
+				// belongs to the Alt itself, and a lone survivor (either
+				// candidate, whichever the keep filter and Accepts leave
+				// standing) still takes the whole box exactly as the plain Col
+				// always did. See gauges.go's own doc comments for the
+				// mechanism -- IsBalancePanel, hasAnyBalanceMetric,
+				// balancePaceReadout -- and --gauges' own help text
+				// (cmd/render.go's bindRenderFlags) for what a user sees.
+				{Dir: Alt, Weight: 1, Children: []Slot{
+					gaugeBalanceColumn(),
+					{Dir: Col, Children: []Slot{
+						{Panel: HeartRate(), Pad: 0.01},
+						{Panel: Pace(), Pad: 0.01},
+						{Panel: Power(), Pad: 0.01},
+						{Panel: Cadence(), Pad: 0.01},
+					}},
 				}},
 			}},
 			// climb and gradient share a strip directly above the elevation
@@ -297,13 +313,31 @@ func PortraitLayout() Layout {
 				{Panel: ElapsedPanel{}, Weight: 2, Pad: 0.01},
 				{Panel: Distance(), Weight: 1, Pad: 0.01},
 			}},
-			{Dir: Row, Weight: 2, Children: []Slot{
-				{Panel: HeartRate(), Pad: 0.01},
-				{Panel: Pace(), Pad: 0.01},
-			}},
-			{Dir: Row, Weight: 2, Children: []Slot{
-				{Panel: Power(), Pad: 0.01},
-				{Panel: Cadence(), Pad: 0.01},
+			// Wrapped in a single Col of weight 4, where these two rows used
+			// to sit as separate children of the root Col at weight 2 each --
+			// the one structural change --gauges (gauges.go) needed here: an
+			// Alt candidate is one Slot, so the two rows this branch has
+			// always been have to become one before they can be a candidate
+			// at all. The wrap is weight-neutral -- 4 of this tree's total of
+			// 16 either way (see this file's own running weight-total
+			// comments below), identical boxes -- proved, not merely
+			// asserted, by TestNew_DefaultGaugesRendersIdenticallyToBeforeTheBalanceAltExisted
+			// (internal/render) and by the ordinary tiling tests in
+			// layout_test.go, which this wrap must keep passing unchanged.
+			// See LandscapeLayout's own identical Alt for the other
+			// candidate and gauges.go for the mechanism.
+			{Dir: Alt, Weight: 4, Children: []Slot{
+				gaugeBalanceColumn(),
+				{Dir: Col, Children: []Slot{
+					{Dir: Row, Weight: 2, Children: []Slot{
+						{Panel: HeartRate(), Pad: 0.01},
+						{Panel: Pace(), Pad: 0.01},
+					}},
+					{Dir: Row, Weight: 2, Children: []Slot{
+						{Panel: Power(), Pad: 0.01},
+						{Panel: Cadence(), Pad: 0.01},
+					}},
+				}},
 			}},
 			// This band shows the elevation profile, or the distance readout
 			// in its place if there is no profile, exactly as
@@ -321,7 +355,9 @@ func PortraitLayout() Layout {
 			// instead, and for why climb sits left of gradient.
 			//
 			// Weight 2 of this tree's total of 16 (Route 4, Elapsed+Distance 2,
-			// HR+Pace 2, Power+Cadence 2, Strip 2, Alt 3, Marker 1) -- the SAME
+			// the gauge Alt 4 -- HR+Pace and Power+Cadence, wrapped into one
+			// candidate by --gauges, see gaugeBalanceColumn's own comment
+			// above -- Strip 2, Alt 3, Marker 1) -- the SAME
 			// eighth LandscapeLayout's own Strip weight is of ITS total of 8,
 			// not the same NUMBER: this tree's rows sum to twice landscape's
 			// total, so the single unit of weight that is an eighth there is a

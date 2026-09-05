@@ -199,6 +199,15 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 			absorbed = append(absorbed, p.Name())
 			return false
 		}
+		// --gauges metrics (the zero value's own behaviour too) omits the
+		// whole balance display outright, before its own Accepts is ever
+		// asked -- panel.IsBalancePanel is the type assertion that finds it,
+		// never a name list, so a fifth balance metric costs this line
+		// nothing. See panel.Context.Gauges' own doc comment for why this
+		// must not be folded into any balance panel's own Accepts instead.
+		if ctx.Gauges != panel.GaugesBalance && panel.IsBalancePanel(p) {
+			return false
+		}
 		if p.Accepts(ctx) {
 			return true
 		}

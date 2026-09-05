@@ -315,6 +315,160 @@ func TestRenderer_StaticPlusDynamicEqualsRenderExactly_RealLayout(t *testing.T) 
 	}
 }
 
+// --- --gauges' default must draw nothing new --------------------------------
+
+// oldLandscapeLayout is a frozen, hand-copied snapshot of
+// panel.LandscapeLayout's gauge block exactly as it stood before --gauges
+// existed -- a plain Col of the four ordinary readouts, Weight 1, with no Alt
+// and no balance candidate -- with every OTHER slot copied verbatim from the
+// current tree (internal/panel/layouts.go) so this differs from it in
+// exactly the one place --gauges touched. See
+// TestNew_DefaultGaugesRendersIdenticallyToBeforeTheBalanceAltExisted, the
+// only test that uses it.
+func oldLandscapeLayout() panel.Layout {
+	return panel.Layout{
+		Name:      "landscape",
+		Margin:    0.03,
+		FontScale: 0.05,
+		Root: panel.Slot{Dir: panel.Col, Children: []panel.Slot{
+			{Dir: panel.Row, Weight: 4, Children: []panel.Slot{
+				{Dir: panel.Col, Weight: 3, Children: []panel.Slot{
+					{Panel: panel.RoutePanel{}, Weight: 3, Pad: 0.01},
+					{Dir: panel.Row, Weight: 2, Children: []panel.Slot{
+						{Panel: panel.ElapsedPanel{}, Weight: 2, Pad: 0.01},
+						{Panel: panel.Distance(), Weight: 1, Pad: 0.01},
+					}},
+				}},
+				{Dir: panel.Col, Weight: 1, Children: []panel.Slot{
+					{Panel: panel.HeartRate(), Pad: 0.01},
+					{Panel: panel.Pace(), Pad: 0.01},
+					{Panel: panel.Power(), Pad: 0.01},
+					{Panel: panel.Cadence(), Pad: 0.01},
+				}},
+			}},
+			{Dir: panel.Row, Weight: 1, Children: []panel.Slot{
+				{Panel: panel.ClimbPanel{}, Weight: 1, Pad: 0.01},
+				{Panel: panel.GradientPanel{}, Weight: 1, Pad: 0.01},
+			}},
+			{Dir: panel.Alt, Weight: 2, Children: []panel.Slot{
+				{Panel: panel.ElevationPanel{}, Pad: 0.01},
+				{Panel: panel.Distance(), Pad: 0.01},
+			}},
+			{Panel: panel.MarkerPanel{}, Weight: 1, Pad: 0.01},
+		}},
+	}
+}
+
+// oldPortraitLayout is oldLandscapeLayout's own counterpart for
+// panel.PortraitLayout: the two gauge rows (heart rate/pace, power/cadence)
+// as separate children of the root Col, at Weight 2 each, exactly as they
+// stood before this tree's own wrap into one Alt candidate (layouts.go, "the
+// one structural change"). Every other slot is copied verbatim from the
+// current tree.
+func oldPortraitLayout() panel.Layout {
+	return panel.Layout{
+		Name:      "portrait",
+		Margin:    0.03,
+		FontScale: 0.05,
+		Root: panel.Slot{Dir: panel.Col, Children: []panel.Slot{
+			{Panel: panel.RoutePanel{}, Weight: 4, Pad: 0.01},
+			{Dir: panel.Row, Weight: 2, Children: []panel.Slot{
+				{Panel: panel.ElapsedPanel{}, Weight: 2, Pad: 0.01},
+				{Panel: panel.Distance(), Weight: 1, Pad: 0.01},
+			}},
+			{Dir: panel.Row, Weight: 2, Children: []panel.Slot{
+				{Panel: panel.HeartRate(), Pad: 0.01},
+				{Panel: panel.Pace(), Pad: 0.01},
+			}},
+			{Dir: panel.Row, Weight: 2, Children: []panel.Slot{
+				{Panel: panel.Power(), Pad: 0.01},
+				{Panel: panel.Cadence(), Pad: 0.01},
+			}},
+			{Dir: panel.Row, Weight: 2, Children: []panel.Slot{
+				{Panel: panel.ClimbPanel{}, Weight: 1, Pad: 0.01},
+				{Panel: panel.GradientPanel{}, Weight: 1, Pad: 0.01},
+			}},
+			{Dir: panel.Alt, Weight: 3, Children: []panel.Slot{
+				{Panel: panel.ElevationPanel{}, Pad: 0.01},
+				{Panel: panel.Distance(), Pad: 0.01},
+			}},
+			{Panel: panel.MarkerPanel{}, Weight: 1, Pad: 0.01},
+		}},
+	}
+}
+
+// TestNew_DefaultGaugesRendersIdenticallyToBeforeTheBalanceAltExisted is the
+// pixel-identity half of proving --gauges' own wiring
+// (internal/panel/gauges.go) changed nothing about a default render.
+// oldLandscapeLayout and oldPortraitLayout, above, are frozen snapshots of
+// the two real trees' gauge block exactly as it stood before this flag
+// existed, compared byte for byte against the CURRENT
+// panel.LandscapeLayout/PortraitLayout under Context.Gauges left at its zero
+// value (GaugesMetrics' own behaviour).
+//
+// This is what actually PROVES PortraitLayout's own wrap (layouts.go, "the
+// one structural change") is weight-neutral, rather than merely asserting it
+// in a comment: a wrap that silently changed either row's own share of the
+// frame would move real pixels here. The generic tiling checks in
+// layout_test.go only prove the placed boxes cover the frame with no gap and
+// no overlap -- a real property, but one a DIFFERENT-but-still-valid split
+// would also satisfy, which is exactly why this test compares against the
+// old tree instead of only asserting the new one tiles.
+func TestNew_DefaultGaugesRendersIdenticallyToBeforeTheBalanceAltExisted(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		old, cur panel.Layout
+		w, h     int
+	}{
+		{"landscape", oldLandscapeLayout(), panel.LandscapeLayout(), 640, 360},
+		{"portrait", oldPortraitLayout(), panel.PortraitLayout(), 360, 640},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := buildContext(t, shortOptions(), tc.w, tc.h, 10)
+			// ctx.Gauges left at its zero value on purpose: GaugesMetrics' own
+			// behaviour, so an unset Context -- and every caller from before
+			// --gauges existed -- must render exactly as it always has.
+
+			oldR, err := New(ctx, tc.old, panel.DefaultTheme())
+			if err != nil {
+				t.Fatalf("New(old): %v", err)
+			}
+			curR, err := New(ctx, tc.cur, panel.DefaultTheme())
+			if err != nil {
+				t.Fatalf("New(current): %v", err)
+			}
+
+			oldBase := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+			if err := oldR.RenderStatic(oldBase); err != nil {
+				t.Fatalf("RenderStatic(old): %v", err)
+			}
+			curBase := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+			if err := curR.RenderStatic(curBase); err != nil {
+				t.Fatalf("RenderStatic(current): %v", err)
+			}
+			if !bytes.Equal(oldBase.Pix, curBase.Pix) {
+				t.Errorf("static base differs in %d pixels between the pre-\"--gauges\" gauge block and the "+
+					"current --gauges Alt under its default", countDiff(oldBase, curBase))
+			}
+
+			for _, i := range []int{0, oldR.Frames() / 2, oldR.Frames() - 1} {
+				oldImg := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+				if err := oldR.Render(oldImg, oldR.Frame(i)); err != nil {
+					t.Fatalf("Render(old, %d): %v", i, err)
+				}
+				curImg := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+				if err := curR.Render(curImg, curR.Frame(i)); err != nil {
+					t.Fatalf("Render(current, %d): %v", i, err)
+				}
+				if !bytes.Equal(oldImg.Pix, curImg.Pix) {
+					t.Errorf("frame %d differs in %d pixels between the pre-\"--gauges\" gauge block and the "+
+						"current --gauges Alt under its default", i, countDiff(oldImg, curImg))
+				}
+			}
+		})
+	}
+}
+
 // buildHighlightContext is buildContext with one highlight configured and
 // --highlight-style wash selected, so a test built on it exercises the one
 // style that renders TWO static bases and blends them per frame -- the only
@@ -1201,6 +1355,85 @@ func TestNew_MarkerPanelAbsorbedWhenTheProfileTakesTheBand(t *testing.T) {
 		if p.Panel.Name() == markerPanelName {
 			t.Error("the marker panel was placed in its own box despite being absorbed into the profile")
 		}
+	}
+}
+
+// --- --gauges: the balance display is a flag decision, not a data one ------
+
+// withStanceBalance sets a genuine, uniform StanceTimeBalance on every
+// sample of ctx.Track and rebuilds ctx.Report to match -- standing in for an
+// activity whose device recorded Garmin Running Dynamics, the one balance
+// metric fitactivity resolves natively (fitactivity.Sample.StanceTimeBalance).
+// 55, not 50: BalancePanel's own "zero is not a balance" rule (balance.go)
+// refuses a recorded 0, and an exactly-even reading would too easily read as
+// "the field is absent" to someone skimming this fixture; 55 is unambiguously
+// a real, off-centre reading.
+func withStanceBalance(ctx *panel.Context) {
+	for i := range ctx.Track.Samples {
+		ctx.Track.Samples[i].HasStanceTimeBalance = true
+		ctx.Track.Samples[i].StanceTimeBalance = 55
+	}
+	ctx.Report = inspect.Build(ctx.Track)
+}
+
+// TestNew_GaugesDefaultOmitsBalancePanelsWithoutConsultingAccepts pins
+// --gauges' default (the zero value of Context.Gauges, GaugesMetrics' own
+// behaviour): a balance panel is removed from the placements WITHOUT its own
+// Accepts ever being asked -- the identical shape
+// TestNew_BottomBandDistanceOmitsElevationWithoutConsultingAccepts pins for
+// --bottom-band distance, above. panel.IsBalancePanel is the type assertion
+// New's keep filter actually checks, so this exercises the production
+// tripwire, not a stand-in for it.
+//
+// withStanceBalance makes ContactBalance().Accepts(ctx) genuinely TRUE, so
+// this proves the rejection is unconditional -- not a coincidence of an
+// activity that would have declined on its own regardless.
+func TestNew_GaugesDefaultOmitsBalancePanelsWithoutConsultingAccepts(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 300, 100, 10)
+	withStanceBalance(ctx)
+	// ctx.Gauges left at its zero value on purpose -- see Context.Gauges'
+	// own doc comment for why that must behave exactly like GaugesMetrics.
+
+	if !(panel.ContactBalance()).Accepts(ctx) {
+		t.Fatal("precondition failed: the fixture's own ContactBalance().Accepts must be true")
+	}
+
+	r, err := New(ctx, oneMarkerLayout(
+		panel.ContactBalance(),
+		markerPanel{name: "keeps", accept: true},
+	), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, p := range r.Placed() {
+		if p.Panel.Name() == "contact-balance" {
+			t.Error("a balance panel was placed under the default gauge selection")
+		}
+	}
+	if got := r.Declined(); len(got) != 0 {
+		t.Errorf("Declined() = %v, want none -- a panel removed by --gauges is not a decline, the identical "+
+			"distinction --bottom-band distance's own Omitted() draws for ElevationPanel", got)
+	}
+}
+
+// TestNew_GaugesBalanceLeavesBalancePanelsToTheirOwnAccepts pins the other
+// side: with Context.Gauges set to GaugesBalance, New's keep filter does NOT
+// intervene, and a balance panel is placed or declined exactly as its own
+// Accepts says -- the same "flag off means no change at all" guarantee
+// TestNew_BottomBandProfileLeavesElevationToItsOwnAccepts pins for
+// --bottom-band.
+func TestNew_GaugesBalanceLeavesBalancePanelsToTheirOwnAccepts(t *testing.T) {
+	ctx := buildContext(t, shortOptions(), 300, 100, 10)
+	withStanceBalance(ctx)
+	ctx.Gauges = panel.GaugesBalance
+
+	r, err := New(ctx, oneMarkerLayout(panel.ContactBalance()), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := len(r.Placed()); got != 1 {
+		t.Fatalf("placed %d panels, want 1 -- GaugesBalance must not omit a balance panel that its own Accepts keeps", got)
 	}
 }
 

@@ -389,18 +389,39 @@ const gaugeMarkerSmoothingMultiplier = 4
 // Timeline.AutoSmoothingBase's own doc comment for why a render-wide
 // figure is the right one for exactly this kind of once-per-render use).
 //
+// The base-window arithmetic itself -- resolve, floor, multiply -- lives in
+// smoothingSeriesWindow, shared with BalancePanel's own series (balance.go),
+// which needs the IDENTICAL base but a multiplier of 1 rather than
+// gaugeMarkerSmoothingMultiplier: the gauge marker's axis is DERIVED from
+// its own series and must not max out, which is what earns it a wider
+// multiple, while a balance bar's axis is a fixed constant that cannot be
+// stretched by smoothing at all -- see BalancePanel's own doc comment for
+// why widening its window further would buy nothing.
+func gaugeMarkerWindow(ctx *Context) time.Duration {
+	return smoothingSeriesWindow(ctx, gaugeMarkerSmoothingMultiplier)
+}
+
+// smoothingSeriesWindow resolves this render's own base smoothing window --
+// the render-wide base render.smoothSample applies to f.Sample, floored at
+// minSmoothingWindow -- times multiplier, for a buildGaugeSeries caller that
+// wants some multiple of it. Shared by gaugeMarkerWindow (multiplier
+// gaugeMarkerSmoothingMultiplier) and BalancePanel's own series window
+// (multiplier 1), so the two can never disagree about what "the render's own
+// base window" means before they diverge on how much wider than it to go.
+//
 // base is floored at minSmoothingWindow -- the same floor
 // Timeline.autoSmoothingFor already treats as "the shortest window worth
 // applying" -- BEFORE the multiplier, even when --smoothing is explicitly
 // off (Context.Smoothing.Window == 0). A user who disables the printed
 // number's own smoothing has asked for the raw figure; they have not asked
-// the marker to stop being a marker. Without this floor, a literal zero
-// would carry through the multiplier unchanged, buildGaugeSeries's own
-// "smoothed" series would be the untouched raw series, and gaugeSeries'
-// own axis would be exactly the literal raw range its own doc comment
-// explains was tried and rejected -- reachable again, just gated behind a
-// flag instead of always on.
-func gaugeMarkerWindow(ctx *Context) time.Duration {
+// a series built from it to stop being smoothed at all. Without this floor,
+// a literal zero would carry through the multiplier unchanged, and
+// buildGaugeSeries's own "smoothed" series would be the untouched raw
+// series -- for the gauge marker, exactly the literal raw range its own doc
+// comment explains was tried and rejected; for a balance bar, the zeros
+// buildGaugeSeries is relied on to average away would instead land in the
+// series one at a time, each a spurious below-floor chevron.
+func smoothingSeriesWindow(ctx *Context, multiplier float64) time.Duration {
 	base := ctx.Smoothing.Window
 	if ctx.Smoothing.Auto {
 		base = ctx.Timeline.AutoSmoothingBase()
@@ -408,7 +429,7 @@ func gaugeMarkerWindow(ctx *Context) time.Duration {
 	if base < minSmoothingWindow {
 		base = minSmoothingWindow
 	}
-	return base * gaugeMarkerSmoothingMultiplier
+	return time.Duration(float64(base) * multiplier)
 }
 
 // robustGaugeScale derives a gaugeScale from ctx.Track through value --
@@ -598,18 +619,36 @@ func (p *readoutPainter) drawNotch(c *Canvas, frac float64, col color.Color) {
 // panel never invents one), and Foreground already means "a live reading",
 // which an out-of-range instant still is -- the one instant this panel is
 // most certain about.
+//
+// The body is drawGaugeCap, a free function taking the geometry rather than
+// a *readoutPainter, so a Painter that is not a readoutPainter -- BalancePanel
+// (balance.go), which draws the identical off-scale chevron at a fixed
+// scale's own two ends -- can call the exact same shape rather than a second
+// copy of this polygon that could drift from it. This method is now a thin
+// adapter kept so every EXISTING call site (drawGauge, drawDialGauge, both in
+// this file) is untouched.
 func (p *readoutPainter) gaugeCap(c *Canvas, right bool, col color.Color) {
-	if p.capW <= 0 {
+	drawGaugeCap(c, p.spanX, p.spanW, p.trackY, p.capW, p.capHalfH, right, col)
+}
+
+// drawGaugeCap is gaugeCap's own body, lifted out to a free function so a
+// non-readoutPainter caller can draw the identical chevron -- see gaugeCap's
+// own doc comment. spanX, spanW, trackY, capW and capHalfH are the same five
+// fields gaugeCap already reads off p; a caller with no readoutPainter of its
+// own (BalancePanel) resolves the identical five during its own Prepare and
+// passes them straight through.
+func drawGaugeCap(c *Canvas, spanX, spanW, trackY, capW, capHalfH float64, right bool, col color.Color) {
+	if capW <= 0 {
 		return
 	}
-	half := p.capHalfH
+	half := capHalfH
 	if right {
-		x0 := p.spanX + p.spanW
-		c.Polygon([]float64{x0, x0, x0 + p.capW}, []float64{p.trackY - half, p.trackY + half, p.trackY}, col)
+		x0 := spanX + spanW
+		c.Polygon([]float64{x0, x0, x0 + capW}, []float64{trackY - half, trackY + half, trackY}, col)
 		return
 	}
-	x0 := p.spanX
-	c.Polygon([]float64{x0, x0, x0 - p.capW}, []float64{p.trackY - half, p.trackY + half, p.trackY}, col)
+	x0 := spanX
+	c.Polygon([]float64{x0, x0, x0 - capW}, []float64{trackY - half, trackY + half, trackY}, col)
 }
 
 // drawGauge is Dynamic's own gauge-specific drawing for a PRESENT reading v

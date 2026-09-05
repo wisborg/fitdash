@@ -38,6 +38,7 @@ type renderOptions struct {
 	bottomBand          string
 	theme               string
 	gaugeStyle          string
+	gauges              string
 	smoothing           string
 	speedup             float64
 	videoDur            time.Duration
@@ -137,6 +138,25 @@ func parseBottomBand(band string) (string, error) {
 	return "", fmt.Errorf("render: --bottom-band %q is invalid; use %s", band, strings.Join(bottomBands, ", "))
 }
 
+// gaugeSelections enumerates --gauges' legal values, for the identical reason
+// bottomBands lists --bottom-band's: the SET belongs here because only the
+// CLI's own validation and its error message need it, where the values
+// themselves (panel.GaugesMetrics, panel.GaugesBalance) live in panel because
+// internal/render's keep filter compares Context.Gauges against them too.
+var gaugeSelections = []string{panel.GaugesMetrics, panel.GaugesBalance}
+
+// parseGauges validates --gauges, refusing an unknown value rather than
+// silently rendering with the default -- the same precedent parseBottomBand,
+// parseHighlightStyle, SelectLayout and SelectTheme all follow.
+func parseGauges(g string) (string, error) {
+	for _, v := range gaugeSelections {
+		if v == g {
+			return g, nil
+		}
+	}
+	return "", fmt.Errorf("render: --gauges %q is invalid; use %s", g, strings.Join(gaugeSelections, ", "))
+}
+
 var renderOpts renderOptions
 
 // bindRenderFlags attaches the render flags to the root command.
@@ -176,6 +196,13 @@ func bindRenderFlags(c *cobra.Command) {
 			"round numbers -- so they differ in shape and nothing else. A reading beyond either end is marked as "+
 			"off-scale rather than hidden, and the number itself is never clipped. A gauge whose activity carries too "+
 			"few readings to scale falls back to \"plain\", and the summary names it")
+	f.StringVar(&renderOpts.gauges, "gauges", panel.GaugesMetrics,
+		"what the gauge block shows: \"metrics\" (default: heart rate, pace, power and cadence) or \"balance\" "+
+			"(the left/right balance bars, with pace kept alongside since balance varies with effort). Every "+
+			"balance bar uses one fixed scale centred on even, so the bars can be compared with each other and "+
+			"across renders. An activity carrying no balance data falls back to \"metrics\" and the summary says "+
+			"so -- \"fitdash inspect\" lists the developer fields a file actually carries, which is where to look "+
+			"when a device names them differently")
 	f.StringVar(&renderOpts.smoothing, "smoothing", smoothingAuto,
 		"average the gauge readings -- heart rate, pace, power, cadence -- over this much ACTIVITY time, "+
 			"so they can be read when the activity is compressed. \"auto\" (default) scales with the compression and "+
@@ -251,6 +278,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	bottomBand, err := parseBottomBand(renderOpts.bottomBand)
+	if err != nil {
+		return err
+	}
+	gauges, err := parseGauges(renderOpts.gauges)
 	if err != nil {
 		return err
 	}
@@ -343,6 +374,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Labels:              labels,
 		BottomBand:          bottomBand,
 		GaugeStyle:          gaugeStyle,
+		Gauges:              gauges,
 	}
 	r, err := render.New(rctx, layout, theme)
 	if err != nil {
@@ -650,6 +682,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeGaugeSummary(cmd, r, ctx)
+	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
 	markersOnProfile := markersAbsorbedIntoProfile(r)
 	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
@@ -707,6 +740,43 @@ func writeGaugeSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Contex
 		return
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "gauges: %s; %s\n", panel.GaugeStyleName(ctx.GaugeStyle), strings.Join(parts, ", "))
+}
+
+// writeGaugeSelectionSummary reports --gauges balance's own two outcomes --
+// see that flag's own help text (bindRenderFlags, above) and
+// panel.IsBalancePanel/hasAnyBalanceMetric (internal/panel/gauges.go) for the
+// mechanism this reads back from rather than re-derives: which panels the
+// gauge Alt slot actually placed is read from r.Placed(), never recomputed
+// here, so this line can never disagree with the pixels.
+//
+// The Alt mechanism's own documented gap (Box's Alt doc comment,
+// internal/panel/layout.go) means neither outcome shows up in Declined() or
+// Omitted() on its own: whichever candidate loses is simply never asked
+// about, and three panels (heart rate, power, cadence) vanishing from a
+// render with no line explaining why would be exactly the "unexplained hole"
+// this project's whole absent-data discipline exists to prevent -- worse
+// than the single readout the Alt doc comment's own gap was originally
+// written about, which is why this closes it locally rather than waiting on
+// the engine's own "superseded" machinery.
+//
+// Printed only under --gauges balance: an ordinary metrics render (the
+// default) prints nothing here, keeping its summary identical to one from
+// before this flag existed, the same discipline every other flag-gated
+// summary line in this file already follows.
+func writeGaugeSelectionSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context) {
+	if renderOpts.quiet || ctx == nil || ctx.Gauges != panel.GaugesBalance {
+		return
+	}
+	out := cmd.ErrOrStderr()
+	for _, p := range r.Placed() {
+		if panel.IsBalancePanel(p.Panel) {
+			fmt.Fprintln(out, "gauges: balance -- pace is kept alongside the bars for effort context; "+
+				"heart rate, power and cadence are not shown")
+			return
+		}
+	}
+	fmt.Fprintln(out, "gauges: balance was requested, but this activity carries none of the four balance "+
+		"metrics; showing the ordinary gauges instead")
 }
 
 // writeElevationSummary reports the smoothing sigma BuildElevation actually
@@ -798,6 +868,25 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline
 	for _, name := range r.Declined() {
 		if name == markerPanelName {
 			configDeclined = append(configDeclined, name)
+			continue
+		}
+		// A name that was ALSO placed is an Alt loser, not a fact about the
+		// activity. --gauges balance seats pace in the balance branch as well
+		// as in the metrics branch; when the balance branch loses -- because
+		// the file carries none of the four balance metrics -- that copy
+		// declines while the metrics branch's own pace draws. Reporting the
+		// loser here printed `pace` under "carries no such data" on the same
+		// render whose `panels:` line listed pace as drawn, which is a
+		// self-contradiction and false besides.
+		//
+		// The rule is deliberately about the two lists rather than about
+		// pace: if a panel of that name drew, the activity demonstrably
+		// carries what it needs, so no decline of that name can be a
+		// statement about missing data. The fallback itself is not left
+		// unexplained -- writeGaugeSelectionSummary says outright that
+		// balance was requested, the activity has none, and the ordinary
+		// gauges are showing instead.
+		if slices.Contains(drew, name) {
 			continue
 		}
 		dataDeclined = append(dataDeclined, name)
@@ -1245,6 +1334,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	}
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeGaugeSummary(cmd, r, ctx)
+	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
 	// The fast visual loop is where a transition actually gets looked at
 	// (see --frame-at-video), so it gets the same base/highlight

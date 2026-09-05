@@ -263,6 +263,24 @@ type Context struct {
 	// it unset, and every render before --gauge-style existed, keeps drawing
 	// the plain style it always has.
 	GaugeStyle GaugeStyle
+
+	// Gauges selects which of the gauge block's two Alt candidates
+	// (gaugeBalanceColumn, gauges.go, placed in both LandscapeLayout and
+	// PortraitLayout) the user gets: GaugesMetrics (the zero value's
+	// behaviour too, so an unset Context renders exactly as it always has)
+	// or GaugesBalance, which shows the four balance bars with Pace kept
+	// beside them instead of heart rate, power and cadence.
+	//
+	// Read by internal/render's keep filter through panel.IsBalancePanel,
+	// deliberately NOT by any balance panel's own Accepts -- the identical
+	// split BottomBand's own doc comment draws, and for the identical
+	// reason: Accepts answers whether the ACTIVITY carries the data, this
+	// answers whether the USER asked to see it presented this way, and a
+	// balance panel declining because this field says "metrics" would be
+	// indistinguishable, in the render summary, from one declining because
+	// the activity genuinely carries no such reading -- which would be
+	// false.
+	Gauges string
 }
 
 // captionOffset is how far above a panel's own centre a caption sits, as a
