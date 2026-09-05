@@ -152,8 +152,8 @@ frame advances sixteen seconds of activity and shows one arbitrary sample out of
 which makes power flick between 200 and 500 from frame to frame. `--smoothing` averages
 the gauges over a window of activity time: `auto` (default) scales with the compression
 and switches itself off below about three times real time, `off` shows what was recorded,
-or give a duration such as `30s`. Measured on a real run, it cuts power's frame-to-frame
-change from 18.7 W to 3.1 W at 311×, while leaving the shape of the effort intact.
+or give a duration such as `30s`. At high compression it cuts power's frame-to-frame
+change by roughly a factor of six, while leaving the shape of the effort intact.
 
 Averaging is arguably the *more* faithful choice at compression, not the less: the frame
 already stands for a span of activity, so a number describing that span is closer to what
@@ -167,8 +167,8 @@ rather than a `0:00` that would claim the opposite, or the confident multi-hour 
 near-zero speed divides out to.
 
 **Some activities record power twice.** A footpod such as a Stryd registers its own
-reading alongside the standard FIT power field, and the two disagree — on the recording
-this was built against, by more than fifty watts at the same instant. `--power-source`
+reading alongside the standard FIT power field, and the two can disagree substantially at
+the same instant — enough to change what the gauge says. `--power-source`
 takes `auto` (prefer the footpod, fall back to native), `stryd`, or `native`, using the
 same vocabulary as [videofx][videofx]. A forced source the activity lacks shows a
 placeholder rather than quietly substituting the other sensor's number.
