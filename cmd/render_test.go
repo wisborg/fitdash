@@ -876,6 +876,13 @@ func TestRenderFlags_LayoutAndThemeDefaultsAreSelectable(t *testing.T) {
 	if _, err := panel.SelectTheme(themeDefault); err != nil {
 		t.Errorf("--theme's default %q is not selectable: %v", themeDefault, err)
 	}
+	gaugeStyleDefault := cmd.Flags().Lookup("gauge-style").DefValue
+	if _, err := panel.SelectGaugeStyle(gaugeStyleDefault); err != nil {
+		t.Errorf("--gauge-style's default %q is not selectable: %v", gaugeStyleDefault, err)
+	}
+	if gaugeStyleDefault != panel.GaugeStyleNamePlain {
+		t.Errorf("--gauge-style's default is %q, want %q -- this step must not change the default", gaugeStyleDefault, panel.GaugeStyleNamePlain)
+	}
 
 	// And every name the help text offers must work, or the help lies.
 	for _, name := range []string{panel.LayoutAuto, "landscape", "portrait"} {
@@ -887,6 +894,26 @@ func TestRenderFlags_LayoutAndThemeDefaultsAreSelectable(t *testing.T) {
 		if _, err := panel.SelectTheme(th.Name); err != nil {
 			t.Errorf("--theme %s is offered but rejected: %v", th.Name, err)
 		}
+	}
+	for _, name := range []string{panel.GaugeStyleNamePlain, panel.GaugeStyleNameTrack, panel.GaugeStyleNameDial} {
+		if _, err := panel.SelectGaugeStyle(name); err != nil {
+			t.Errorf("--gauge-style %s is offered but rejected: %v", name, err)
+		}
+	}
+}
+
+// TestSelectGaugeStyle_RefusesAnUnknownValue is the --gauge-style analogue of
+// the theme and layout tests panel's own canvas_test.go and layouts_test.go
+// already carry: a typo must be refused rather than silently rendering the
+// plain style nobody asked to keep -- see SelectGaugeStyle's own doc comment.
+func TestSelectGaugeStyle_RefusesAnUnknownValue(t *testing.T) {
+	for _, name := range []string{panel.GaugeStyleNamePlain, panel.GaugeStyleNameTrack, panel.GaugeStyleNameDial} {
+		if _, err := panel.SelectGaugeStyle(name); err != nil {
+			t.Errorf("SelectGaugeStyle(%q): %v", name, err)
+		}
+	}
+	if _, err := panel.SelectGaugeStyle("bars"); err == nil {
+		t.Error("SelectGaugeStyle(\"bars\") was accepted, want an error")
 	}
 }
 
@@ -1629,5 +1656,240 @@ func TestParseBottomBand_RefusesUnknownValues(t *testing.T) {
 	}
 	if _, err := parseBottomBand("elevation"); err == nil {
 		t.Error("parseBottomBand accepted an unknown value")
+	}
+}
+
+// --- the --gauge-style summary ----------------------------------------------
+
+// gaugeSummaryTestContext builds a Context styled GaugeStyleTrack over a
+// track carrying two gauge metrics with two different outcomes:
+//
+//   - HeartRate: 101 present readings ramping 100, 101, ..., 200 -- the same
+//     ramp shape TestRobustGaugeScale_SnapsOutwardToStep and
+//     TestReadoutGauge_InRangeFillsProportionally (internal/panel) already
+//     derive floor=100/ceiling=200 from with step=10, reused here so this
+//     test cannot silently disagree with what those pin about the same
+//     arithmetic.
+//   - Cadence: two present readings -- enough for Report.Carries (which
+//     requires only Present > 0, so the panel is actually PLACED) but far
+//     under Quantiles' own floor of ten, so Cadence's own gauge must report
+//     "no usable range".
+func gaugeSummaryTestContext(t *testing.T) *panel.Context {
+	t.Helper()
+	start := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	const n = 101
+	samples := make([]fitactivity.Sample, n)
+	for i := range samples {
+		samples[i] = fitactivity.Sample{
+			Time: start.Add(time.Duration(i) * time.Second),
+			// +1 so the ramp never carries a recorded zero -- HeartRate's own
+			// value() refuses one (see readout.go) -- and stays 100..200.
+			HasHeartRate: true, HeartRate: uint8(100 + i),
+		}
+	}
+	samples[0].HasCadence, samples[0].Cadence = true, 80
+	samples[1].HasCadence, samples[1].Cadence = true, 82
+
+	track := &fitactivity.Track{Samples: samples}
+	timer := fitactivity.BuildTimerModel(track)
+	tl, err := panel.NewTimelineForActivityWithHighlights(timer, 30, 1, nil)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithHighlights: %v", err)
+	}
+	fonts, err := panel.NewFaceCache()
+	if err != nil {
+		t.Fatalf("NewFaceCache: %v", err)
+	}
+	return &panel.Context{
+		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
+		Width: 1920, Height: 1080, FontScale: 0.05, Fonts: fonts,
+		GaugeStyle: panel.GaugeStyleTrack,
+	}
+}
+
+// TestWriteGaugeSummary_ReportsResolvedRangesAndFallback is this step's
+// headline case: one gauge with a usable range and one without, in the SAME
+// render, so the summary must name both -- a track silently missing from one
+// gauge and not its neighbour is exactly the unexplained difference this
+// line exists to report rather than leave for a viewer to notice on their
+// own.
+func TestWriteGaugeSummary_ReportsResolvedRangesAndFallback(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSummaryTestContext(t)
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.HeartRate()},
+		{Panel: panel.Cadence()},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSummary(c, r, ctx)
+
+	out := buf.String()
+	if !strings.HasPrefix(out, "gauges: track; ") {
+		t.Fatalf("summary does not start with the expected prefix; got:\n%s", out)
+	}
+	if !strings.Contains(out, "heart rate 100-200 bpm") {
+		t.Errorf("missing heart rate's resolved range; got:\n%s", out)
+	}
+	if !strings.Contains(out, "cadence no usable range - plain") {
+		t.Errorf("missing cadence's fallback line; got:\n%s", out)
+	}
+}
+
+// TestWriteGaugeSummary_ReportsResolvedRangesAndFallbackForDial is
+// TestWriteGaugeSummary_ReportsResolvedRangesAndFallback's own analogue for
+// GaugeStyleDial: the SAME range arithmetic (GaugeStyle's own doc comment,
+// gauge.go) is reported, and the line's own prefix names "dial" rather than
+// "track" -- panel.GaugeStyleName's whole reason for existing is so this
+// line can never say "track" for a render that actually drew a dial.
+func TestWriteGaugeSummary_ReportsResolvedRangesAndFallbackForDial(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSummaryTestContext(t)
+	ctx.GaugeStyle = panel.GaugeStyleDial
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.HeartRate()},
+		{Panel: panel.Cadence()},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSummary(c, r, ctx)
+
+	out := buf.String()
+	if !strings.HasPrefix(out, "gauges: dial; ") {
+		t.Fatalf("summary does not start with the expected prefix; got:\n%s", out)
+	}
+	if !strings.Contains(out, "heart rate 100-200 bpm") {
+		t.Errorf("missing heart rate's resolved range; got:\n%s", out)
+	}
+	if !strings.Contains(out, "cadence no usable range - plain") {
+		t.Errorf("missing cadence's fallback line; got:\n%s", out)
+	}
+}
+
+// TestWriteGaugeSummary_OmitsReadoutsWithNoGaugeVariant pins that a placed
+// readout with no gauge variant at all (Distance, which only ever
+// increases) is never reported here -- reporting it would misname a fact
+// about that readout's own definition as a fact about this activity's
+// range, which is exactly what HasGaugeRule exists to prevent (see its own
+// doc comment).
+func TestWriteGaugeSummary_OmitsReadoutsWithNoGaugeVariant(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSummaryTestContext(t)
+	for i := range ctx.Track.Samples {
+		ctx.Track.Samples[i].HasDistance = true
+		ctx.Track.Samples[i].Distance = float64(i) * 10
+	}
+	ctx.Report = inspect.Build(ctx.Track)
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.HeartRate()},
+		{Panel: panel.Distance()},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSummary(c, r, ctx)
+	if strings.Contains(buf.String(), "distance") {
+		t.Errorf("distance (no gauge variant) appeared in the gauge summary: %q", buf.String())
+	}
+}
+
+// TestWriteGaugeSummary_PlainStylePrintsNothing pins that an ordinary
+// GaugeStylePlain render -- today's default -- prints nothing here at all,
+// the same discipline writeHighlightSummary and writeElevationSummary apply
+// to their own features, so a render that never asked for a gauge track
+// sees a summary identical to one from before this flag existed.
+func TestWriteGaugeSummary_PlainStylePrintsNothing(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSummaryTestContext(t)
+	ctx.GaugeStyle = panel.GaugeStylePlain
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.HeartRate()},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSummary(c, r, ctx)
+	if buf.Len() != 0 {
+		t.Errorf("writeGaugeSummary printed something under GaugeStylePlain: %q", buf.String())
+	}
+}
+
+// TestWriteGaugeSummary_QuietPrintsNothing follows every other summary
+// writer's own --quiet guard.
+func TestWriteGaugeSummary_QuietPrintsNothing(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = true
+
+	ctx := gaugeSummaryTestContext(t)
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.HeartRate()},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSummary(c, r, ctx)
+	if buf.Len() != 0 {
+		t.Errorf("writeGaugeSummary printed something under --quiet: %q", buf.String())
+	}
+}
+
+// TestWriteGaugeSummary_NilContextPrintsNothing guards the defensive nil
+// check: writeGaugeSummary is always called with the render's own non-nil
+// Context in production, but a nil one must not panic through
+// Readout.GaugeRangeText.
+func TestWriteGaugeSummary_NilContextPrintsNothing(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	renderOpts.quiet = false
+
+	ctx := gaugeSummaryTestContext(t)
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{Dir: panel.Row, Children: []panel.Slot{
+		{Panel: panel.HeartRate()},
+	}}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	writeGaugeSummary(c, r, nil)
+	if buf.Len() != 0 {
+		t.Errorf("writeGaugeSummary printed something with a nil ctx: %q", buf.String())
 	}
 }

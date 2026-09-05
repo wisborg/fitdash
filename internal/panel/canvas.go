@@ -350,6 +350,28 @@ func (c *Canvas) Circle(x, y, r float64, col color.Color) {
 	c.dc.Fill()
 }
 
+// Arc strokes the circular arc of radius r centred at (cx, cy), from
+// startAngle to endAngle in radians, in the standard x = r*cos(theta),
+// y = r*sin(theta) convention against the image's own y-DOWN axes -- see
+// dialAngle's own doc comment (gauge.go) for what that convention means for
+// an angle drawn "up" on screen versus "down".
+//
+// The one caller today (GaugeStyleDial -- see that type's own doc comment,
+// gauge.go) always draws a half-circle, but this takes
+// explicit start/end angles rather than hard-coding a semicircle, on the
+// same principle as Polyline and Polygon taking arbitrary point lists rather
+// than a fixed shape: the primitive is the shape gg already knows how to
+// stroke, not a policy about what a caller draws with it.
+func (c *Canvas) Arc(cx, cy, r, startAngle, endAngle, width float64, col color.Color) {
+	if r <= 0 || width <= 0 {
+		return
+	}
+	c.dc.SetColor(col)
+	c.dc.SetLineWidth(width)
+	c.dc.DrawArc(cx, cy, r, startAngle, endAngle)
+	c.dc.Stroke()
+}
+
 // Text draws s at px pixels, anchored at (x, y).
 //
 // ax and ay place the anchor within the text's own box: 0 is left/top, 0.5 is

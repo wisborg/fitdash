@@ -22,7 +22,9 @@ ride simply has no route panel, and the summary says so by name rather than leav
 unexplained gap.
 
 `--layout` picks the arrangement (`auto`, which follows the frame's shape, or `landscape`
-or `portrait` forced) and `--theme` the palette (`dark` or `light`).
+or `portrait` forced), `--theme` the palette (`dark` or `light`), and `--gauge-style`
+whether the four fluctuating readouts draw their reading against a scale (`plain`, `track`
+or `dial` — see below).
 
 ## What it is
 
@@ -126,6 +128,24 @@ minute — crank revolutions on a bike, which is what a cyclist reads, but revol
 leg* on a run, so the figure a runner recognises is twice it. A run shows `spm`, a ride
 shows `rpm`, and a sport fitdash does not recognise keeps the recorded number under its
 recorded unit rather than being guessed at.
+
+**The fluctuating readouts can be drawn against a scale.** Heart rate, pace, power and
+cadence go up and down as an activity progresses, and a bare number says nothing about
+whether 148 bpm is this ride's hard effort or its easy one. `--gauge-style track` draws a
+labelled axis beneath each of those four with a marker at the current reading;
+`--gauge-style dial` draws the identical scale beside the number instead, as a
+semicircular arc with a needle. `plain`, the default, is the number alone, unchanged. The
+range is the activity's own, snapped outward to round numbers, so a gauge might read
+`100`–`190 bpm` or `4:00`–`7:00 min/km`. It is taken from a smoothed reading rather than
+the raw samples, so the marker never pins at an end, and neither a stopped sample — whose
+pace is undefined — nor a one-sample power spike can take the whole axis for a value the
+activity visited once. Both ends are always
+labelled: a scale derived from the activity is only honest if the screen says what it is.
+A reading past either end draws an off-scale mark rather than being hidden or clamped, and
+the printed number is never clipped — so a genuine `0 W` while coasting still reads `0 W`.
+The scale carries a green-to-red ramp and the marker takes its colour from its own
+position, which is emphasis rather than information: the position says the same thing, so
+nothing is lost if the colours are hard to tell apart.
 
 **Compressed hard, the gauges become unreadable — so they are averaged.** At 480×, a
 frame advances sixteen seconds of activity and shows one arbitrary sample out of them,

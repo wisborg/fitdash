@@ -37,6 +37,7 @@ type renderOptions struct {
 	layout              string
 	bottomBand          string
 	theme               string
+	gaugeStyle          string
 	smoothing           string
 	speedup             float64
 	videoDur            time.Duration
@@ -167,6 +168,14 @@ func bindRenderFlags(c *cobra.Command) {
 			"same fallback, not a different one")
 	f.StringVar(&renderOpts.theme, "theme", panel.DefaultTheme().Name,
 		"colour palette -- \"dark\" (default) or \"light\"")
+	f.StringVar(&renderOpts.gaugeStyle, "gauge-style", panel.GaugeStyleNamePlain,
+		"how the fluctuating gauges -- heart rate, pace, power, cadence -- show their reading: \"plain\" (default: the number "+
+			"alone), \"track\" (adds a scale beneath it, marked at the current value, with both ends labelled), or \"dial\" "+
+			"(the same scale beside it instead, as a semicircular arc with a needle in place of the track and its marker). "+
+			"\"track\" and \"dial\" resolve the IDENTICAL range -- this activity's own typical span, snapped outward to "+
+			"round numbers -- so they differ in shape and nothing else. A reading beyond either end is marked as "+
+			"off-scale rather than hidden, and the number itself is never clipped. A gauge whose activity carries too "+
+			"few readings to scale falls back to \"plain\", and the summary names it")
 	f.StringVar(&renderOpts.smoothing, "smoothing", smoothingAuto,
 		"average the gauge readings -- heart rate, pace, power, cadence -- over this much ACTIVITY time, "+
 			"so they can be read when the activity is compressed. \"auto\" (default) scales with the compression and "+
@@ -307,6 +316,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	gaugeStyle, err := panel.SelectGaugeStyle(renderOpts.gaugeStyle)
+	if err != nil {
+		return err
+	}
 	// Resolved before Context is built, the way Report already is here, so
 	// ElevationPanel (and the panels this field exists to let land) read a
 	// model already built rather than each building their own copy of it --
@@ -329,6 +342,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		HighlightTransition: renderOpts.highlightTransition,
 		Labels:              labels,
 		BottomBand:          bottomBand,
+		GaugeStyle:          gaugeStyle,
 	}
 	r, err := render.New(rctx, layout, theme)
 	if err != nil {
@@ -342,9 +356,9 @@ func runRender(cmd *cobra.Command, args []string) error {
 		elevation: rctx.Elevation, elevationSource: elevSource,
 	}
 	if renderOpts.frames {
-		return runFrames(cmd, r, in)
+		return runFrames(cmd, r, rctx, in)
 	}
-	return runVideo(cmd, r, activity, in)
+	return runVideo(cmd, r, activity, rctx, in)
 }
 
 // renderInputs bundles the values runRender resolves before building the
@@ -390,7 +404,13 @@ type renderInputs struct {
 }
 
 // runVideo encodes the whole render to a video file.
-func runVideo(cmd *cobra.Command, r *render.Renderer, activity string, in renderInputs) error {
+//
+// ctx is rctx, the exact *panel.Context render.New built r from -- passed
+// straight through rather than folded into renderInputs (see that type's own
+// doc comment), because writeGaugeSummary's only route to a gauge's resolved
+// range is Readout.GaugeRangeText(ctx), and reading anything but the render's
+// own Context there would risk it disagreeing with what Prepare actually drew.
+func runVideo(cmd *cobra.Command, r *render.Renderer, activity string, ctx *panel.Context, in renderInputs) error {
 	out, err := outputPath(activity, renderOpts.output, renderOpts.outputDir, ".mp4")
 	if err != nil {
 		return err
@@ -420,7 +440,7 @@ func runVideo(cmd *cobra.Command, r *render.Renderer, activity string, in render
 	// The path goes to stdout so it can be piped; everything else is
 	// commentary and goes to stderr.
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
-	writeRenderSummary(cmd, r, in)
+	writeRenderSummary(cmd, r, ctx, in)
 	return nil
 }
 
@@ -609,7 +629,7 @@ func baseSpeedupNote(s float64, hasHighlights bool) string {
 // the pixels and false in the user's understanding of them: they see a
 // dashboard with no power reading and have no way to tell whether their file
 // lacks power, or fitdash does.
-func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs) {
+func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in renderInputs) {
 	if renderOpts.quiet {
 		return
 	}
@@ -629,10 +649,64 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs)
 		baseSpeedupNote(in.tl.BaseSpeedup(), len(in.highlights) > 0), strconv.FormatFloat(in.tl.FPS(), 'f', -1, 64), in.w, in.h)
 
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
+	writeGaugeSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
 	markersOnProfile := markersAbsorbedIntoProfile(r)
 	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
 	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
+}
+
+// writeGaugeSummary reports, for a render styled GaugeStyleTrack or
+// GaugeStyleDial, each placed gauge's own resolved range -- the same range
+// Prepare will actually draw the track or the dial against, read back
+// through Readout.GaugeRangeText rather than re-derived here, so this line
+// can never disagree with what was drawn on screen -- and names any gauge
+// whose activity range came out unusable, since Prepare's own silent
+// fallback to the plain readout would otherwise leave one gauge's
+// instrument missing for a reason nothing on screen explains.
+//
+// Printed only under GaugeStyleTrack or GaugeStyleDial: an ordinary
+// GaugeStylePlain render (today's default) prints nothing here, the same
+// discipline writeHighlightSummary and writeElevationSummary already apply
+// to their own features, so a render that never asked for a gauge
+// instrument sees a summary identical to one from before this flag existed.
+// The line names which of the two styles actually drew, via
+// panel.GaugeStyleName(ctx.GaugeStyle) -- both share the identical range
+// arithmetic (GaugeStyle's own doc comment, gauge.go), so nothing else on
+// this line needs to differ between them.
+//
+// Iterates r.Placed() -- the panels THIS render actually placed, in the
+// order the layout tree resolved them -- rather than a fixed list of the
+// four gauge metrics, so a metric the activity carries nothing for at all
+// (Accepts declined it, and it is simply not in the layout) is never
+// reported here. That is a different fact from a placed gauge whose own
+// range Quantiles refused, which IS what "no usable range - plain" reports.
+// panel.Readout.HasGaugeRule tells the two apart without needing ctx: only
+// HeartRate, Pace, Power and Cadence set a scale rule at all, so filtering
+// on it first is what keeps Distance and ElapsedPanel -- placed, but with no
+// gauge variant to speak of -- out of this line entirely.
+func writeGaugeSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context) {
+	if renderOpts.quiet || ctx == nil ||
+		(ctx.GaugeStyle != panel.GaugeStyleTrack && ctx.GaugeStyle != panel.GaugeStyleDial) {
+		return
+	}
+	var parts []string
+	for _, p := range r.Placed() {
+		ro, ok := p.Panel.(panel.Readout)
+		if !ok || !ro.HasGaugeRule() {
+			continue
+		}
+		name := strings.ReplaceAll(ro.Name(), "-", " ")
+		if text, ok := ro.GaugeRangeText(ctx); ok {
+			parts = append(parts, fmt.Sprintf("%s %s", name, text))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s no usable range - plain", name))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "gauges: %s; %s\n", panel.GaugeStyleName(ctx.GaugeStyle), strings.Join(parts, ", "))
 }
 
 // writeElevationSummary reports the smoothing sigma BuildElevation actually
@@ -1141,7 +1215,10 @@ func writeLabelSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity
 // It runs the IDENTICAL render path -- only the sink differs -- which is what
 // makes the fast visual loop a trustworthy proxy for the real render rather
 // than a second implementation free to disagree with it.
-func runFrames(cmd *cobra.Command, r *render.Renderer, in renderInputs) error {
+//
+// ctx is rctx, passed through for writeGaugeSummary -- see runVideo's own
+// doc comment for why.
+func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in renderInputs) error {
 	indices, err := frameIndices(in.tl, r.LastFrameWithSample(), renderOpts.frameAt, renderOpts.frameAtVideo, in.highlights, in.labels)
 	if err != nil {
 		return err
@@ -1167,6 +1244,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, in renderInputs) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
+	writeGaugeSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
 	// The fast visual loop is where a transition actually gets looked at
 	// (see --frame-at-video), so it gets the same base/highlight

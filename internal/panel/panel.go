@@ -250,6 +250,20 @@ type Context struct {
 	// instead lets the Alt slot fall through to the readout for free, exactly
 	// as it already does when the activity itself has no elevation.
 	BottomBand string
+
+	// GaugeStyle selects how a fluctuating Readout -- heart rate, pace,
+	// power, cadence -- draws its reading: GaugeStylePlain (the zero value,
+	// so an unset Context renders exactly as it always has), GaugeStyleTrack
+	// (a scale track beneath the number), or GaugeStyleDial (the same scale
+	// beside the number, as a semicircular arc and needle). See GaugeStyle's
+	// own doc comment (gauge.go) for the design and Readout.scale for how
+	// each metric's range is derived.
+	//
+	// --gauge-style sets this (SelectGaugeStyle resolves the flag's value),
+	// defaulting to GaugeStylePlain -- so every existing caller that leaves
+	// it unset, and every render before --gauge-style existed, keeps drawing
+	// the plain style it always has.
+	GaugeStyle GaugeStyle
 }
 
 // captionOffset is how far above a panel's own centre a caption sits, as a

@@ -743,6 +743,288 @@ parking there is the confident lie in geometric form. The per-frame branch fires
 ordinary distance dropout and on the pre-data region that "The pre-data trap" below
 is about.
 
+## The gauges: a reading against a scale
+
+Four readouts fluctuate rather than only ever increasing — heart rate, pace, power and
+cadence — and a bare number gives a viewer no way to tell whether it is a hard effort or
+an easy one. `--gauge-style` lets those four draw their reading against a scale in one of
+two shapes: `track` puts a horizontal axis beneath the number with both ends labelled and
+a marker at the current value, and `dial` puts the identical scale beside the number
+instead, as a semicircular arc with a needle. `plain`, the default, is the three centred
+rows and nothing else, and is byte-for-byte what it always was.
+
+The two shapes resolve their range through the same rule, so switching between them
+changes the shape and nothing else. That is worth stating because the alternative — each
+shape deriving its own comfortable range — would make the flag change the reading as well
+as its presentation, and a viewer switching styles to see which they preferred would be
+comparing two things at once.
+
+### The scale is derived per activity, and that is the opposite of the gradient's ruling
+
+The gradient panel amplifies its tilt by a **fixed** constant, and the section above says
+at length why: once the visual became a bare line with no dial to read it against, a
+per-activity scale would mean the same tilt on screen represented a different real
+gradient on a different activity, with nothing on screen saying so.
+
+The gauges derive their range from the activity anyway, and the two rulings are consistent
+rather than contradictory because **the gauges label both endpoints**. A track that reads
+`100` at one end and `190` at the other has stated its scale; a viewer comparing two
+renders can see that the scales differ, because both are written on the screen they are
+looking at. What made a derived amplification dishonest was the absence of the statement,
+not the derivation. Drawing the endpoints is the price of deriving the range, and it is
+why the labels are load-bearing rather than decoration — a future tidy-up that drops them
+to buy back a few pixels of height removes the thing that makes the derivation defensible,
+and nothing will fail.
+
+The two panels therefore look inconsistent side by side: one instrument scaled to the
+activity, one scaled to a constant. That inconsistency is deliberate and follows from
+which of them states its scale.
+
+### The statistic comes from the readout's own accessor, never from the coverage report
+
+`internal/inspect` is the single source of truth for whether an activity carries a metric
+at all, and the obvious way to build a scale is to ask it for the metric's range — a field
+on `Report`, or a helper taking a metric name. It is the first simplification a reader
+will reach for, and it is wrong.
+
+The report describes the **recorded** space. A readout draws in the **presented** space,
+and for three of these four metrics the two differ:
+
+- **Heart rate** refuses a recorded zero, because a zero heart rate would mean the person
+  is dead — a strap that has not yet picked up a signal, not a reading. The report counts
+  those samples as present.
+- **Power** may be drawing a Stryd developer field rather than the native FIT power row,
+  depending on `--power-source`. The report has one `Power` row and does not know which
+  sensor this render chose.
+- **Cadence** doubles rpm to spm on a running sport. The report's own range stays in the
+  recorded rpm.
+
+So a scale read off the report would put heart rate's floor at a value the number beside
+it can never print, and would scale a runner's cadence track to half the figure printed on
+it — a two-to-one disagreement between an axis and the number sitting on it, in pixels
+nobody can inspect. The range is therefore built by walking the track through the
+readout's **own bound value accessor**, the same closure `Dynamic` prints from. That is
+not indirection for its own sake: it is what makes it impossible for the scale and the
+number to disagree about which samples exist and in what units, because there is only one
+accessor and both go through it.
+
+Moving the range onto `Report` would also make `fitdash inspect`'s printed output depend
+on a render flag, which is a strictly worse outcome than the duplication it saves:
+`--power-source stryd` would change what the coverage report prints about an activity, and
+the report is supposed to describe the file.
+
+### The axis spans a smoothed series, and the marker rides that same series
+
+The marker does not move on the sample the rest of the frame is drawn from. It moves on a
+**second, more heavily smoothed series**, built once in `Prepare` by walking the track
+through the readout's own bound accessor, and the axis spans **that series' own literal
+minimum and maximum**. The printed number is untouched: it comes from `Frame.Sample`,
+subject only to `--smoothing`, and is never extra-smoothed and never clipped.
+
+One series drives both the axis and the marker, and that is what makes the guarantee
+hold: the marker reaches each end of its track at most once and **cannot max out**, while
+no single instant can stretch the axis, because no single instant survives the smoothing.
+
+Three earlier derivations were tried and each failed in a way worth recording, because
+each is a plausible thing to reinstate.
+
+**Raw minimum to maximum.** One instant dictates the axis and the rest of the activity is
+compressed into a corner of it. The two failures are properties of the metrics, not of
+any one file: an activity's slowest speed is zero, whose pace is not a large number but
+an undefined one, so a pace axis anchored at the true minimum has no finite low end at
+all; and a power peak is a single sample several times the sustained effort — a standing
+start, a sprint, or a sensor artefact — so an axis stretched to reach it spends its whole
+sweep on a value the activity visited once.
+
+**The 5th to 95th percentile of the raw readings.** This fixed the spike and the stop, and
+it is what the deleted `inspect.Quantiles` helper existed for. It failed the other way:
+clipping is not rare at the tails, and in use the marker sat pinned at one end or the
+other often enough to read as broken rather than as informative. An instrument that
+saturates during ordinary use is not reporting.
+
+**A hard zero floor for power and cadence.** Recorded in its own section below.
+
+Smoothing the series is what lets a **literal** range be safe, which the first two
+attempts could not achieve by choosing a better statistic. It is also why the off-scale
+chevrons survive rather than becoming unreachable: the raw number can still pass what the
+smoothed marker shows, and when it does, that divergence is exactly the event the chevron
+now reports.
+
+The extra smoothing is a multiple of the render's own `--smoothing` window and is a
+judgement call documented as one. It is built in `Prepare`, never in `Dynamic` — that is
+what keeps a panel change out of `internal/render` and off the tripwire.
+
+### The endpoints snap outward to round numbers
+
+The series' own ends are rounded away from the middle of the range to a per-metric step, so a
+track reads `100`–`190`, not `103`–`187`. Two reasons, and the second is the one that
+would be missed:
+
+**It makes the endpoint a statement about the axis rather than a claim about the
+activity.** "This track reads 100 to 190" is a fact about the instrument. "You hit 187" is
+a fact about the workout, and printing it at the end of an axis invites it to be read as
+a personal best when it is the extreme of a smoothed series.
+
+**It interacts with smoothing.** On a compressed render `--smoothing` averages each
+reading over a window of activity time, so the value actually drawn is a window average
+and lies strictly inside the raw range. A marker scaled to the raw peak would therefore
+**provably never reach the end of its own track** — and a viewer reads "never hit the top"
+as a fact about the effort, not as an artefact of averaging. Snapping outward buys the
+headroom that makes the gap unremarkable instead of misleading.
+
+Pace snaps in **pace** space and only then converts back to speed, because the number a
+viewer reads at the end of the axis is a pace: rounding to a 30-second step gives `4:00`
+and `7:00`, where rounding the speed would give whatever pace a round speed happens to
+land on.
+
+### Sweep on speed, label in pace
+
+Pace's marker moves on **speed** while its label and its endpoint text read as **pace**.
+The two run in opposite directions — more speed is a smaller pace figure — so the marker
+travels toward the fast end as the printed number falls.
+
+This is the right way round because "further along the axis" should mean "more of the
+thing being measured", and it is only tolerable because the reading is a marker rather
+than a fill. See the next section: a fill that grew as its own number shrank read as a
+contradiction, and a dot at a position makes no such claim.
+
+### No hard zero floor for power or cadence
+
+Zero is a real, meaningful reading for both: coasting on a bike, and the gap between
+strides. The first version of this therefore forced their floors to `0`, on the reasoning
+that a genuine reading deserves a place on the axis.
+
+A render gate overturned that. With the floor at zero, cadence's whole working band was
+pressed against the top of its own axis, and the marker travelled a handful of pixels
+across a track hundreds of pixels wide for the middle half of the video — an instrument
+that admitted every possible reading and communicated none of them. The exact figures are
+not reproduced here: they were measured against a private recording, and the band
+somebody's cadence occupies is their data, not this project's. The reasoning had one word
+wrong: a
+real reading must be **reported** honestly, not **positioned** on the axis. A zero is
+reported by the below-floor chevron plus the true, unclipped printed number, which is a
+complete and honest account of it.
+
+So there is no hard-floor parameter, and there should not be one again. "0 W is a real
+reading, force the floor" is a correct observation attached to the wrong remedy, and it is
+recorded here because it is the kind of thing that gets reinstated as an obvious fix.
+
+### A marker, not a fill
+
+The reading is a dot on the axis, not a bar filled from the floor. A fill invokes
+**quantity**, and quantity was wrong here three times over:
+
+- **It contradicted pace.** Sweeping on speed under a label reading pace meant a slower
+  runner filled *more* of the track, and at an ordinary effort the pace gauge looked like
+  the emptiest thing on the dashboard.
+- **It collided with the climb bars.** `ClimbPanel`'s tracks are horizontal bars that fill
+  from the left and only ever grow. In the portrait tree a review found four gauges
+  stacked above them using the identical visual grammar for a value that goes up and down,
+  and colour was rejected as the *distinguishing* device: a difference carried by colour
+  alone is no difference for a viewer who cannot see it. A different shape distinguishes
+  them at every reading. (The gauges did later gain a colour ramp — see below — but it
+  encodes the value redundantly and never distinguishes one panel from another.)
+- **It broke the absent state.** A dropout washed the full-length fill, and the wash was
+  measured at 1.37:1 against the dim ghost it sits on — indistinguishable from a genuine
+  low reading. "No marker at all" cannot be confused with "marker at the left end", which
+  is what makes the absent policy legible.
+
+A short fill anchored at the left end was also, at a low reading, only a few pixels
+different from the below-floor chevron that lives in that exact spot.
+
+### The absent wash is solved against the ghost, not against the background
+
+`ElevationPanel` and `ClimbPanel` derive their dropout wash's alpha for contrast against
+`Theme.Background`, which is correct for them: that is what they wash onto. The gauge's
+ghost track is already drawn in `Theme.Dim`, so the gauge's wash composites onto **`Dim`**,
+and reusing the elevation constant solves the wrong equation — measured directly, it lands
+under the contrast floor either derivation is trying to guarantee, because `Absent` and
+`Dim` are inherently close in luminance in both shipped themes.
+
+The two derivations are the same arithmetic applied to two different backgrounds. Somebody
+will notice them and want to unify them into one shared helper; that is the bug, not the
+duplication. **A wash is solved against the colour it is actually drawn over**, and
+`Theme.Background` is a default that happens to be right for the panels that invented it.
+
+Once the axis gained its colour ramp the backdrop stopped being a single flat colour, so
+the gauge's alpha is solved across the tinted samples rather than against `Dim` alone —
+the same rule applied to the backdrop that now exists.
+
+### The colour ramp encodes the value, and never carries it alone
+
+The axis carries a green-through-amber-to-red gradient along its length, and the marker or
+needle takes the ramp's colour at its own position. This is the one place in the project
+where a panel names colours that are not `Theme` roles, and the exception is deliberate
+rather than an oversight: it is a **gauge-specific palette**, not a new general role, and
+folding it into `Theme` would oblige every future theme to have an opinion about effort.
+
+The accessibility answer is **redundant encoding**, and it is a constraint on the code
+rather than a hope. Green-to-red is the common colour-vision-deficiency pairing, so the
+marker's *position* must carry the identical information the colour does — the fraction
+along the scale is computed once and feeds both. Nothing in the widget may be
+distinguishable by colour alone, which is also why the ramp could not have been the answer
+to telling the gauge tracks apart from the climb bars.
+
+The two colours that already carry meaning are unaffected: the grey absent wash still
+reads as absent, and the off-scale chevron stays in `Theme.Foreground` so it reads as a
+live mark rather than as a point on the ramp.
+
+### The dial sits beside the text, not above it
+
+A gauge box is roughly 3.6:1 in the landscape tree — wide and short. A semicircle is
+roughly square. The first version stacked the caption, value and unit above a centred arc
+and left about 71% of the box's width empty, paying for the arc's height by shrinking the
+number and the unit that are the panel's actual content.
+
+Placing the arc in a near-square column with the text beside it uses the width the box
+already has. This is `ClimbPanel`'s arrangement for the same reason — instrument here,
+reading there — with one role reversed: `ClimbPanel` sizes its text columns first and lets
+the track absorb the remainder, because a linear track has no correct size to defend,
+whereas an arc must stay roughly square or it stops reading as a dial, so the arc is sized
+first and the text takes what is left.
+
+The consequence worth recording is what did **not** happen: `layouts.go` is untouched. A
+dial did not need a squarer 2×2 gauge block, so no width was taken from the route panel
+and the layout weights were not reopened — a tuning exercise that has cost this project
+two rounds already.
+
+### One panel type and a style flag, not new panel types
+
+`heart-rate` is one panel whose reading can be drawn three ways, not three panels. Panel
+names are the selection key for the `--panels` flag this design anticipates, so the name
+has to survive a change of shape: a user asking for `heart-rate` must get it whichever
+style is in force, and `heart-rate-dial` would make the flag's vocabulary depend on an
+unrelated flag's value.
+
+Four metrics times three styles as separate types would also be twelve types for one
+behaviour, each carrying its own copy of the placeholder branch — which is the branch this
+project is least willing to have four copies of.
+
+### The four drawing states
+
+The gauge has four states, and only three of them draw an instrument:
+
+| State | Knowable | Drawn |
+|---|---|---|
+| **No usable range** — too few present readings, or a degenerate range | `Prepare`, once | No instrument at all; the readout falls back to `plain` and the summary names it |
+| **Absent this frame** | per frame | The axis or arc washed, **no marker**, `--` in place of the number |
+| **Off scale** | per frame | The chevron at the end it went off, **no marker**, and the true unclipped number |
+| **In range** | per frame | The marker at the fraction the scale implies |
+
+The first is resolved once, on the per-render context, and the range is **never**
+re-derived or widened afterwards. The tempting variant — "the scale is the maximum seen so
+far, so the axis always uses its full range" — is this project's axis-origin bug rebuilt:
+the endpoint labels are rasterized once into the static layer, so they would be right for
+frame 0 and wrong for every frame after it, both layers would draw, they would disagree,
+and nothing would error.
+
+Falling back to `plain` rather than declining the panel is the right response to "no usable
+range" because the *number* is still perfectly good — there is nothing wrong with the
+reading, only with the axis it would have been drawn against, and declining would remove a
+metric the activity actually carries. The render summary names any gauge that fell back,
+so a track missing from one gauge and not its neighbours has an explanation the viewer can
+read.
+
 ## Absent data
 
 The two policies map onto the two phases, and the mapping follows from *when* each kind of
