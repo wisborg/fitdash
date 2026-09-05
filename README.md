@@ -24,7 +24,8 @@ unexplained gap.
 `--layout` picks the arrangement (`auto`, which follows the frame's shape, or `landscape`
 or `portrait` forced), `--theme` the palette (`dark` or `light`), and `--gauge-style`
 whether the four fluctuating readouts draw their reading against a scale (`plain`, `track`
-or `dial` — see below).
+or `dial` — see below). `--gauges` chooses what that block shows at all: `metrics`, the
+four readouts, or `balance`, the left/right balance bars with pace alongside.
 
 ## What it is
 
@@ -146,6 +147,21 @@ the printed number is never clipped — so a genuine `0 W` while coasting still 
 The scale carries a green-to-red ramp and the marker takes its colour from its own
 position, which is emphasis rather than information: the position says the same thing, so
 nothing is lost if the colours are hard to tell apart.
+
+**An activity with a footpod can show left/right balance instead.** `--gauges balance`
+replaces those four readouts with pace and a centre-anchored bar for each balance metric
+the file carries — ground contact time, and a footpod's own impact, stiffness and
+oscillation balance — filling outward from a tick at even. Pace stays because balance
+varies with effort and the two are meant to be read together. Every bar uses the **same
+fixed scale**, deliberately, so the four can be compared with each other and with the same
+person's other activities; a derived scale would make the same fill mean a different
+asymmetry in a different video. A reading past either end draws an off-scale mark and the
+printed magnitude is still the true one. No foot is named yet: the magnitude is printed and
+the bar's side carries the direction, because which side these fields report is not
+something this project is willing to guess at. An activity carrying none of these metrics
+falls back to the ordinary gauges and the summary says so — `fitdash inspect` lists the
+developer fields a file actually carries, which is where to look when a device names them
+differently.
 
 **Compressed hard, the gauges become unreadable — so they are averaged.** At 480×, a
 frame advances sixteen seconds of activity and shows one arbitrary sample out of them,

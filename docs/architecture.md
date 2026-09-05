@@ -1025,6 +1025,115 @@ metric the activity actually carries. The render summary names any gauge that fe
 so a track missing from one gauge and not its neighbours has an explanation the viewer can
 read.
 
+## The balance bars: a fixed scale, because comparison is the point
+
+`--gauges balance` replaces the four gauge readouts with pace and four centre-anchored
+bars, one per left/right balance metric. Pace stays because balance varies with effort and
+the two are meant to be read together, and it sits at the top because it is the context the
+bars are read against.
+
+### The scale is a constant, which is the gauges' ruling inverted
+
+The gauges derive their range per activity and label both endpoints. These do the opposite,
+and the difference is not an inconsistency to be tidied away.
+
+Heart rate has neither a natural anchor nor a natural width, so a gauge's scale has to come
+from the activity, and a derived scale is only honest when the screen states it. Balance has
+both: **even is a real anchor**, not an arbitrary one, and the useful width is a property of
+human gait rather than of one recording.
+
+More decisively, **comparison is what this instrument is for** — in two directions at once.
+Across the four bars, so that two equal fills mean two equal asymmetries and the spread
+between the metrics is itself readable. And across renders, because balance is something a
+person compares against themselves over months rather than within a single video. A derived
+range breaks both: the same fill would mean a different asymmetry on a different day, and
+labelling the endpoints would make that honest without making it comparable.
+
+So the range is fixed, and — exactly as `GradientPanel`'s fixed amplification draws no dial
+— it needs no endpoint labels. What keeps it honest is the unexaggerated number beside it.
+
+**If this is ever made derived, endpoint labels become mandatory that same day.** And if the
+range proves too narrow, widen the constant *once, for everybody*: never per activity, and
+never per metric. Deriving it per metric would be the more tempting mistake, because the
+metrics genuinely differ in spread — and that spread is a finding the shared scale exists to
+show, not noise for each bar to normalise away.
+
+### A fill, here, and a marker on the gauges
+
+The gauges rejected a fill because a fill invokes quantity and their quantity ran backwards
+against its own label. Here the quantity is real and starts at zero at the anchor — how much
+asymmetry — and length and side are two independent facts in two non-colour channels. It
+does not collide with `ClimbPanel`'s bars, which fill from the left edge and only grow.
+
+### No foot is named
+
+Which side these fields report is not established. FIT's `stance_time_balance` is
+conventionally the left share; the Stryd developer fields carry no convention that could be
+confirmed, and the two families sit on opposite sides of even in the activity this was built
+against — consistent either with a real one-sided asymmetry or with opposite conventions.
+
+A centre-anchored bar that names a foot is making a claim, so it makes none: the magnitude
+is printed, and the bar's own side carries the direction. When the convention is confirmed,
+the side letter goes in the **value** row and never the unit row — the unit row is drawn once
+in `Static`, and the side genuinely flips mid-activity. `Distance`'s doc comment records the
+same trap with metres and kilometres.
+
+### These panels do not read the smoothed sample
+
+This is the subtlest thing in the feature. `internal/render` averages developer fields over
+the smoothing window, and a developer field's presence test is merely that its key exists —
+so a zero refused by the panel's own accessor is averaged straight back in.
+
+For a gauge that is untidy. On a scale a few points wide it is fatal, and predictably so: the
+zeros form a contiguous run at the very start, while the footpod computes its first balance,
+so a window of tens of seconds of activity would drag the reading off scale and pin the bar
+through the opening of the video with nothing on screen to explain it.
+
+Each panel therefore builds its own series in `Prepare`, through its own zero-refusing
+accessor, reusing the gauges' existing series machinery. Both the bar and the number come
+from that one series, so they cannot disagree about which instants counted.
+
+**`smoothSample` is deliberately not fixed instead.** It is `internal/render` and this is a
+panel change; it cannot know which developer fields are balances; and zero is a legitimate
+reading for other developer fields. That a zero is not a balance is a domain judgement, and
+it belongs to the panel that draws it — the same division `HeartRate` already makes about a
+recorded zero heart rate.
+
+### Selection, and the one line it costs the frame loop
+
+`--gauges` is not a `--layout` value: `--layout` is about the frame's aspect and picks by
+shape, so a content value there would either lose that or spawn a balance variant of every
+aspect. It is also not `--panels` (see Open items), which needs a superseded outcome in the
+engine and a whole selection vocabulary — none of it required to answer one binary question
+about one box. It converts to a name set cleanly when `--panels` lands. The mechanism is the
+same `Alt` slot `--bottom-band` uses.
+
+It costs `internal/render` exactly one condition, a deliberate exception to the rule that
+adding a panel must not touch the frame loop. **It is paid once and never again:** membership
+is a type assertion exported from `internal/panel`, never a list of names, so a fifth balance
+metric costs that filter nothing. This is the mistake `--bottom-band` already paid for.
+
+Selection could not live in `Accepts`. A panel declining because a flag is off would be
+reported as "the activity has no impact balance", which is false.
+
+### Two summary lines, and the contradiction the second one found
+
+When the balance branch wins, the four gauges are never asked and appear in neither the
+declined nor the omitted list — three panels vanishing with no explanation, a worse case than
+the single readout the `Alt` gap was originally written about. One line says pace was kept and
+which panels are not shown. When an activity carries none of the four metrics the branch
+prunes away entirely and the ordinary gauges draw, which would otherwise look like the flag
+being ignored; the other line says so outright.
+
+Building that fallback exposed a contradiction worth recording. Pace is seated in **both**
+branches, so when the balance branch loses, its copy declines while the metrics branch's own
+pace draws — and the summary printed `pace` under "carries no such data" on the same render
+whose `panels:` line listed pace as drawn. Both cannot be true, and the false one is the
+decline: a pace panel just drew from this activity, so the activity demonstrably carries pace.
+
+A name that also drew is now filtered out of that heading. The rule is deliberately about the
+two lists rather than about pace, so it keeps holding for the next panel seated twice.
+
 ## Absent data
 
 The two policies map onto the two phases, and the mapping follows from *when* each kind of
