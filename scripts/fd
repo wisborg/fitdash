@@ -94,8 +94,17 @@ render)
 	# hardcoded: this script ships in the public repo and must not name a
 	# path to somebody's real recording.
 	[ -f .scratch/env ] && . ./.scratch/env
-	fit=${1:-${FD_FIT:-}}
-	[ $# -gt 0 ] && shift
+	# The activity is $1 only when $1 is actually a path. A leading dash
+	# means the caller gave flags and expects FD_FIT to supply the file --
+	# without this test, `fd frames --theme light` silently treats
+	# "--theme" as the activity and fails on a file that does not exist.
+	case ${1:-} in
+	'' | -*) fit=${FD_FIT:-} ;;
+	*)
+		fit=$1
+		shift
+		;;
+	esac
 	if [ -z "$fit" ]; then
 		echo "usage: fd render ACTIVITY.fit [flags]   (or set FD_FIT in .scratch/env)" >&2
 		report render 2
@@ -108,8 +117,17 @@ frames)
 	# Render single frames to PNG for visual inspection, without encoding a
 	# whole video. The fast loop for a panel change.
 	[ -f .scratch/env ] && . ./.scratch/env
-	fit=${1:-${FD_FIT:-}}
-	[ $# -gt 0 ] && shift
+	# The activity is $1 only when $1 is actually a path. A leading dash
+	# means the caller gave flags and expects FD_FIT to supply the file --
+	# without this test, `fd frames --theme light` silently treats
+	# "--theme" as the activity and fails on a file that does not exist.
+	case ${1:-} in
+	'' | -*) fit=${FD_FIT:-} ;;
+	*)
+		fit=$1
+		shift
+		;;
+	esac
 	if [ -z "$fit" ]; then
 		echo "usage: fd frames ACTIVITY.fit [flags]   (or set FD_FIT in .scratch/env)" >&2
 		report frames 2
