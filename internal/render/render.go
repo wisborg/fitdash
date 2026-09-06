@@ -95,6 +95,12 @@ type Renderer struct {
 	// method's own doc comment for why that is deliberate rather than an
 	// oversight.
 	washBases map[color.NRGBA]*image.RGBA
+
+	// notice is the cut card's resolved geometry -- where it sits and how
+	// big it is -- worked out once in New from what this render actually
+	// draws (see resolveCutNotice). The zero value means "no card": either
+	// the timeline carries no cut, or the frame is too small to hold one.
+	notice cutNotice
 }
 
 // New prepares every panel the layout places for this activity.
@@ -256,6 +262,18 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		r.washColors = make([]color.NRGBA, n)
 		for i, h := range ctx.Highlights {
 			r.washColors[i] = resolveWashColor(h, theme)
+		}
+	}
+
+	// Last, because it composes whole frames through this very Renderer and
+	// so needs everything above it already in place -- and only when the
+	// timeline actually carries a cut, so a render that never asked for
+	// --pauses skip composes nothing extra and pays nothing at all. See
+	// resolveCutNotice for why the card's position is measured rather than
+	// fixed.
+	if len(ctx.Timeline.Cuts()) > 0 {
+		if err := r.resolveCutNotice(); err != nil {
+			return nil, err
 		}
 	}
 	return r, nil
@@ -622,6 +640,7 @@ func (r *Renderer) drawHighlightBorder(c *panel.Canvas, f panel.Frame) {
 // Context.BasePx resolved once), and every other measure is a fraction of
 // that text size, so the whole notice scales with the frame exactly as a
 // panel's contents do.
+//
 // cutNoticeWord is what the card calls the stretch it names. The duration
 // follows it, so the whole card reads "PAUSED 0:04:32".
 //
@@ -647,6 +666,202 @@ const (
 	cutNoticeGapFraction    = 0.40
 )
 
+// cutNoticeSamples is how many frames of the render are composed and
+// examined to decide where the card goes -- see resolveCutNotice.
+//
+// Spread evenly across the whole render rather than concentrated near the
+// seams, because what the card must avoid is not what is on screen at the
+// seam but everything that is EVER on screen: a card placed in a gap that a
+// growing route fills two seconds later has solved nothing. Nine is enough
+// to catch a readout that changes width (a distance passing 10 km, a pace
+// losing a digit) without making setup cost anything anyone would notice on
+// the short renders this targets.
+const cutNoticeSamples = 9
+
+// cutNotice is the card's fully resolved geometry: where it sits and how big
+// everything in it is, worked out once in New and never per frame.
+//
+// One struct rather than a box beside a text size beside a padding, because
+// the box's dimensions are DERIVED from the rest -- the card is exactly as
+// wide as its two text runs plus its padding -- and two places computing that
+// derivation is how the rectangle a placement was chosen for stops being the
+// rectangle that gets drawn.
+type cutNotice struct {
+	box   panel.Box
+	px    float64
+	wordW float64
+	padX  float64
+	pad   float64 // border thickness
+}
+
+// resolveCutNotice measures the card and chooses where to put it, once per
+// render, by looking at what the render actually draws.
+//
+// The card used to be nailed to the top centre of the frame, which is fine
+// until the activity puts something there -- and on a real recording it
+// does: an ordinary out-and-back route reaches the top of its box in the
+// middle, so the card landed squarely on the course, hiding the part of the
+// route the viewer was watching. "It belongs to no box in the layout tree"
+// is true and is exactly the problem: nothing in the tree was ever going to
+// tell it where the ink was.
+//
+// So it asks. The render is composed at cutNoticeSamples instants, every
+// pixel that differs from the theme's background in ANY of them is marked,
+// and the card takes whichever candidate position covers the fewest marked
+// pixels. That is a stronger question than "which panel's box is this" --
+// a route panel's box is mostly empty, and the few percent of it holding the
+// line is the only part worth avoiding -- and it needs no panel to declare
+// anything about itself, so it keeps working for a panel that does not exist
+// yet.
+//
+// Ties go to the earlier candidate, and the candidates are ordered so that
+// the top centre wins whenever it is clear. A render with room where the
+// card always went is therefore pixel-identical to one from before this
+// existed; only a render that would have collided moves.
+//
+// Called from New, and only when the timeline actually carries a cut, so a
+// --pauses freeze render composes nothing extra and pays nothing at all.
+func (r *Renderer) resolveCutNotice() error {
+	px := r.basePx * cutNoticeTextFraction
+	if px <= 0 {
+		return nil
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, r.ctx.Width, r.ctx.Height))
+	c, err := r.canvas(img)
+	if err != nil {
+		return err
+	}
+
+	// The widest duration any of this render's own cuts will actually show,
+	// not a template: unlike a clock that ticks upward through the render
+	// (see panel.clockTemplate), every cut's duration is known here, so the
+	// card can be sized to the real content rather than to the worst case a
+	// template would have to assume.
+	var clockW float64
+	for _, cut := range r.ctx.Timeline.Cuts() {
+		w, _, err := c.MeasureText(panel.FormatClock(cut.Removed()), px)
+		if err != nil {
+			return err
+		}
+		if w > clockW {
+			clockW = w
+		}
+	}
+	wordW, textH, err := c.MeasureText(cutNoticeWord, px)
+	if err != nil {
+		return err
+	}
+
+	padX, padY := px*cutNoticePadXFraction, px*cutNoticePadYFraction
+	cardW, cardH := wordW+clockW+2*padX, textH+2*padY
+	border := px * cutNoticeBorderFraction
+	if border < 1 {
+		border = 1
+	}
+
+	inset := r.marginPx + px*cutNoticeGapFraction
+	w, h := float64(r.ctx.Width), float64(r.ctx.Height)
+	if cardW > w-2*inset || cardH > h-2*inset {
+		// No room to place the card without running off the frame. Drawing
+		// a clipped card over the dashboard would be worse than drawing
+		// none, and the render summary reports every cut regardless, so the
+		// fact is not lost with the pixels.
+		return nil
+	}
+
+	occupied, err := r.inkMask(img)
+	if err != nil {
+		return err
+	}
+
+	// Candidate positions, in preference order: the top centre first, so a
+	// frame with room there is unchanged, then the top corners, then the
+	// same three along the bottom. Six positions rather than a free slide
+	// over the whole frame -- a card halfway down the left edge would be
+	// where nothing else is and would also look like a mistake, and a
+	// notice has to read as part of the design rather than as wherever the
+	// arithmetic landed.
+	top, bottom := inset, h-inset-cardH
+	left, centre, right := inset, (w-cardW)/2, w-inset-cardW
+	best := panel.Box{X: centre, Y: top, W: cardW, H: cardH}
+	bestInk := -1
+	for _, cand := range []panel.Box{
+		{X: centre, Y: top, W: cardW, H: cardH},
+		{X: left, Y: top, W: cardW, H: cardH},
+		{X: right, Y: top, W: cardW, H: cardH},
+		{X: centre, Y: bottom, W: cardW, H: cardH},
+		{X: left, Y: bottom, W: cardW, H: cardH},
+		{X: right, Y: bottom, W: cardW, H: cardH},
+	} {
+		ink := countInk(occupied, r.ctx.Width, r.ctx.Height, cand)
+		if bestInk < 0 || ink < bestInk {
+			best, bestInk = cand, ink
+		}
+		if bestInk == 0 {
+			break // nothing can beat an empty position, and earlier wins ties
+		}
+	}
+
+	r.notice = cutNotice{box: best, px: px, wordW: wordW, padX: padX, pad: border}
+	return nil
+}
+
+// inkMask composes cutNoticeSamples frames of the render and returns, per
+// pixel, whether ANY of them drew something other than the theme's
+// background there.
+//
+// The union across frames rather than one frame is the point. A single frame
+// would miss everything that has not been drawn yet -- the covered part of
+// the route, a readout that has not reached its widest value -- and the card
+// is placed for the whole render, not for the frame it is measured on.
+//
+// It composes with Render, the same entry point a caller uses, so what is
+// measured is what will be drawn. drawCutNotice adds nothing to these
+// frames: r.notice is still zero here, which is the same guard it uses for a
+// frame too small to place the card in at all.
+func (r *Renderer) inkMask(img *image.RGBA) ([]bool, error) {
+	bg := color.RGBAModel.Convert(r.theme.Background).(color.RGBA)
+	mask := make([]bool, r.ctx.Width*r.ctx.Height)
+	n := r.Frames()
+	for i := 0; i < cutNoticeSamples; i++ {
+		// Evenly spread across [0, n), the first sample at frame 0 and the
+		// last one frame short of the end, so a panel that only draws at
+		// one extreme is still seen.
+		idx := i * (n - 1) / (cutNoticeSamples - 1)
+		if cutNoticeSamples == 1 || n == 1 {
+			idx = 0
+		}
+		if err := r.Render(img, r.Frame(idx)); err != nil {
+			return nil, err
+		}
+		for y := 0; y < r.ctx.Height; y++ {
+			for x := 0; x < r.ctx.Width; x++ {
+				if img.RGBAAt(x, y) != bg {
+					mask[y*r.ctx.Width+x] = true
+				}
+			}
+		}
+	}
+	return mask, nil
+}
+
+// countInk is how many marked pixels a candidate rectangle covers.
+func countInk(mask []bool, w, h int, b panel.Box) int {
+	n := 0
+	for y := int(b.Y); y < int(b.Y+b.H) && y < h; y++ {
+		for x := int(b.X); x < int(b.X+b.W) && x < w; x++ {
+			if x < 0 || y < 0 {
+				continue
+			}
+			if mask[y*w+x] {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // drawCutNotice draws the card that names how much activity time was spliced
 // out at this seam -- "PAUSED 0:04:32" -- alpha ramping with Frame.CutWeight,
 // the same 0->1->0 shape the highlight border and a label's name both use.
@@ -662,12 +877,11 @@ const (
 // border is one: it belongs to no box in the layout tree. Unlike the border
 // it does NOT confine itself to the margin -- a duration is text, and the
 // margin is a few pixels of a frame's smaller dimension -- so it is drawn
-// over whatever panel occupies the top of the frame, opaque, for about a
-// second and a half. That is a deliberate cost: a notice a viewer can miss
-// is not a notice, and every alternative that avoided the overlap (a
-// reserved box, sitting empty for the whole render; a mark on the marker
-// strip, which is absorbed into the elevation profile in the common case)
-// pays more for less.
+// over the dashboard, opaque, for about a second and a half. WHERE it is
+// drawn is resolved in New by looking at what the render actually puts on
+// screen; see resolveCutNotice, which exists because "it belongs to no box
+// in the layout tree" means nothing was ever going to tell it where the ink
+// was.
 //
 // Nothing is drawn outside a notice's own frames (Frame.Cut is NoCut, or the
 // ramp has not started), which under the default --pauses freeze is every
@@ -685,56 +899,31 @@ func (r *Renderer) drawCutNotice(c *panel.Canvas, f panel.Frame) {
 	if f.Cut == panel.NoCut || f.Cut >= len(cuts) || f.CutWeight <= 0 {
 		return
 	}
-	px := r.basePx * cutNoticeTextFraction
-	if px <= 0 {
-		return
-	}
-
-	clock := panel.FormatClock(cuts[f.Cut].Removed())
-	wordW, textH, err := c.MeasureText(cutNoticeWord, px)
-	if err != nil {
-		return
-	}
-	clockW, _, err := c.MeasureText(clock, px)
-	if err != nil {
-		return
-	}
-
-	padX, padY := px*cutNoticePadXFraction, px*cutNoticePadYFraction
-	cardW, cardH := wordW+clockW+2*padX, textH+2*padY
-	cardX := (float64(r.ctx.Width) - cardW) / 2
-	// Just inside the layout's own margin, which is where the frame stops
-	// being guaranteed empty -- so the card starts exactly where panel
-	// content starts rather than at an offset invented here.
-	cardY := r.marginPx + px*cutNoticeGapFraction
-	if cardX < 0 || cardY < 0 || cardY+cardH > float64(r.ctx.Height) {
-		// Too small a frame to place the notice without running off it.
-		// Drawing a clipped card over the dashboard would be worse than
-		// drawing none: the render summary reports every cut regardless,
-		// so the fact is not lost with the pixels.
+	// Zero until resolveCutNotice has run, which is also how the frames it
+	// composes to make its decision come out free of the card itself, and
+	// how a frame too small to hold one draws nothing rather than a clipped
+	// rectangle.
+	n := r.notice
+	if n.px <= 0 {
 		return
 	}
 
 	w := f.CutWeight
-	c.Rect(panel.Box{X: cardX, Y: cardY, W: cardW, H: cardH}, panel.Fade(c.Theme.Background, w))
+	c.Rect(n.box, panel.Fade(c.Theme.Background, w))
 
-	border := px * cutNoticeBorderFraction
-	if border < 1 {
-		border = 1
-	}
 	col := panel.Fade(c.Theme.Dim, w)
-	c.Rect(panel.Box{X: cardX, Y: cardY, W: cardW, H: border}, col)
-	c.Rect(panel.Box{X: cardX, Y: cardY + cardH - border, W: cardW, H: border}, col)
-	c.Rect(panel.Box{X: cardX, Y: cardY, W: border, H: cardH}, col)
-	c.Rect(panel.Box{X: cardX + cardW - border, Y: cardY, W: border, H: cardH}, col)
+	c.Rect(panel.Box{X: n.box.X, Y: n.box.Y, W: n.box.W, H: n.pad}, col)
+	c.Rect(panel.Box{X: n.box.X, Y: n.box.Y + n.box.H - n.pad, W: n.box.W, H: n.pad}, col)
+	c.Rect(panel.Box{X: n.box.X, Y: n.box.Y, W: n.pad, H: n.box.H}, col)
+	c.Rect(panel.Box{X: n.box.X + n.box.W - n.pad, Y: n.box.Y, W: n.pad, H: n.box.H}, col)
 
 	// Left-anchored and laid out from one measured width, so the two runs
 	// sit against each other as one line rather than as two independently
 	// centred strings that would separate as the duration's own width
 	// changed.
-	textY := cardY + cardH/2
-	_ = c.Text(cutNoticeWord, cardX+padX, textY, 0, 0.5, px, col)
-	_ = c.Text(clock, cardX+padX+wordW, textY, 0, 0.5, px, panel.Fade(c.Theme.Foreground, w))
+	textY := n.box.Y + n.box.H/2
+	_ = c.Text(cutNoticeWord, n.box.X+n.padX, textY, 0, 0.5, n.px, col)
+	_ = c.Text(panel.FormatClock(cuts[f.Cut].Removed()), n.box.X+n.padX+n.wordW, textY, 0, 0.5, n.px, panel.Fade(c.Theme.Foreground, w))
 }
 
 // Render draws a complete frame from scratch: background, static content, then

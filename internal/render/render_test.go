@@ -1876,20 +1876,26 @@ func TestRenderer_CutNoticeDrawsAtTheSeamAndNowhereElse(t *testing.T) {
 			"and a render that silently removes four minutes is exactly what this flag must not produce")
 	}
 
-	// Placed inside the frame and in its upper half, near the horizontal
-	// centre -- the region drawCutNotice aims at. Asserted as a region
-	// rather than as exact pixels so the card's own proportions can be
-	// retuned without rewriting the test, while a notice drawn off-frame or
-	// stranded in a corner still fails.
-	if minX < 0 || minY < 0 || maxX >= ctx.Width || maxY >= ctx.Height {
-		t.Errorf("the notice's pixels run outside the frame: x %d-%d, y %d-%d in a %dx%d frame",
-			minX, maxX, minY, maxY, ctx.Width, ctx.Height)
+	// Every changed pixel lies inside the box New resolved for the card --
+	// not inside a region this test names for itself. Where the card GOES
+	// is now measured per render (see resolveCutNotice), so pinning a
+	// hardcoded corner here would assert a policy that no longer exists;
+	// what must hold in every render is that the card draws where it said
+	// it would and nowhere else.
+	box := r.notice.box
+	if box.W <= 0 || box.H <= 0 {
+		t.Fatal("New resolved no box for the notice, yet the notice drew")
 	}
-	if maxY > ctx.Height/2 {
-		t.Errorf("the notice reaches y=%d, past the frame's own midpoint (%d); it is meant to sit near the top", maxY, ctx.Height/2)
+	// Floored and ceilinged, because the box's edges are fractional and the
+	// rasteriser fills whichever pixel a fractional edge falls inside.
+	loX, loY := int(math.Floor(box.X)), int(math.Floor(box.Y))
+	hiX, hiY := int(math.Ceil(box.X+box.W)), int(math.Ceil(box.Y+box.H))
+	if minX < loX || minY < loY || maxX > hiX || maxY > hiY {
+		t.Errorf("the notice's pixels run from x %d-%d, y %d-%d, outside its resolved box %+v",
+			minX, maxX, minY, maxY, box)
 	}
-	if centre := (minX + maxX) / 2; math.Abs(float64(centre-ctx.Width/2)) > float64(ctx.Width)*0.05 {
-		t.Errorf("the notice is centred on x=%d, not on the frame's centre (%d)", centre, ctx.Width/2)
+	if box.X < 0 || box.Y < 0 || box.X+box.W > float64(ctx.Width) || box.Y+box.H > float64(ctx.Height) {
+		t.Errorf("the resolved box %+v runs outside a %dx%d frame", box, ctx.Width, ctx.Height)
 	}
 
 	// Every OTHER frame of the render must be free of it. This is the half a
@@ -1996,4 +2002,142 @@ func diffBounds(a, b *image.RGBA) (minX, minY, maxX, maxY, n int) {
 		}
 	}
 	return minX, minY, maxX, maxY, n
+}
+
+// inkBandPanel fills a fraction of its own box with foreground ink, so a test
+// can put content in a known part of the frame and see what the cut notice
+// does about it.
+//
+// It draws in its STATIC pass and inside its own box, like any other panel --
+// nothing here is a special case the renderer has to know about, which is the
+// point: resolveCutNotice asks the composed frame where the ink is, not the
+// panel.
+type inkBandPanel struct {
+	name string
+	// top and bottom are the fractions of the box's own height this panel
+	// inks, measured from its top edge.
+	top, bottom float64
+}
+
+func (p inkBandPanel) Name() string { return p.name }
+
+func (p inkBandPanel) Accepts(*panel.Context) bool { return true }
+
+func (p inkBandPanel) Prepare(_ *panel.Context, box panel.Box) panel.Painter {
+	return &inkBandPainter{box: panel.Box{
+		X: box.X, Y: box.Y + box.H*p.top,
+		W: box.W, H: box.H * (p.bottom - p.top),
+	}}
+}
+
+type inkBandPainter struct{ box panel.Box }
+
+func (p *inkBandPainter) Static(c *panel.Canvas) { c.Rect(p.box, c.Theme.Foreground) }
+
+func (p *inkBandPainter) Dynamic(*panel.Canvas, panel.Frame) {}
+
+// TestRenderer_CutNoticeAvoidsWhereTheRenderDraws is the test for the defect
+// that shipped: on a real recording the route reaches the top of its box in
+// the middle of the frame, and a card nailed to the top centre landed on the
+// course, hiding the part of the route the viewer was watching.
+//
+// The property is stated against the ink rather than against a corner: the
+// resolved box must not overlap a region the render fills, WHEN there is
+// somewhere else to go. Asserting "the card is at the bottom" instead would
+// pin one particular escape route and pass just as happily if the card
+// stopped looking at the frame at all and had merely been moved.
+func TestRenderer_CutNoticeAvoidsWhereTheRenderDraws(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		inked      inkBandPanel
+		wantTopped bool // is the free space at the top of the frame?
+	}{
+		{"content across the top", inkBandPanel{name: "a", top: 0, bottom: 0.5}, false},
+		{"content across the bottom", inkBandPanel{name: "a", top: 0.5, bottom: 1}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := buildCutContext(t, 400, 240, 10, panel.PausesSkip)
+			r, err := New(ctx, highlightMarkerLayout(tc.inked), panel.DefaultTheme())
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			box := r.notice.box
+			if box.W <= 0 || box.H <= 0 {
+				t.Fatal("no box was resolved for the notice")
+			}
+
+			// The inked half, in frame coordinates.
+			mid := float64(ctx.Height) / 2
+			overlapsTop := box.Y < mid
+			if overlapsTop != tc.wantTopped {
+				half := "bottom"
+				if tc.wantTopped {
+					half = "top"
+				}
+				t.Errorf("the notice sits at y %.0f-%.0f in a %d-tall frame; the free half is the %s one",
+					box.Y, box.Y+box.H, ctx.Height, half)
+			}
+
+			// And it really is clear of the ink: compose a frame without the
+			// notice and count what the box would cover.
+			bare := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+			f := r.Frame(0)
+			f.Cut, f.CutWeight = panel.NoCut, 0
+			if err := r.Render(bare, f); err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			bg := color.RGBAModel.Convert(panel.DefaultTheme().Background).(color.RGBA)
+			covered := 0
+			for y := int(box.Y); y < int(box.Y+box.H) && y < ctx.Height; y++ {
+				for x := int(box.X); x < int(box.X+box.W) && x < ctx.Width; x++ {
+					if bare.RGBAAt(x, y) != bg {
+						covered++
+					}
+				}
+			}
+			if covered > 0 {
+				t.Errorf("the notice's box covers %d drawn pixels; a free position existed", covered)
+			}
+		})
+	}
+}
+
+// TestRenderer_CutNoticeStaysPutWhenThereIsRoom pins the compatibility half
+// of the measured placement: a render with nothing where the card has always
+// gone must put it exactly there.
+//
+// Without this, "avoid the ink" could quietly drift the card around frames it
+// never needed to move in, and every render that was fine before this change
+// would come out different for no reason a viewer could see.
+func TestRenderer_CutNoticeStaysPutWhenThereIsRoom(t *testing.T) {
+	ctx, _ := buildCutContext(t, 400, 240, 10, panel.PausesSkip)
+	// Ink only the bottom quarter, so the top centre is clear.
+	r, err := New(ctx, highlightMarkerLayout(inkBandPanel{name: "a", top: 0.75, bottom: 1}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	box := r.notice.box
+	wantX := (float64(ctx.Width) - box.W) / 2
+	if math.Abs(box.X-wantX) > 0.5 {
+		t.Errorf("the notice sits at x=%.1f, want the frame's centre %.1f", box.X, wantX)
+	}
+	if box.Y > float64(ctx.Height)/4 {
+		t.Errorf("the notice sits at y=%.1f, want it up against the top margin", box.Y)
+	}
+}
+
+// TestRenderer_CutNoticeIsResolvedOnlyForASkippingRender keeps the cost of
+// measuring off every render that did not ask for it: a freeze render has no
+// cut to announce, so New must not compose a single extra frame, and the
+// giveaway is that no box was ever resolved.
+func TestRenderer_CutNoticeIsResolvedOnlyForASkippingRender(t *testing.T) {
+	ctx, _ := buildCutContext(t, 400, 240, 10, panel.PausesFreeze)
+	r, err := New(ctx, highlightMarkerLayout(markerPanel{name: "a", accept: true}), panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if r.notice.px != 0 || r.notice.box != (panel.Box{}) {
+		t.Errorf("a freeze render resolved a notice: %+v", r.notice)
+	}
 }

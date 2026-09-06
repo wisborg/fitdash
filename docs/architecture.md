@@ -1631,11 +1631,32 @@ segment left to floor.
 
 **The card is a render-wide overlay, not a panel**, for the reason the highlight border is
 one: it belongs to no box in the layout tree. Unlike the border it does *not* confine itself
-to the margin — a duration is text, and the margin is a few pixels — so it is drawn over
-whatever occupies the top of the frame. That overlap is deliberate. A reserved box would sit
+to the margin — a duration is text, and the margin is a few pixels. A reserved box would sit
 empty for the whole render to be used for a second and a half; a mark on the marker strip
 would be invisible in the common case, since the strip is absorbed into the elevation
 profile whenever highlights or labels exist. A notice a viewer can miss is not a notice.
+
+**Where it goes is measured, not fixed**, and this was a shipped defect before it was a
+design. The card was nailed to the top centre, which is fine until the activity puts
+something there — and on a real recording it does: an ordinary out-and-back route reaches
+the top of its box in the middle, so the card landed squarely on the course and hid the part
+of the route the viewer was watching. "It belongs to no box in the layout tree" is true and
+is exactly the problem: nothing in the tree was ever going to tell it where the ink was.
+
+So `resolveCutNotice` asks the frame. In `New` — and only when the timeline actually carries
+a cut, so a `freeze` render composes nothing extra — the render is composed at nine instants,
+every pixel differing from the theme background in *any* of them is marked, and the card takes
+whichever of six candidate positions (three across the top, three across the bottom) covers
+the fewest marked pixels. Three properties make this safe to rely on:
+
+- **The union across frames, not one frame.** A card placed in a gap that a growing route
+  fills two seconds later has solved nothing.
+- **Ink, not boxes.** A route panel's box is mostly empty; the few percent holding the line
+  is the only part worth avoiding. Asking the pixels also needs no panel to declare anything
+  about itself, so it keeps working for a panel that does not exist yet.
+- **Ties go to the earlier candidate, top centre first.** A render with room where the card
+  always went is pixel-identical to one from before this existed; only a render that would
+  have collided moves.
 
 **Which clock the render runs on** is now the user's to say too: `--clock elapsed|active`
 chooses which of `ElapsedPanel`'s two rows is the large one. Both are always drawn, so this
