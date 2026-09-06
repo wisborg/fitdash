@@ -5,17 +5,6 @@ import (
 	"strings"
 )
 
-// version reports what this binary actually is, read from the build
-// information the Go toolchain embeds rather than from a constant in the
-// source.
-//
-// A hardcoded version string is a value that has to be remembered, and the
-// failure it produces is silent: a binary confidently naming the release
-// before the one it was actually cut from, with nothing to reveal the
-// mistake. This project refuses that shape of lie in pixels -- see the
-// absent-data policy in docs/architecture.md -- and a version string is the
-// same bargain in text. Nothing here can drift out of step with the tree,
-// because nothing here is written down twice.
 // described is set at link time by the build wrappers (scripts/fd build, and
 // the Makefile through it) to `git describe --tags`, e.g. "v0.1.0-1-ge9c0288"
 // -- the last release, how far past it this commit is, and which commit.
@@ -36,6 +25,18 @@ import (
 // a published tag). Both fall back to the build information, which for an
 // installed release names the tag outright and needs no help.
 var described string
+
+// version reports what this binary actually is, read from the build
+// information the Go toolchain embeds rather than from a constant in the
+// source.
+//
+// A hardcoded version string is a value that has to be remembered, and the
+// failure it produces is silent: a binary confidently naming the release
+// before the one it was actually cut from, with nothing to reveal the
+// mistake. This project refuses that shape of lie in pixels -- see the
+// absent-data policy in docs/architecture.md -- and a version string is the
+// same bargain in text. Nothing here can drift out of step with the tree,
+// because nothing here is written down twice.
 
 func version() string {
 	info, ok := debug.ReadBuildInfo()
