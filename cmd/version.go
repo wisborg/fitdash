@@ -16,6 +16,27 @@ import (
 // absent-data policy in docs/architecture.md -- and a version string is the
 // same bargain in text. Nothing here can drift out of step with the tree,
 // because nothing here is written down twice.
+// described is set at link time by the build wrappers (scripts/fd build, and
+// the Makefile through it) to `git describe --tags`, e.g. "v0.1.0-1-ge9c0288"
+// -- the last release, how far past it this commit is, and which commit.
+//
+// It exists because the build information alone cannot answer "which release
+// is this near". The toolchain records the revision but not the nearest tag,
+// so a build one commit past a release reports only "devel", and finding out
+// what that is near takes a second lookup in the repository. That is a poor
+// answer to somebody holding a binary and asking what it is.
+//
+// This is NOT the hardcoded version string this file otherwise refuses. It is
+// derived from the repository at build time, by the same git the VCS stamp
+// comes from, so it cannot be forgotten or bumped wrongly -- the failure mode
+// of a written-down version is that somebody has to remember it, and nobody
+// has to remember this.
+//
+// Empty when built any other way (`go build .` directly, or `go install` from
+// a published tag). Both fall back to the build information, which for an
+// installed release names the tag outright and needs no help.
+var described string
+
 func version() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -35,7 +56,7 @@ func version() string {
 			dirty = s.Value == "true"
 		}
 	}
-	return formatVersion(info.Main.Version, revision, built, info.GoVersion, dirty)
+	return formatVersion(described, info.Main.Version, revision, built, info.GoVersion, dirty)
 }
 
 // formatVersion composes the reported version from the four facts the build
@@ -60,7 +81,15 @@ func version() string {
 //     commit would send somebody to read source that was never compiled.
 //     It is reported even when no revision came with it, so a stamped
 //     modification can never pass for a clean build.
-func formatVersion(mainVersion, revision, built, goVersion string, dirty bool) string {
+func formatVersion(described, mainVersion, revision, built, goVersion string, dirty bool) string {
+	// A git describe string already names the commit ("...-ge9c0288"), so
+	// the revision is suppressed rather than printed again beside it. What
+	// stays is the dirty flag, which describe is deliberately not asked for
+	// (--dirty) precisely so there is one spelling of that fact and not two.
+	if described != "" {
+		return joinVersion(described, "", built, goVersion, dirty)
+	}
+
 	// The toolchain appends "+dirty" as semver build metadata when the tree
 	// was modified. Dirtiness is already reported beside the revision, in one
 	// place, for every build -- so keeping the suffix as well prints the same
@@ -71,6 +100,12 @@ func formatVersion(mainVersion, revision, built, goVersion string, dirty bool) s
 	if v == "" || v == "(devel)" || (revision != "" && strings.Contains(v, shortRevision(revision))) {
 		v = "devel"
 	}
+	return joinVersion(v, revision, built, goVersion, dirty)
+}
+
+// joinVersion assembles the reported line from an already-chosen version
+// string. An empty revision means the version already names the commit.
+func joinVersion(v, revision, built, goVersion string, dirty bool) string {
 	parts := []string{v}
 
 	switch {

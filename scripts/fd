@@ -32,7 +32,20 @@ report() {
 
 case "$cmd" in
 build)
-	go build -o fitdash . 
+	# -X stamps `git describe` into cmd.described, so a binary built from a
+	# checkout can say which release it is near instead of only "devel" plus
+	# a hash, which takes a second lookup to interpret. It is DERIVED, not
+	# written down: nobody has to remember to bump it.
+	#
+	# Deliberately not --dirty. A modified tree is already reported from the
+	# toolchain's own vcs.modified stamp, for every build however it was
+	# made, and asking describe for it too would print the fact twice.
+	#
+	# Empty when the repository has no tags yet, and empty for anyone who
+	# runs `go build` directly; cmd.version falls back to the build
+	# information in both cases.
+	described=$(git describe --tags 2>/dev/null || true)
+	go build -ldflags "-X 'github.com/wisborg/fitdash/cmd.described=$described'" -o fitdash .
 	report build $?
 	;;
 
