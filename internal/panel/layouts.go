@@ -168,7 +168,7 @@ func LandscapeLayout() Layout {
 				// standing) still takes the whole box exactly as the plain Col
 				// always did. See gauges.go's own doc comments for the
 				// mechanism -- IsBalancePanel, hasAnyBalanceMetric,
-				// balancePaceReadout -- and --gauges' own help text
+				// balanceReadout -- and --gauges' own help text
 				// (cmd/render.go's bindRenderFlags) for what a user sees.
 				{Dir: Alt, Weight: 1, Children: []Slot{
 					gaugeBalanceColumn(),

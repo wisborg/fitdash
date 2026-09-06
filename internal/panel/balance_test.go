@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,20 +80,24 @@ func TestBalanceValueAccessors_RefuseRecordedZeroAndAbsence(t *testing.T) {
 
 // TestBalanceDeviationMagnitudeFraction derives every expectation from the
 // documented arithmetic: deviation = v-50, magnitude = |deviation|,
-// fraction = deviation/balanceHalfRange(5), unclamped.
+// fraction = deviation/balanceHalfRange(5), unclamped, and
+// fillFraction = -fraction (balanceFillFraction, negated because all four
+// source fields carry the LEFT share -- see BalancePanel's own doc comment,
+// "Which side the bar names" -- so a POSITIVE deviation must fill LEFT,
+// which is drawFill's own NEGATIVE convention).
 func TestBalanceDeviationMagnitudeFraction(t *testing.T) {
 	cases := []struct {
-		v                          float64
-		wantDev, wantMag, wantFrac float64
+		v                                    float64
+		wantDev, wantMag, wantFrac, wantFill float64
 	}{
-		{50, 0, 0, 0},
-		{53, 3, 3, 0.6},
-		{47, -3, 3, -0.6},
-		{55, 5, 5, 1},     // exactly on-scale at the ceiling
-		{45, -5, 5, -1},   // exactly on-scale at the floor
-		{58, 8, 8, 1.6},   // off-scale high
-		{44, -6, 6, -1.2}, // off-scale low
-		{100, 50, 50, 10},
+		{50, 0, 0, 0, 0},
+		{53, 3, 3, 0.6, -0.6},
+		{47, -3, 3, -0.6, 0.6},
+		{55, 5, 5, 1, -1},      // exactly on-scale at the ceiling
+		{45, -5, 5, -1, 1},     // exactly on-scale at the floor
+		{58, 8, 8, 1.6, -1.6},  // off-scale high
+		{44, -6, 6, -1.2, 1.2}, // off-scale low
+		{100, 50, 50, 10, -10},
 	}
 	for _, c := range cases {
 		if got := balanceDeviation(c.v); !gaugeAlmostEqual(got, c.wantDev) {
@@ -101,31 +106,42 @@ func TestBalanceDeviationMagnitudeFraction(t *testing.T) {
 		if got := balanceMagnitude(c.v); !gaugeAlmostEqual(got, c.wantMag) {
 			t.Errorf("balanceMagnitude(%v) = %v, want %v", c.v, got, c.wantMag)
 		}
-		if got := balanceFraction(balanceDeviation(c.v)); !gaugeAlmostEqual(got, c.wantFrac) {
-			t.Errorf("balanceFraction(balanceDeviation(%v)) = %v, want %v", c.v, got, c.wantFrac)
+		frac := balanceFraction(balanceDeviation(c.v))
+		if !gaugeAlmostEqual(frac, c.wantFrac) {
+			t.Errorf("balanceFraction(balanceDeviation(%v)) = %v, want %v", c.v, frac, c.wantFrac)
+		}
+		if got := balanceFillFraction(frac); !gaugeAlmostEqual(got, c.wantFill) {
+			t.Errorf("balanceFillFraction(balanceFraction(balanceDeviation(%v))) = %v, want %v", c.v, got, c.wantFill)
 		}
 	}
 }
 
-// TestBalanceReadingText_EvenThreshold pins where "EVEN" replaces a printed
-// number: exactly where the magnitude ROUNDS to 0.0 at one decimal, not
-// merely where it is exactly zero.
-func TestBalanceReadingText_EvenThreshold(t *testing.T) {
+// TestBalanceReadingText_SideAndEvenThreshold pins two things together, from
+// the documented arithmetic in balanceReadingText's own doc comment: where
+// "EVEN" (no side at all) replaces a printed number -- exactly where the
+// magnitude ROUNDS to 0.0 at one decimal, not merely where it is exactly
+// zero -- and, for every other case, which letter a signed deviation prints:
+// "L" for a positive deviation (left dominant, ground contact/impact/
+// stiffness/oscillation's own confirmed convention -- see BalancePanel's own
+// doc comment, "Which side the bar names"), "R" for a negative one.
+func TestBalanceReadingText_SideAndEvenThreshold(t *testing.T) {
 	cases := []struct {
-		magnitude float64
+		deviation float64
 		want      string
 	}{
 		{0, "EVEN"},
-		{0.04, "EVEN"},  // rounds to 0.0
-		{0.049, "EVEN"}, // still rounds to 0.0
-		{0.05, "0.1"},   // rounds away from zero to 0.1, no longer even
-		{3.2, "3.2"},
-		{12.0, "12.0"},
-		{50, "50.0"},
+		{0.04, "EVEN"},   // rounds to 0.0
+		{-0.049, "EVEN"}, // still rounds to 0.0, from the other side of zero
+		{0.05, "0.1 L"},  // rounds away from zero to 0.1, no longer even
+		{-0.05, "0.1 R"},
+		{3.2, "3.2 L"},
+		{-3.2, "3.2 R"},
+		{12.0, "12.0 L"},
+		{-50, "50.0 R"},
 	}
 	for _, c := range cases {
-		if got := balanceReadingText(c.magnitude); got != c.want {
-			t.Errorf("balanceReadingText(%v) = %q, want %q", c.magnitude, got, c.want)
+		if got := balanceReadingText(c.deviation); got != c.want {
+			t.Errorf("balanceReadingText(%v) = %q, want %q", c.deviation, got, c.want)
 		}
 	}
 }
@@ -276,9 +292,10 @@ func balanceContactTrackConstant(v float64, n int) *fitactivity.Track {
 
 // TestBalancePanel_PresentInRangeFillsProportionallyFromCentre checks the
 // ordinary case on both sides of 50: the fill reaches exactly the fraction
-// balanceFraction implies, to the RIGHT of centre for a reading above 50 and
-// to the LEFT for one below it, and never fills past the centre in the
-// wrong direction.
+// balanceFillFraction implies, to the LEFT of centre for a reading above 50
+// (left dominant -- see BalancePanel's own doc comment, "Which side the bar
+// names") and to the RIGHT for one below it, and never fills past the
+// centre in the wrong direction.
 //
 // This checks exact pixels against Theme.Foreground rather than scanning
 // for "any ink", the way climb_test.go's own TestClimbPanel_DynamicFillsTo...
@@ -297,8 +314,8 @@ func TestBalancePanel_PresentInRangeFillsProportionallyFromCentre(t *testing.T) 
 		name string
 		v    float64
 	}{
-		{"above centre", 53}, // deviation +3, fraction 0.6
-		{"below centre", 47}, // deviation -3, fraction -0.6
+		{"above centre, left dominant", 53},  // deviation +3, fillFrac -0.6
+		{"below centre, right dominant", 47}, // deviation -3, fillFrac 0.6
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			track := balanceContactTrackConstant(tc.v, 21)
@@ -307,7 +324,7 @@ func TestBalancePanel_PresentInRangeFillsProportionallyFromCentre(t *testing.T) 
 			p.Static(c)
 			p.Dynamic(c, Frame{At: balanceSampleTime(10)})
 
-			frac := balanceFraction(balanceDeviation(tc.v))
+			frac := balanceFillFraction(balanceFraction(balanceDeviation(tc.v)))
 			half := p.spanW / 2
 			center := p.spanX + half
 			edge := center + frac*half
@@ -343,14 +360,79 @@ func TestBalancePanel_PresentInRangeFillsProportionallyFromCentre(t *testing.T) 
 	}
 }
 
+// TestBalancePanel_FillDirectionMatchesThePrintedSide is the flagship
+// regression test for task 1's own fix: the ground-truth check against a
+// user's own activity summary (see BalancePanel's own doc comment, "Which
+// side the bar names") found the fill drawn on the WRONG side of every one
+// of the four bars, a bug that reads as equally plausible in either
+// direction and only ground truth -- not a code review -- could settle. This
+// pins BOTH halves of the fix at once, deliberately never independently: the
+// side letter Dynamic prints beside the bar (via balanceReadingText) and the
+// side the fill pixel itself lands on (read back from the image, not
+// re-derived from the same arithmetic Dynamic used) must agree, for a
+// reading on each side of 50 -- exactly the property "a bar whose reading
+// says R must fill right" states.
+func TestBalancePanel_FillDirectionMatchesThePrintedSide(t *testing.T) {
+	const w, h = 700, 160
+	box := Box{X: 0, Y: 0, W: w, H: h}
+	fg := color.RGBAModel.Convert(DefaultTheme().Foreground).(color.RGBA)
+
+	for _, tc := range []struct {
+		name     string
+		v        float64
+		wantSide string
+	}{
+		{"reading above 50 prints L and fills left", 53, "L"},
+		{"reading below 50 prints R and fills right", 47, "R"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			track := balanceContactTrackConstant(tc.v, 21)
+			c, img, p := balancePainterFor(t, ContactBalance(), track, box, w, h)
+			c.Fill(c.Theme.Background)
+			p.Static(c)
+			p.Dynamic(c, Frame{At: balanceSampleTime(10)})
+
+			text := balanceReadingText(balanceDeviation(tc.v))
+			if !strings.HasSuffix(text, " "+tc.wantSide) {
+				t.Fatalf("balanceReadingText(balanceDeviation(%v)) = %q, want it to end in %q", tc.v, text, " "+tc.wantSide)
+			}
+
+			// Read the fill's own side back from the IMAGE, independently of
+			// balanceFillFraction: a point a few pixels left of centre, and
+			// one a few pixels right, on the track's own row.
+			y := int(p.trackY)
+			center := int(p.spanX + p.spanW/2)
+			leftFilled := img.RGBAAt(center-6, y) == fg
+			rightFilled := img.RGBAAt(center+6, y) == fg
+
+			switch tc.wantSide {
+			case "L":
+				if !leftFilled || rightFilled {
+					t.Errorf("reading prints %q but the fill is on the RIGHT (leftFilled=%v, rightFilled=%v) -- "+
+						"a bar whose reading says L must fill left", text, leftFilled, rightFilled)
+				}
+			case "R":
+				if !rightFilled || leftFilled {
+					t.Errorf("reading prints %q but the fill is on the LEFT (leftFilled=%v, rightFilled=%v) -- "+
+						"a bar whose reading says R must fill right", text, leftFilled, rightFilled)
+				}
+			}
+		})
+	}
+}
+
 // TestBalancePanel_OffScaleClipsTheFillAndDrawsTheChevron pins the second
 // drawing state: a reading past +-balanceHalfRange must fill only to the
 // span's own end (never past it, since there is nothing past it to fill
-// toward) and must draw the reused off-scale chevron there.
+// toward) and must draw the reused off-scale chevron there. v=58 is a
+// deviation of +8 -- LEFT dominant (see BalancePanel's own doc comment,
+// "Which side the bar names") -- so the clip and the chevron are both at the
+// span's LEFT end here, the mirror of where they would sit for a
+// right-dominant reading of equal magnitude.
 func TestBalancePanel_OffScaleClipsTheFillAndDrawsTheChevron(t *testing.T) {
 	const w, h = 700, 160
 	box := Box{X: 0, Y: 0, W: w, H: h}
-	const v = 58.0 // deviation +8, magnitude 8, fraction 1.6 -- off-scale high.
+	const v = 58.0 // deviation +8, magnitude 8, fraction 1.6 -- off-scale, left dominant.
 	track := balanceContactTrackConstant(v, 21)
 	c, img, p := balancePainterFor(t, ContactBalance(), track, box, w, h)
 	c.Fill(c.Theme.Background)
@@ -360,19 +442,19 @@ func TestBalancePanel_OffScaleClipsTheFillAndDrawsTheChevron(t *testing.T) {
 	fg := color.RGBAModel.Convert(c.Theme.Foreground).(color.RGBA)
 	y := int(p.trackY)
 
-	// The clipped fill's own edge is the span's own end -- a point just
+	// The clipped fill's own edge is the span's own LEFT end -- a point just
 	// inside it must be the live foreground colour, proving the FILL (not
 	// merely the dim ghost, which reaches the identical x) actually drew
 	// there.
-	edgeInsideX := int(p.spanX + p.spanW - 3)
+	edgeInsideX := int(p.spanX + 3)
 	if got := img.RGBAAt(edgeInsideX, y); got != fg {
-		t.Errorf("pixel just inside the span's own end (x=%d) is %v, want the live foreground fill colour %v -- "+
-			"an off-scale reading must still fill all the way to the span's own end", edgeInsideX, got, fg)
+		t.Errorf("pixel just inside the span's own left end (x=%d) is %v, want the live foreground fill colour %v -- "+
+			"an off-scale, left-dominant reading must still fill all the way to the span's own left end", edgeInsideX, got, fg)
 	}
 
-	// The chevron's own triangle tip sits at (spanX+spanW+capW, trackY); a
-	// pixel there must differ from the plain background.
-	tipX := int(p.spanX + p.spanW + p.capW - 1)
+	// The chevron's own triangle tip sits at (spanX-capW, trackY); a pixel
+	// there must differ from the plain background.
+	tipX := int(p.spanX - p.capW + 1)
 	got := img.RGBAAt(tipX, y)
 	bg := color.RGBAModel.Convert(c.Theme.Background).(color.RGBA)
 	if got == bg {
@@ -380,16 +462,16 @@ func TestBalancePanel_OffScaleClipsTheFillAndDrawsTheChevron(t *testing.T) {
 	}
 
 	// And the fill must NOT overrun past the chevron's own reach: a point
-	// just before the reading column's own text is neither the ghost nor
-	// the fill's foreground colour spilled across the gap. This is what
-	// catches a clip that only clamps the LOWER bound (or none at all): an
-	// unclamped fraction of 1.6 would compute a fill more than half again as
-	// wide as the span itself, running the live foreground colour straight
-	// through the gap and into the reading column.
-	pastChevronX := int(p.readingX) - 5
-	if pastChevronX > tipX {
+	// well to the left of the chevron's own tip is neither the ghost nor the
+	// fill's foreground colour spilled past it. This is what catches a clip
+	// that only clamps the UPPER bound (or none at all): an unclamped
+	// fraction of -1.6 would compute a fill more than half again as wide as
+	// the span itself, running the live foreground colour straight past the
+	// chevron's own reach.
+	pastChevronX := tipX - 5
+	if pastChevronX >= 0 {
 		if got := img.RGBAAt(pastChevronX, y); got == fg {
-			t.Errorf("pixel just before the reading column (x=%d) is the live foreground fill colour -- "+
+			t.Errorf("pixel past the chevron's own tip (x=%d) is the live foreground fill colour -- "+
 				"the fill overran past the chevron's own reach instead of clipping at the span's own end", pastChevronX)
 		}
 	}
@@ -397,17 +479,17 @@ func TestBalancePanel_OffScaleClipsTheFillAndDrawsTheChevron(t *testing.T) {
 
 // TestBalancePanel_TrueUnclippedMagnitudeIsWhatGetsPrinted is the arithmetic
 // half of the off-scale case, extracted from drawing per this project's own
-// testing discipline: the number an off-scale reading prints is
-// balanceMagnitude(v), the TRUE deviation, never the fraction clamped to
-// [-1,1] that the fill itself is limited to.
+// testing discipline: the number (and side letter) an off-scale reading
+// prints comes from the TRUE, unclipped deviation, never the fraction
+// clamped to [-1,1] that the fill itself is limited to.
 func TestBalancePanel_TrueUnclippedMagnitudeIsWhatGetsPrinted(t *testing.T) {
-	const v = 58.0 // magnitude 8, clipped fill fraction only reaches 1.0 (5 points)
-	magnitude := balanceMagnitude(v)
-	if magnitude != 8 {
-		t.Fatalf("precondition failed: magnitude = %v, want 8", magnitude)
+	const v = 58.0 // deviation +8, magnitude 8, clipped fill fraction only reaches 1.0 (5 points)
+	deviation := balanceDeviation(v)
+	if deviation != 8 {
+		t.Fatalf("precondition failed: deviation = %v, want 8", deviation)
 	}
-	if got := balanceReadingText(magnitude); got != "8.0" {
-		t.Errorf("balanceReadingText(%v) = %q, want %q (the true, unclipped magnitude)", magnitude, got, "8.0")
+	if got := balanceReadingText(deviation); got != "8.0 L" {
+		t.Errorf("balanceReadingText(%v) = %q, want %q (the true, unclipped magnitude and its left-dominant side)", deviation, got, "8.0 L")
 	}
 }
 
@@ -549,14 +631,17 @@ func TestBalancePanel_DynamicReadsItsOwnSeriesNeverFSample(t *testing.T) {
 	p.Dynamic(c, Frame{At: at, HasSample: true, Sample: fitactivity.Sample{HasStanceTimeBalance: true, StanceTimeBalance: 0}})
 
 	fg := color.RGBAModel.Convert(c.Theme.Foreground).(color.RGBA)
-	// A point just inside the span's own right edge must be the LIVE fill
-	// colour: reachable only if Dynamic used the series (present, off-scale,
-	// clipped fill reaching the end), never if it used f.Sample (absent,
-	// wash only, no foreground fill anywhere on the row).
-	x := int(p.spanX + p.spanW - 4)
+	// A point just inside the span's own LEFT edge must be the LIVE fill
+	// colour -- seriesV=60 is a deviation of +10, left dominant (see
+	// BalancePanel's own doc comment, "Which side the bar names"), so an
+	// off-scale reading clips its fill at the span's own left end. Reachable
+	// only if Dynamic used the series (present, off-scale, clipped fill
+	// reaching that end), never if it used f.Sample (absent, wash only, no
+	// foreground fill anywhere on the row).
+	x := int(p.spanX + 4)
 	got := img.RGBAAt(x, int(p.trackY))
 	if got != fg {
-		t.Errorf("pixel near the span's own end is %v, want the live foreground fill %v -- "+
+		t.Errorf("pixel near the span's own left end is %v, want the live foreground fill %v -- "+
 			"Dynamic must read p.series.At(f.At), never f.Sample directly", got, fg)
 	}
 }

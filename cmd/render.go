@@ -198,7 +198,7 @@ func bindRenderFlags(c *cobra.Command) {
 			"few readings to scale falls back to \"plain\", and the summary names it")
 	f.StringVar(&renderOpts.gauges, "gauges", panel.GaugesMetrics,
 		"what the gauge block shows: \"metrics\" (default: heart rate, pace, power and cadence) or \"balance\" "+
-			"(the left/right balance bars, with pace kept alongside since balance varies with effort). Every "+
+			"(the left/right balance bars, with pace and step length kept alongside since balance varies with effort). Every "+
 			"balance bar uses one fixed scale centred on even, so the bars can be compared with each other and "+
 			"across renders. An activity carrying no balance data falls back to \"metrics\" and the summary says "+
 			"so -- \"fitdash inspect\" lists the developer fields a file actually carries, which is where to look "+
@@ -770,7 +770,7 @@ func writeGaugeSelectionSummary(cmd *cobra.Command, r *render.Renderer, ctx *pan
 	out := cmd.ErrOrStderr()
 	for _, p := range r.Placed() {
 		if panel.IsBalancePanel(p.Panel) {
-			fmt.Fprintln(out, "gauges: balance -- pace is kept alongside the bars for effort context; "+
+			fmt.Fprintln(out, "gauges: balance -- pace and step length are kept alongside the bars for effort context; "+
 				"heart rate, power and cadence are not shown")
 			return
 		}

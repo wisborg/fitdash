@@ -1175,6 +1175,55 @@ func distanceTemplateFor(intDigits, decimals int) string {
 	return t
 }
 
+// StepLength reads Sample.StepLength -- the standard FIT Running Dynamics
+// field, native, in millimetres (Sample.StepLength's own doc comment,
+// fitactivity) -- and presents it in centimetres, at the user's own request:
+// a raw millimetre figure ("1187") does not read as a natural quantity on a
+// dashboard, and this project follows the same "convert at the presentation
+// layer, leave the recorded field alone" discipline Cadence (rpm doubled to
+// spm for a running sport) and Pace (speed inverted to time-per-kilometre)
+// already keep -- fitactivity's own field stays in the unit FIT recorded it
+// in, and this readout's value/format pair is where the conversion happens,
+// once, for the number this panel actually prints.
+//
+// This is context for reading the balance bars alongside pace, not a
+// balance itself -- see gaugeBalanceColumn's own doc comment (gauges.go) for
+// where it is seated and why it is an ordinary magnitude readout rather than
+// a fifth bar: a step length has no natural "even" midpoint the way a
+// left/right split does, so BalancePanel's whole fixed-centre-scale
+// machinery does not apply to it.
+//
+// videofx carries this same field only in its fitdump debug dump, labelled
+// "step length (mm)" -- a raw diagnostic dump, not a HUD panel a viewer
+// would read, so there is no established on-screen vocabulary to defer to
+// beyond the field's own plain-English name, which this readout's caption
+// matches.
+//
+// No zero-refusal: unlike the four balance panels' own "zero is not a
+// balance" rule, a step length of zero is a real, meaningful reading -- not
+// striding at this instant -- the same judgement Cadence and Power already
+// make about their own zero (see Cadence's own doc comment).
+func StepLength() Readout {
+	return Readout{
+		name: "step-length", label: "STEP LENGTH", unit: "cm", metric: inspect.MetricStepLength,
+		template: stepLengthTemplate,
+		value: func(s fitactivity.Sample) (float64, bool) {
+			return s.StepLength / 10, s.HasStepLength
+		},
+		format: func(v float64) string { return fmt.Sprintf("%.0f", v) },
+	}
+}
+
+// stepLengthTemplate is the widest string this readout ever prints in
+// centimetres: three digits, wide enough for an elite sprinter's stride
+// (a step length in the low 200s of centimetres is a real, recorded value,
+// not an outlier this panel needs to special-case) with headroom to spare,
+// while still shrinking cleanly for a child's or a walker's much shorter
+// step. Whole centimetres only -- no decimal -- which is the readability the
+// user's own choice of unit was for in the first place; a tenth of a
+// centimetre is not a distinction a viewer could act on.
+const stepLengthTemplate = "888"
+
 // paceTemplate is the widest string the pace readout ever draws: two digits
 // of minutes and two of seconds. It is the single place that shape lives --
 // the box sizing in Prepare and the speed floor below (maxPaceSeconds,

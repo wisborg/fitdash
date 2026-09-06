@@ -81,24 +81,28 @@ import (
 // balanceReadingText -- which is why that number is never dropped even
 // when the bar itself is pinned at an end.
 //
-// # No side is ever named
+// # Which side the bar names
 //
 // FIT's own stance_time_balance is conventionally read as the left foot's
-// share, but neither Stryd field carries a documented convention this
-// package could confirm, and the two families were observed sitting on
-// OPPOSITE sides of 50 in the one recording available to check them
-// against -- see CLAUDE.md for why that recording's own figures are not
-// reproduced here. A centre-anchored bar that labelled a side would be
-// making a claim this package cannot back. So the bar's SIDE (left of
-// centre or right) carries direction and the READING carries magnitude --
-// two independent facts in two non-colour channels, deliberately never
-// reduced to one signed number with a letter after it.
+// share, and the two Stryd fields were originally left unlabelled because
+// this package had no documented convention it could confirm for them. That
+// convention is now confirmed for all four: checked against a user's own
+// activity summary (its own official left/right split for each of the four
+// quantities, never reproduced here -- see CLAUDE.md), every one of
+// ContactBalance, ImpactBalance, StiffnessBalance and OscillationBalance
+// tracked that summary's LEFT-side figure, not the right's. So all four
+// carry the LEFT foot's share, uniformly, and a reading above 50 means the
+// LEFT side dominates -- balanceFillFraction is the one place that fact
+// becomes a drawn direction (fill left, not right, for a positive
+// deviation), and balanceReadingText is the one place it becomes a printed
+// letter ("L" or "R") beside the magnitude.
 //
-// This is designed so a side letter CAN be added later without
-// restructuring, the day the Stryd convention is confirmed -- and it must
-// go in the value row (Dynamic, per frame) when it does, never the unit
-// row (Static, once): see Static's own doc comment for why, which restates
-// Distance's identical trap with metres and kilometres.
+// The letter is drawn in the VALUE row (Dynamic, per frame), never the unit
+// row (Static, once): the side genuinely flips mid-activity -- whichever
+// foot leads at one instant can trail at the next -- where the unit row is
+// rasterized once at the very start of the render and never touched again.
+// See Static's own doc comment for why, which restates Distance's identical
+// trap with metres and kilometres.
 //
 // # Zero is not a balance
 //
@@ -190,7 +194,7 @@ func newBalancePanel(name, label string, value func(fitactivity.Sample) (float64
 // see BalancePanel's own doc comment, "Zero is not a balance", for why that
 // judgement belongs to this panel and not to fitactivity.
 func ContactBalance() BalancePanel {
-	return newBalancePanel("contact-balance", "CONTACT BALANCE", contactBalanceValue)
+	return newBalancePanel("contact-balance", "GROUND CONTACT BALANCE", contactBalanceValue)
 }
 
 func contactBalanceValue(s fitactivity.Sample) (float64, bool) {
@@ -202,21 +206,21 @@ func contactBalanceValue(s fitactivity.Sample) (float64, bool) {
 // impact loading rate, a different quantity from ContactBalance's ground
 // contact time (see that constant's own doc comment in fitactivity).
 func ImpactBalance() BalancePanel {
-	return newBalancePanel("impact-balance", "IMPACT BALANCE", devBalanceValue(fitactivity.StrydImpactLoadingRateBalanceField))
+	return newBalancePanel("impact-balance", "IMPACT LOADING RATE (ILR) BALANCE", devBalanceValue(fitactivity.StrydImpactLoadingRateBalanceField))
 }
 
 // StiffnessBalance reads the Stryd developer field
 // fitactivity.StrydLegSpringStiffnessBalanceField -- one foot's share of leg
 // spring stiffness.
 func StiffnessBalance() BalancePanel {
-	return newBalancePanel("stiffness-balance", "STIFFNESS BALANCE", devBalanceValue(fitactivity.StrydLegSpringStiffnessBalanceField))
+	return newBalancePanel("stiffness-balance", "LEG SPRING STIFFNESS (LSS) BALANCE", devBalanceValue(fitactivity.StrydLegSpringStiffnessBalanceField))
 }
 
 // OscillationBalance reads the Stryd developer field
 // fitactivity.StrydVerticalOscillationBalanceField -- one foot's share of
 // vertical oscillation.
 func OscillationBalance() BalancePanel {
-	return newBalancePanel("oscillation-balance", "OSCILLATION BALANCE", devBalanceValue(fitactivity.StrydVerticalOscillationBalanceField))
+	return newBalancePanel("oscillation-balance", "VERTICAL OSCILLATION BALANCE", devBalanceValue(fitactivity.StrydVerticalOscillationBalanceField))
 }
 
 // devBalanceValue builds a zero-refusing value accessor for a Stryd balance
@@ -273,11 +277,14 @@ func balanceSeriesWindow(ctx *Context) time.Duration {
 }
 
 // balanceDeviation is v - 50, signed: positive means the reading sits ABOVE
-// the exact midpoint, negative BELOW it. Which physical foot either
-// direction corresponds to is not established -- see BalancePanel's own
-// doc comment, "No side is ever named" -- so nothing downstream of this
-// function ever attaches a side to its sign; only the bar's OWN side
-// (Dynamic, drawFill) reads it, never a label.
+// the exact midpoint, negative BELOW it -- deliberately left in this raw,
+// "above or below 50" shape rather than pre-mapped to a side, so the
+// numeric result stays stable regardless of which physical foot either
+// direction turns out to name. See BalancePanel's own doc comment, "Which
+// side the bar names", for the two functions that DO turn this sign into a
+// side -- balanceFillFraction for the drawn direction, balanceReadingText
+// for the printed letter -- and for why both read this same raw sign rather
+// than each encoding the mapping separately.
 func balanceDeviation(v float64) float64 {
 	return v - 50
 }
@@ -299,24 +306,53 @@ func balanceFraction(deviation float64) float64 {
 	return deviation / balanceHalfRange
 }
 
-// balanceReadingText formats magnitude to one decimal, or "EVEN" when it
-// rounds to 0.0 -- a deviation too small to mean anything at one decimal's
-// own precision reads as exact symmetry rather than as a tiny signed
-// number nobody could act on.
-func balanceReadingText(magnitude float64) string {
+// balanceFillFraction turns balanceFraction's raw, "above or below 50"
+// fraction into the fraction drawFill actually fills toward: NEGATED,
+// because all four source fields carry the LEFT foot's share (see
+// BalancePanel's own doc comment, "Which side the bar names") and drawFill's
+// own convention is negative-fills-left. So a POSITIVE raw fraction --
+// reading above 50, left dominant -- must fill LEFT, which is
+// balanceFillFraction's negative output; a NEGATIVE raw fraction -- right
+// dominant -- fills RIGHT.
+//
+// This is the one place that confirmed convention becomes a drawn pixel.
+// Everywhere else in this file (balanceDeviation, balanceMagnitude,
+// balanceFraction) stays in the raw, unmapped sign on purpose, so a future
+// correction to the convention -- if one is ever needed -- touches this one
+// function and balanceReadingText's own side letter, never the arithmetic
+// both of them read from.
+func balanceFillFraction(frac float64) float64 {
+	return -frac
+}
+
+// balanceReadingText formats a signed deviation as its magnitude, to one
+// decimal, plus a side letter -- "L" when the deviation is positive (reading
+// above 50, left dominant; see BalancePanel's own doc comment, "Which side
+// the bar names"), "R" when negative -- or "EVEN", with no letter at all,
+// when the magnitude rounds to 0.0: a deviation too small to mean anything
+// at one decimal's own precision reads as exact symmetry, not as a tiny
+// signed number nobody could act on, and "EVEN" cannot sensibly favour
+// either side.
+func balanceReadingText(deviation float64) string {
+	magnitude := math.Abs(deviation)
 	if math.Round(magnitude*10) == 0 {
 		return "EVEN"
 	}
-	return fmt.Sprintf("%.1f", magnitude)
+	side := "R"
+	if deviation > 0 {
+		side = "L"
+	}
+	return fmt.Sprintf("%.1f %s", magnitude, side)
 }
 
 // balanceValueTemplate is the widest string balanceReadingText ever prints:
-// two integer digits and one decimal ("50.0", the ceiling a magnitude can
-// reach -- a deviation of 50 from a raw reading of 100, the largest
-// percentage a refused-zero-excluded reading can be). "EVEN" is checked
+// two integer digits, one decimal and a side letter ("50.0 L", the ceiling a
+// magnitude can reach -- a deviation of 50 from a raw reading of 100, the
+// largest percentage a refused-zero-excluded reading can be -- plus the
+// space and letter every non-EVEN reading now carries). "EVEN" is checked
 // alongside it in Prepare (below) since a font's own letterforms need not
 // be exactly as wide as its digits at the same nominal size.
-const balanceValueTemplate = "50.0"
+const balanceValueTemplate = "50.0 L"
 
 // Name identifies the panel -- the same string a future --panels flag would
 // select it by (see docs/architecture.md).
@@ -424,20 +460,25 @@ func (p BalancePanel) Prepare(ctx *Context, box Box) Painter {
 	if box.W < unit {
 		unit = box.W
 	}
-	bp.centerX = box.X + box.W/2
-
-	bp.captionPx = unit * balanceCaptionFraction
-	if ctx.Fonts != nil {
-		if px, err := ctx.Fonts.FitSize(p.label, box.W*0.92, bp.captionPx); err == nil {
-			bp.captionPx = px
-		}
-	}
+	// bp.captionX defaults to the whole box's own centre -- the box-wide
+	// fallback used only if the bar row below turns out too degenerate to
+	// resolve a bar column at all (barBox or barColW <= 0, just below).
+	// Once a bar column DOES resolve, this is overwritten with that column's
+	// own centre, which is what task 4 (centre the caption over the bar, not
+	// the panel) actually asks for -- see the overwrite below.
+	bp.captionX = box.X + box.W/2
 
 	captionRowH := box.H * balanceCaptionRowFraction
 	bp.captionY = box.Y + captionRowH/2
+	bp.captionPx = unit * balanceCaptionFraction
 
 	barBox := Box{X: box.X, Y: box.Y + captionRowH, W: box.W, H: box.H - captionRowH}
 	if barBox.H <= 0 || barBox.W <= 0 {
+		if ctx.Fonts != nil {
+			if px, err := ctx.Fonts.FitSize(p.label, box.W*0.92, bp.captionPx); err == nil {
+				bp.captionPx = px
+			}
+		}
 		return bp
 	}
 
@@ -445,7 +486,33 @@ func (p BalancePanel) Prepare(ctx *Context, box Box) Painter {
 	gap := barBox.W * balanceGapFraction
 	barColW := barBox.W - readingW - gap
 	if barColW <= 0 {
+		if ctx.Fonts != nil {
+			if px, err := ctx.Fonts.FitSize(p.label, box.W*0.92, bp.captionPx); err == nil {
+				bp.captionPx = px
+			}
+		}
 		return bp
+	}
+
+	// The caption centres on the BAR COLUMN's own centre, not the box's --
+	// task 4's fix for a caption that used to sit visibly right of its own
+	// bar, pulled there by the reading column at the box's own right edge.
+	// barColW's own two ends are symmetric about this point (capW is added
+	// and then subtracted twice below, spanX := barBox.X+capW, spanW :=
+	// barColW-2*capW), so this is the identical point the drawn SPAN itself
+	// centres on -- centring on the column and centring on the span are the
+	// same x, computed here before capW exists yet rather than duplicated
+	// after it does.
+	bp.captionX = barBox.X + barColW/2
+	// Fitted against the BAR COLUMN's own width, not the whole box's: sizing
+	// against box.W (as the caption used to, when it was centred on the box)
+	// would let a caption this wide overhang past the box's own left edge
+	// now that its anchor has moved left, off-centre from the box, to sit
+	// over the narrower bar column instead.
+	if ctx.Fonts != nil {
+		if px, err := ctx.Fonts.FitSize(p.label, barColW*0.92, bp.captionPx); err == nil {
+			bp.captionPx = px
+		}
 	}
 
 	bp.trackY = barBox.Y + barBox.H/2
@@ -508,7 +575,12 @@ type balancePainter struct {
 	series gaugeSeries
 
 	captionY, captionPx float64
-	centerX             float64
+
+	// captionX is the caption's own anchor -- the bar COLUMN's centre once
+	// one resolves, the whole box's centre as a fallback otherwise. See
+	// Prepare's own comment on this field for why it is not simply the box's
+	// centre the way an earlier version of this panel drew it.
+	captionX float64
 
 	// hasBar is false when the box (or its bar row) was too degenerate to
 	// draw a track in at all -- the identical "a box too narrow to draw in
@@ -585,20 +657,19 @@ func (p *balancePainter) drawFill(c *Canvas, frac float64, col color.Color) {
 // scale rather than any one reading.
 //
 // The unit row ("%") is drawn HERE, once, deliberately -- and this is the
-// one thing about this panel a future change must not get backwards. If a
-// foot side is ever added to the reading (see BalancePanel's own doc
-// comment, "No side is ever named"), it belongs in the VALUE row (Dynamic,
-// below), drawn fresh every frame, and never folded into this unit row: the
-// side genuinely flips mid-activity (whichever foot a device calls "the
-// balance" can lead at one instant and trail at the next), where this row
-// is rasterized once at the very start of the render and never touched
-// again. Distance's own doc comment (readout.go) records the identical
-// trap with metres and kilometres -- a unit drawn once that later stops
-// matching the value drawn every frame over it, both layers correct when
-// they were each drawn, disagreeing by the time a viewer sees them
-// together.
+// one thing about this panel a future change must not get backwards. The
+// reading's own side letter (see BalancePanel's own doc comment, "Which
+// side the bar names") is drawn in the VALUE row (Dynamic, below), fresh
+// every frame, and never folded into this unit row: the side genuinely
+// flips mid-activity (whichever foot leads at one instant can trail at the
+// next), where this row is rasterized once at the very start of the render
+// and never touched again. Distance's own doc comment (readout.go) records
+// the identical trap with metres and kilometres -- a unit drawn once that
+// later stops matching the value drawn every frame over it, both layers
+// correct when they were each drawn, disagreeing by the time a viewer sees
+// them together.
 func (p *balancePainter) Static(c *Canvas) {
-	_ = c.Text(p.label, p.centerX, p.captionY, 0.5, 0.5, p.captionPx, c.Theme.Dim)
+	_ = c.Text(p.label, p.captionX, p.captionY, 0.5, 0.5, p.captionPx, c.Theme.Dim)
 	if !p.hasBar {
 		return
 	}
@@ -633,12 +704,22 @@ func (p *balancePainter) Static(c *Canvas) {
 //     drawn over (see gaugeAbsentWashAlpha's own doc comment, gauge.go).
 //   - present, past +-balanceHalfRange: the fill clips at the span's own
 //     end (drawFill's own clamp) plus the reused off-scale chevron
-//     (drawGaugeCap) at that end, and the printed magnitude is the TRUE,
-//     unclipped value -- never the clamped one the bar itself stops at.
+//     (drawGaugeCap) at that end, and the printed magnitude and side are the
+//     TRUE, unclipped deviation's -- never the clamped fraction the bar
+//     itself stops at.
 //   - present, on scale: the fill reaches exactly the fraction the
-//     deviation implies, no chevron, and the printed magnitude is that
-//     same on-scale reading -- or "EVEN" where it rounds to 0.0
-//     (balanceReadingText).
+//     deviation implies, no chevron, and the printed reading is that same
+//     on-scale deviation's magnitude and side -- or "EVEN", with no side at
+//     all, where the magnitude rounds to 0.0 (balanceReadingText).
+//
+// fillFrac -- balanceFillFraction(frac), NOT frac itself -- is what actually
+// decides which end the chevron draws at and which way drawFill fills: see
+// balanceFillFraction's own doc comment for why the raw, "above or below 50"
+// frac has to be negated before it drives a drawn direction. The printed
+// text reads deviation directly, never fillFrac or frac: balanceReadingText
+// derives its own side from deviation's sign using the identical convention,
+// so the fill's direction and the letter beside the reading can never
+// disagree about which side a positive deviation names.
 func (p *balancePainter) Dynamic(c *Canvas, f Frame) {
 	if !p.hasBar {
 		return
@@ -651,16 +732,16 @@ func (p *balancePainter) Dynamic(c *Canvas, f Frame) {
 	}
 
 	deviation := balanceDeviation(v)
-	magnitude := balanceMagnitude(v)
 	frac := balanceFraction(deviation)
+	fillFrac := balanceFillFraction(frac)
 
 	switch {
-	case frac < -1:
+	case fillFrac < -1:
 		drawGaugeCap(c, p.spanX, p.spanW, p.trackY, p.capW, p.capHalfH, false, c.Theme.Foreground)
-	case frac > 1:
+	case fillFrac > 1:
 		drawGaugeCap(c, p.spanX, p.spanW, p.trackY, p.capW, p.capHalfH, true, c.Theme.Foreground)
 	}
-	p.drawFill(c, frac, c.Theme.Foreground)
+	p.drawFill(c, fillFrac, c.Theme.Foreground)
 
-	_ = c.Text(balanceReadingText(magnitude), p.readingX, p.readingValueY, 0, 0.5, p.readingValuePx, c.Theme.Foreground)
+	_ = c.Text(balanceReadingText(deviation), p.readingX, p.readingValueY, 0, 0.5, p.readingValuePx, c.Theme.Foreground)
 }

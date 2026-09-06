@@ -25,7 +25,7 @@ var gaugesEpoch = time.Date(2022, 3, 4, 0, 0, 0, 0, time.UTC)
 // the track exactly as a real render would.
 type gaugesFixture struct {
 	n                                                                  int
-	speed, heartRate, power, cadence                                   bool
+	speed, heartRate, power, cadence, stepLength                       bool
 	stanceBalance, impactBalance, stiffnessBalance, oscillationBalance bool
 }
 
@@ -53,6 +53,9 @@ func gaugesTrack(f gaugesFixture) *fitactivity.Track {
 		}
 		if f.cadence {
 			s.HasCadence, s.Cadence = true, uint8(80+i%6)
+		}
+		if f.stepLength {
+			s.HasStepLength, s.StepLength = true, 1150+float64(i%40)
 		}
 		if f.stanceBalance {
 			s.HasStanceTimeBalance, s.StanceTimeBalance = true, 55
@@ -86,24 +89,25 @@ func gaugesContext(f gaugesFixture) *Context {
 
 // --- IsBalancePanel ---------------------------------------------------------
 
-// TestIsBalancePanel_IdentifiesTheBarsAndTheirOwnPaceVariant pins the
+// TestIsBalancePanel_IdentifiesTheBarsAndTheirOwnReadoutVariants pins the
 // membership test internal/render's keep filter relies on: true for each of
-// the four bars and for balancePace()'s own wrapper, false for every other
-// panel in this package -- including the ORDINARY Pace(), which reports the
-// identical Name() ("pace") as balancePace() and must still be told apart by
-// TYPE, never by name.
-func TestIsBalancePanel_IdentifiesTheBarsAndTheirOwnPaceVariant(t *testing.T) {
+// the four bars and for balancePace()'s and balanceStepLength()'s own
+// wrappers, false for every other panel in this package -- including the
+// ORDINARY Pace() and StepLength(), which report the identical Name()s
+// ("pace", "step-length") as their wrapped counterparts and must still be
+// told apart by TYPE, never by name.
+func TestIsBalancePanel_IdentifiesTheBarsAndTheirOwnReadoutVariants(t *testing.T) {
 	for _, p := range []Panel{
-		ContactBalance(), ImpactBalance(), StiffnessBalance(), OscillationBalance(), balancePace(),
+		ContactBalance(), ImpactBalance(), StiffnessBalance(), OscillationBalance(), balancePace(), balanceStepLength(),
 	} {
 		if !IsBalancePanel(p) {
 			t.Errorf("IsBalancePanel(%s) = false, want true", p.Name())
 		}
 	}
-	for _, p := range []Panel{HeartRate(), Pace(), Power(), Cadence(), Distance(), ElapsedPanel{}, RoutePanel{}} {
+	for _, p := range []Panel{HeartRate(), Pace(), Power(), Cadence(), StepLength(), Distance(), ElapsedPanel{}, RoutePanel{}} {
 		if IsBalancePanel(p) {
 			t.Errorf("IsBalancePanel(%s) = true, want false -- only the four bars and their own paired "+
-				"Pace variant belong to the balance display", p.Name())
+				"Pace/StepLength variants belong to the balance display", p.Name())
 		}
 	}
 }
@@ -111,7 +115,7 @@ func TestIsBalancePanel_IdentifiesTheBarsAndTheirOwnPaceVariant(t *testing.T) {
 // --- hasAnyBalanceMetric ----------------------------------------------------
 
 // TestHasAnyBalanceMetric_TrueOnlyWithAGenuineReading pins the OR condition
-// balancePaceReadout's own Accepts is gated on: false with none of the four
+// balanceReadout's own Accepts is gated on: false with none of the four
 // present, false when every recorded value is the refused zero
 // BalancePanel's own doc comment names, true the moment even one genuine
 // reading exists, and false for a nil Context or Track -- mirroring
@@ -150,33 +154,58 @@ func TestHasAnyBalanceMetric_TrueOnlyWithAGenuineReading(t *testing.T) {
 	}
 }
 
-// --- balancePaceReadout.Accepts ---------------------------------------------
+// --- balanceReadout.Accepts ---------------------------------------------
 
-// TestBalancePaceReadout_AcceptsRequiresBalanceDataAlongsideItsOwnCoverage is
-// the flagship test for the AND this whole feature's fallback depends on:
-// balancePace() must decline whenever hasAnyBalanceMetric is false, no matter
-// how good its own Pace coverage is -- otherwise the balance branch would
-// survive on Pace alone (see gauges.go's own doc comment for why that is
-// worse than falling back) -- and it must still honour Pace's OWN coverage
-// test on top, so an activity with balance data but no usable pace (no
-// speed) still declines.
-func TestBalancePaceReadout_AcceptsRequiresBalanceDataAlongsideItsOwnCoverage(t *testing.T) {
-	cases := []struct {
-		name string
-		f    gaugesFixture
-		want bool
+// TestBalanceReadout_AcceptsRequiresBalanceDataAlongsideItsOwnCoverage is the
+// flagship test for the AND this whole feature's fallback depends on, run
+// against BOTH wrapped readouts (balancePace and balanceStepLength) since
+// both share the identical balanceReadout wrapper and the identical
+// requirement: each must decline whenever hasAnyBalanceMetric is false, no
+// matter how good its own embedded coverage is -- otherwise the balance
+// branch would survive on that one readout alone (see gauges.go's own doc
+// comment for why that is worse than falling back) -- and each must still
+// honour its OWN embedded coverage test on top, so an activity with balance
+// data but no usable pace (no speed) or no usable step length still
+// declines for that readout.
+func TestBalanceReadout_AcceptsRequiresBalanceDataAlongsideItsOwnCoverage(t *testing.T) {
+	for _, w := range []struct {
+		name  string
+		build func() Panel
+		cover string // which gaugesFixture field this readout's own coverage needs
 	}{
-		{"neither speed nor balance", gaugesFixture{}, false},
-		{"speed only, no balance data at all", gaugesFixture{speed: true}, false},
-		{"balance data only, no speed", gaugesFixture{stanceBalance: true}, false},
-		{"speed and balance data both present", gaugesFixture{speed: true, stanceBalance: true}, true},
-		{"speed and a developer balance field both present", gaugesFixture{speed: true, oscillationBalance: true}, true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			ctx := gaugesContext(c.f)
-			if got := balancePace().Accepts(ctx); got != c.want {
-				t.Errorf("balancePace().Accepts() = %v, want %v", got, c.want)
+		{"balancePace", balancePace, "speed"},
+		{"balanceStepLength", balanceStepLength, "stepLength"},
+	} {
+		t.Run(w.name, func(t *testing.T) {
+			fixtureWithCoverage := func(extra gaugesFixture) gaugesFixture {
+				switch w.cover {
+				case "speed":
+					extra.speed = true
+				case "stepLength":
+					extra.stepLength = true
+				}
+				return extra
+			}
+			cases := []struct {
+				name string
+				f    gaugesFixture
+				want bool
+			}{
+				{"neither this readout's own coverage nor balance", gaugesFixture{}, false},
+				{"this readout's own coverage only, no balance data at all", fixtureWithCoverage(gaugesFixture{}), false},
+				{"balance data only, no coverage for this readout", gaugesFixture{stanceBalance: true}, false},
+				{"this readout's own coverage and balance data both present",
+					fixtureWithCoverage(gaugesFixture{stanceBalance: true}), true},
+				{"this readout's own coverage and a developer balance field both present",
+					fixtureWithCoverage(gaugesFixture{oscillationBalance: true}), true},
+			}
+			for _, c := range cases {
+				t.Run(c.name, func(t *testing.T) {
+					ctx := gaugesContext(c.f)
+					if got := w.build().Accepts(ctx); got != c.want {
+						t.Errorf("%s.Accepts() = %v, want %v", w.name, got, c.want)
+					}
+				})
 			}
 		})
 	}
@@ -210,13 +239,13 @@ func gaugeMetricsKeep(ctx *Context) func(Panel) bool {
 }
 
 // gaugePanelNames collects the Name() of every placed panel that is one of
-// the ordinary four gauges or one of the balance branch's own five, for the
+// the ordinary gauges or one of the balance branch's own leaves, for the
 // membership assertions below -- deliberately narrow rather than the whole
 // placed set, since this test's own subject is the gauge Alt slot alone and
 // every other panel's placement is exercised elsewhere.
 func gaugePanelNames(placed []Placed) map[string]int {
 	watch := map[string]bool{
-		"heart-rate": true, "pace": true, "power": true, "cadence": true,
+		"heart-rate": true, "pace": true, "power": true, "cadence": true, "step-length": true,
 		"contact-balance": true, "impact-balance": true, "stiffness-balance": true, "oscillation-balance": true,
 	}
 	counts := map[string]int{}
@@ -232,13 +261,15 @@ func gaugePanelNames(placed []Placed) map[string]int {
 // membership test the plan asks for: over BOTH real trees, at three frame
 // sizes, which of the gauge Alt slot's two candidates actually won, checked
 // by NAME rather than only by "the boxes tile" -- a regression that placed
-// the wrong candidate, or left pace stranded alone, would satisfy every
-// geometric assertion and still be wrong.
+// the wrong candidate, or left pace or step length stranded alone, would
+// satisfy every geometric assertion and still be wrong.
 func TestResolve_GaugeAltOverTheRealLayoutsPlacesTheRightPanels(t *testing.T) {
-	full := gaugesFixture{speed: true, heartRate: true, power: true, cadence: true,
+	full := gaugesFixture{speed: true, heartRate: true, power: true, cadence: true, stepLength: true,
 		stanceBalance: true, impactBalance: true, stiffnessBalance: true, oscillationBalance: true}
-	partial := gaugesFixture{speed: true, heartRate: true, power: true, cadence: true, stanceBalance: true}
+	partial := gaugesFixture{speed: true, heartRate: true, power: true, cadence: true, stepLength: true, stanceBalance: true}
+	noStepLength := gaugesFixture{speed: true, heartRate: true, power: true, cadence: true, stanceBalance: true}
 	none := gaugesFixture{speed: true, heartRate: true, power: true, cadence: true}
+	stepLengthOnly := gaugesFixture{speed: true, heartRate: true, power: true, cadence: true, stepLength: true}
 
 	cases := []struct {
 		name string
@@ -253,16 +284,27 @@ func TestResolve_GaugeAltOverTheRealLayoutsPlacesTheRightPanels(t *testing.T) {
 		{
 			"--gauges balance (or no tripwire), full balance data -- balance wins, metrics never tried",
 			gaugeOrdinaryKeep(gaugesContext(full)),
-			map[string]int{"pace": 1, "contact-balance": 1, "impact-balance": 1, "stiffness-balance": 1, "oscillation-balance": 1},
+			map[string]int{"pace": 1, "step-length": 1, "contact-balance": 1, "impact-balance": 1, "stiffness-balance": 1, "oscillation-balance": 1},
 		},
 		{
-			"--gauges balance, only contact-balance present -- pace plus the surviving bar",
+			"--gauges balance, only contact-balance present -- pace and step length plus the surviving bar",
 			gaugeOrdinaryKeep(gaugesContext(partial)),
+			map[string]int{"pace": 1, "step-length": 1, "contact-balance": 1},
+		},
+		{
+			"--gauges balance, no step length but a bar present -- pace and the bar, step length declines on its own",
+			gaugeOrdinaryKeep(gaugesContext(noStepLength)),
 			map[string]int{"pace": 1, "contact-balance": 1},
 		},
 		{
 			"--gauges balance, activity carries none of the four -- prunes to nothing, falls through to metrics",
 			gaugeOrdinaryKeep(gaugesContext(none)),
+			map[string]int{"heart-rate": 1, "pace": 1, "power": 1, "cadence": 1},
+		},
+		{
+			"--gauges balance, step length present but no bars at all -- step length alone must not keep the branch " +
+				"alive; falls through to metrics same as having neither",
+			gaugeOrdinaryKeep(gaugesContext(stepLengthOnly)),
 			map[string]int{"heart-rate": 1, "pace": 1, "power": 1, "cadence": 1},
 		},
 	}

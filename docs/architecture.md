@@ -1027,10 +1027,15 @@ read.
 
 ## The balance bars: a fixed scale, because comparison is the point
 
-`--gauges balance` replaces the four gauge readouts with pace and four centre-anchored
-bars, one per left/right balance metric. Pace stays because balance varies with effort and
-the two are meant to be read together, and it sits at the top because it is the context the
-bars are read against.
+`--gauges balance` replaces the four gauge readouts with pace, step length and four
+centre-anchored bars, one per left/right balance metric. Pace and step length stay because
+balance varies with effort and stride, and the three are meant to be read together; they sit
+at the top, side by side at equal weight, because they are the context the bars are read
+against. Step length is an ordinary magnitude — a `Readout`, like pace — never a fifth bar:
+it has no natural "even" midpoint the way a left/right split does, so the fixed-scale
+machinery below does not apply to it, and it is presented in centimetres rather than the
+FIT field's own millimetres, converted at the presentation layer the same way `Cadence`
+converts rpm to spm.
 
 ### The scale is a constant, which is the gauges' ruling inverted
 
@@ -1065,18 +1070,29 @@ against its own label. Here the quantity is real and starts at zero at the ancho
 asymmetry — and length and side are two independent facts in two non-colour channels. It
 does not collide with `ClimbPanel`'s bars, which fill from the left edge and only grow.
 
-### No foot is named
+### Which side the bar names
 
-Which side these fields report is not established. FIT's `stance_time_balance` is
-conventionally the left share; the Stryd developer fields carry no convention that could be
-confirmed, and the two families sit on opposite sides of even in the activity this was built
-against — consistent either with a real one-sided asymmetry or with opposite conventions.
+Which side these fields report was originally left unconfirmed. FIT's `stance_time_balance`
+is conventionally the left share; the Stryd developer fields carried no *documented*
+convention this project could confirm on its own.
 
-A centre-anchored bar that names a foot is making a claim, so it makes none: the magnitude
-is printed, and the bar's own side carries the direction. When the convention is confirmed,
-the side letter goes in the **value** row and never the unit row — the unit row is drawn once
-in `Static`, and the side genuinely flips mid-activity. `Distance`'s doc comment records the
-same trap with metres and kilometres.
+That convention is now confirmed for all four, checked against a user's own activity
+summary — its own official left/right split for each of the four quantities, never
+reproduced in this repository (see `CLAUDE.md`) — and every one of the four fields tracked
+that summary's LEFT-side figure. So all four carry the **left** foot's share, uniformly, and
+a reading above the midpoint means the left side dominates.
+
+A centre-anchored bar therefore now names a side: the magnitude and a letter (`L` or `R`,
+`EVEN` with no letter where the magnitude rounds to zero) are printed together, and the
+bar's own fill direction is drawn from the identical sign, so the two can never disagree
+about which side a positive deviation names. The letter goes in the **value** row, drawn
+fresh every frame, and never the unit row — the unit row is drawn once in `Static`, and the
+side genuinely flips mid-activity (whichever foot leads at one instant can trail at the
+next). `Distance`'s doc comment records the same trap with metres and kilometres.
+
+This was the one place a code review could not have caught the fix: the arithmetic reads as
+equally plausible with the sign either way, and only checking a fill's own direction against
+a source of truth outside the repository could tell the two apart.
 
 ### These panels do not read the smoothed sample
 
