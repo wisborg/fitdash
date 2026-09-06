@@ -37,6 +37,15 @@ scripts/fd clean                 # empty .scratch/
 Every subcommand ends with one `fd <command>: ok|FAILED (exit N)` line and exits
 with the underlying status, so **never append your own `echo "$?"`**.
 
+There is a `Makefile` too, and every target is a thin delegation to the same
+script — `make gates`, `make build`, `make test PKG=./internal/panel/ RUN=Name`,
+`make frames FIT=ACT.fit ARGS="--theme light"`. It is the discoverable front
+door (`make` on its own lists the targets); `scripts/fd` remains where the work
+is actually spelled out. Use either, but **do not add a target that reimplements
+a job** — a second spelling of `go test ./...` is exactly what fd exists to
+prevent. Note that `make clean` removes the built binary *as well as* emptying
+`.scratch/`, which `scripts/fd clean` alone does not.
+
 Anything a session writes — renders, captured diffs, inspected PNG frames — goes in
 the gitignored `.scratch/` at the repo root, never a per-session temp directory. It
 is the same path in every session, so it can be allowlisted once and cleaned in one
