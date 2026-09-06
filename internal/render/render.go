@@ -622,6 +622,23 @@ func (r *Renderer) drawHighlightBorder(c *panel.Canvas, f panel.Frame) {
 // Context.BasePx resolved once), and every other measure is a fraction of
 // that text size, so the whole notice scales with the frame exactly as a
 // panel's contents do.
+// cutNoticeWord is what the card calls the stretch it names. The duration
+// follows it, so the whole card reads "PAUSED 0:04:32".
+//
+// It names what HAPPENED in the activity, not what this render did about it.
+// "SKIPPED" was the first wording and describes the renderer's own action,
+// which is a fact about the flags rather than about the recording -- a
+// viewer who never saw the command line has no way to know what was skipped
+// or by whom, where "paused" is a thing they did and a duration they can
+// recognise. The card only ever appears in a render that cut the pause out,
+// so there is no frozen-dashboard case for it to be confused with.
+//
+// The trailing space is part of the constant because the word and the
+// duration are drawn as two runs in two colours and laid out from this one's
+// measured width; a separator added at the call site would be a second place
+// the spacing lived.
+const cutNoticeWord = "PAUSED "
+
 const (
 	cutNoticeTextFraction   = 0.55
 	cutNoticePadXFraction   = 0.70
@@ -631,7 +648,7 @@ const (
 )
 
 // drawCutNotice draws the card that names how much activity time was spliced
-// out at this seam -- "SKIPPED 0:04:32" -- alpha ramping with Frame.CutWeight,
+// out at this seam -- "PAUSED 0:04:32" -- alpha ramping with Frame.CutWeight,
 // the same 0->1->0 shape the highlight border and a label's name both use.
 //
 // This is the honesty half of --pauses skip, and the reason the flag was
@@ -673,9 +690,8 @@ func (r *Renderer) drawCutNotice(c *panel.Canvas, f panel.Frame) {
 		return
 	}
 
-	const word = "SKIPPED "
 	clock := panel.FormatClock(cuts[f.Cut].Removed())
-	wordW, textH, err := c.MeasureText(word, px)
+	wordW, textH, err := c.MeasureText(cutNoticeWord, px)
 	if err != nil {
 		return
 	}
@@ -717,7 +733,7 @@ func (r *Renderer) drawCutNotice(c *panel.Canvas, f panel.Frame) {
 	// centred strings that would separate as the duration's own width
 	// changed.
 	textY := cardY + cardH/2
-	_ = c.Text(word, cardX+padX, textY, 0, 0.5, px, col)
+	_ = c.Text(cutNoticeWord, cardX+padX, textY, 0, 0.5, px, col)
 	_ = c.Text(clock, cardX+padX+wordW, textY, 0, 0.5, px, panel.Fade(c.Theme.Foreground, w))
 }
 

@@ -38,7 +38,7 @@ activity's *elapsed* time and freezes through a pause: the elapsed clock keeps c
 the active clock does not, and a stopped activity reads as stopped. `--pauses skip` cuts
 the paused stretches out, so video time advances only while the timer was running. That
 is a splice — the route dot jumps across whatever ground was covered while the watch was
-stopped — so every seam draws a `SKIPPED 0:04:32` notice naming what went missing there,
+stopped — so every seam draws a `PAUSED 0:04:32` notice naming what went missing there,
 and the summary reports the total. It pairs naturally with `--clock active`, which it
 does not turn on for you.
 

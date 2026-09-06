@@ -1525,7 +1525,7 @@ func frameIndices(tl panel.Timeline, lastFrame int, at, atVideo []time.Duration,
 	}
 	// Each --pauses skip seam is two landmarks: the frame the splice lands
 	// on, where the route dot jumps and the elapsed clock steps forward, and
-	// the middle of its notice, where the "SKIPPED" card is at full
+	// the middle of its notice, where the "PAUSED" card is at full
 	// strength. The seam frame alone would not show the card at all -- the
 	// ramp starts at zero there, exactly as a label's name does at its own
 	// instant -- and the card is the half of this feature most worth
