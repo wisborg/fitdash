@@ -27,6 +27,25 @@ whether the four fluctuating readouts draw their reading against a scale (`plain
 or `dial` — see below). `--gauges` chooses what that block shows at all: `metrics`, the
 four readouts, or `balance`, the left/right balance bars with pace alongside.
 
+**Both clocks are always on screen, and `--clock` chooses the order.** The default,
+`elapsed`, draws wall-clock time since the activity began as the large readout with
+moving time beneath it; `--clock active` swaps them. A file carrying no timer events
+cannot measure active time at all and shows a placeholder for it wherever it is drawn
+— including as the large readout — rather than a figure equal to elapsed.
+
+**`--pauses` decides what happens where you stopped.** By default the video spans the
+activity's *elapsed* time and freezes through a pause: the elapsed clock keeps counting,
+the active clock does not, and a stopped activity reads as stopped. `--pauses skip` cuts
+the paused stretches out, so video time advances only while the timer was running. That
+is a splice — the route dot jumps across whatever ground was covered while the watch was
+stopped — so every seam draws a `SKIPPED 0:04:32` notice naming what went missing there,
+and the summary reports the total. It pairs naturally with `--clock active`, which it
+does not turn on for you.
+
+```
+fitdash activity.fit --video-duration 3m --pauses skip --clock active
+```
+
 ## What it is
 
 There is no input video. fitdash generates every pixel of every frame from the

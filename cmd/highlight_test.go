@@ -182,7 +182,7 @@ func syntheticTimer(totalElapsed time.Duration, pauses ...[2]time.Duration) *fit
 // set resolves to nil rather than an error -- a highlight panel's Accepts
 // declines on exactly this, and it is a fact about the flags, not a failure.
 func TestResolveHighlights_NoneGivenIsNotAnError(t *testing.T) {
-	got, err := resolveHighlights(nil, syntheticTimer(30*time.Minute), panel.HighlightStyleBorder)
+	got, err := resolveHighlights(nil, syntheticTimer(30*time.Minute), panel.HighlightStyleBorder, panel.PausesFreeze)
 	if err != nil {
 		t.Fatalf("resolveHighlights(nil, ...): %v", err)
 	}
@@ -199,7 +199,7 @@ func TestResolveHighlights_SortsByStart(t *testing.T) {
 		"from=20m,to=21m,name=Second",
 		"from=5m,to=6m,name=First",
 	}
-	got, err := resolveHighlights(raw, syntheticTimer(30*time.Minute), panel.HighlightStyleBorder)
+	got, err := resolveHighlights(raw, syntheticTimer(30*time.Minute), panel.HighlightStyleBorder, panel.PausesFreeze)
 	if err != nil {
 		t.Fatalf("resolveHighlights: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestResolveHighlights_SortsByStart(t *testing.T) {
 // it and marked Clipped, rather than refused or silently dropped.
 func TestResolveHighlights_ClipsToTheActivitysEnd(t *testing.T) {
 	timer := syntheticTimer(25*time.Minute + 53*time.Second)
-	got, err := resolveHighlights([]string{"from=25m,to=40m,name=Final push"}, timer, panel.HighlightStyleBorder)
+	got, err := resolveHighlights([]string{"from=25m,to=40m,name=Final push"}, timer, panel.HighlightStyleBorder, panel.PausesFreeze)
 	if err != nil {
 		t.Fatalf("resolveHighlights: %v", err)
 	}
@@ -237,10 +237,10 @@ func TestResolveHighlights_ClipsToTheActivitysEnd(t *testing.T) {
 // well-defined nearest frame, so it is refused rather than clamped.
 func TestResolveHighlights_RejectsFromAtOrPastTheEnd(t *testing.T) {
 	timer := syntheticTimer(25 * time.Minute)
-	if _, err := resolveHighlights([]string{"from=25m,to=26m"}, timer, panel.HighlightStyleBorder); err == nil {
+	if _, err := resolveHighlights([]string{"from=25m,to=26m"}, timer, panel.HighlightStyleBorder, panel.PausesFreeze); err == nil {
 		t.Fatal("a highlight starting exactly at the activity's end was accepted")
 	}
-	if _, err := resolveHighlights([]string{"from=40m,to=41m"}, timer, panel.HighlightStyleBorder); err == nil {
+	if _, err := resolveHighlights([]string{"from=40m,to=41m"}, timer, panel.HighlightStyleBorder, panel.PausesFreeze); err == nil {
 		t.Fatal("a highlight starting well past the activity's end was accepted")
 	}
 }
@@ -255,7 +255,7 @@ func TestResolveHighlights_RejectsOverlapButAllowsTouchingEndpoints(t *testing.T
 	if _, err := resolveHighlights([]string{
 		"from=5m,to=10m,name=A",
 		"from=9m,to=12m,name=B",
-	}, timer, panel.HighlightStyleBorder); err == nil {
+	}, timer, panel.HighlightStyleBorder, panel.PausesFreeze); err == nil {
 		t.Fatal("overlapping highlights were accepted")
 	} else if !strings.Contains(err.Error(), "A") || !strings.Contains(err.Error(), "B") {
 		t.Errorf("the overlap error should name both highlights; got: %v", err)
@@ -264,7 +264,7 @@ func TestResolveHighlights_RejectsOverlapButAllowsTouchingEndpoints(t *testing.T
 	got, err := resolveHighlights([]string{
 		"from=5m,to=10m,name=A",
 		"from=10m,to=12m,name=B",
-	}, timer, panel.HighlightStyleBorder)
+	}, timer, panel.HighlightStyleBorder, panel.PausesFreeze)
 	if err != nil {
 		t.Fatalf("touching endpoints were refused: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestResolveHighlights_MarksWhatLiesInAPause(t *testing.T) {
 	got, err := resolveHighlights([]string{
 		"from=10m10s,to=10m50s,name=Water stop",
 		"from=20m,to=21m,name=Sprint",
-	}, timer, panel.HighlightStyleBorder)
+	}, timer, panel.HighlightStyleBorder, panel.PausesFreeze)
 	if err != nil {
 		t.Fatalf("resolveHighlights: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestResolveHighlights_StraddlingAPauseBoundaryIsNotPausedThroughout(t *test
 		// ends. Two of this highlight's three minutes are real, unfrozen
 		// activity.
 		"from=9m,to=12m,name=Straddling",
-	}, timer, panel.HighlightStyleBorder)
+	}, timer, panel.HighlightStyleBorder, panel.PausesFreeze)
 	if err != nil {
 		t.Fatalf("resolveHighlights: %v", err)
 	}
@@ -440,12 +440,12 @@ func TestResolveHighlights_RefusesBackgroundUnderNonWashStyles(t *testing.T) {
 	timer := syntheticTimer(30 * time.Minute)
 	raw := []string{"from=5m,to=10m,name=Climb,background=#1B2A4A"}
 
-	if _, err := resolveHighlights(raw, timer, panel.HighlightStyleWash); err != nil {
+	if _, err := resolveHighlights(raw, timer, panel.HighlightStyleWash, panel.PausesFreeze); err != nil {
 		t.Fatalf("background= under --highlight-style wash was refused: %v", err)
 	}
 
 	for _, style := range []string{panel.HighlightStyleBorder, panel.HighlightStyleNone} {
-		_, err := resolveHighlights(raw, timer, style)
+		_, err := resolveHighlights(raw, timer, style, panel.PausesFreeze)
 		if err == nil {
 			t.Fatalf("background= under --highlight-style %s was accepted", style)
 		}

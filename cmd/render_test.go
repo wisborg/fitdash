@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -401,7 +402,7 @@ func TestResolveSpeedup_TakesEitherFlagButNotBoth(t *testing.T) {
 				}
 			}
 
-			got, err := resolveSpeedup(cmd, timer)
+			got, err := resolveSpeedup(cmd, timer, panel.PausesFreeze)
 			if c.wantErr != "" {
 				if err == nil {
 					t.Fatalf("resolveSpeedup = %v, want an error mentioning %q", got, c.wantErr)
@@ -2161,5 +2162,321 @@ func TestWritePanelSummary_ANameThatAlsoDrewIsNotReportedAsMissingData(t *testin
 	// dishonest line for a silent one.
 	if !strings.Contains(out, "declined (this activity carries no such data): power") {
 		t.Errorf("a genuine decline was swallowed along with the Alt loser; got:\n%s", out)
+	}
+}
+
+// --- --clock and --pauses ---------------------------------------------------
+
+// TestParseClockAndPauses_RefuseUnknownValues mirrors
+// TestParseBottomBand_RefusesUnknownValues for the two new flags: every legal
+// value round-trips, and a typo is refused where the user typed it rather
+// than costing a whole render.
+func TestParseClockAndPauses_RefuseUnknownValues(t *testing.T) {
+	for _, c := range clocks {
+		got, err := parseClock(c)
+		if err != nil || got != c {
+			t.Errorf("parseClock(%q) = %q, %v", c, got, err)
+		}
+	}
+	if _, err := parseClock("moving"); err == nil {
+		t.Error("parseClock accepted an unknown value")
+	}
+
+	for _, p := range pauseModes {
+		got, err := parsePauses(p)
+		if err != nil || got != p {
+			t.Errorf("parsePauses(%q) = %q, %v", p, got, err)
+		}
+	}
+	if _, err := parsePauses("cut"); err == nil {
+		t.Error("parsePauses accepted an unknown value")
+	}
+}
+
+// TestResolveSpeedup_SkipCompressesTheRunningTimeNotTheElapsedSpan pins what
+// --video-duration means once the pauses are gone.
+//
+// A user asking for a one-minute video of an activity with four minutes of
+// rest stops wants a one-minute video. Compressing the elapsed span while
+// rendering only the running time produces a video short by exactly the
+// pauses -- an error nothing on screen explains, and one that grows with how
+// much the person stopped.
+func TestResolveSpeedup_SkipCompressesTheRunningTimeNotTheElapsedSpan(t *testing.T) {
+	const (
+		elapsed = 30 * time.Minute
+		paused  = 4 * time.Minute
+		video   = time.Minute
+	)
+	timer := syntheticTimer(elapsed, [2]time.Duration{10 * time.Minute, 14 * time.Minute})
+	if got := timer.PausedTotal(); got != paused {
+		t.Fatalf("precondition: the fixture pauses for %v, want %v", got, paused)
+	}
+
+	cmd := &cobra.Command{}
+	bindRenderFlags(cmd)
+	if err := cmd.Flags().Set("video-duration", video.String()); err != nil {
+		t.Fatal(err)
+	}
+	renderOpts.videoDur = video
+
+	frozen, err := resolveSpeedup(cmd, timer, panel.PausesFreeze)
+	if err != nil {
+		t.Fatalf("resolveSpeedup(freeze): %v", err)
+	}
+	skipped, err := resolveSpeedup(cmd, timer, panel.PausesSkip)
+	if err != nil {
+		t.Fatalf("resolveSpeedup(skip): %v", err)
+	}
+
+	if want := panel.SpeedupFor(elapsed, video); frozen != want {
+		t.Errorf("freeze resolved %v, want %v (the whole elapsed span)", frozen, want)
+	}
+	if want := panel.SpeedupFor(elapsed-paused, video); skipped != want {
+		t.Errorf("skip resolved %v, want %v (the running time alone)", skipped, want)
+	}
+	if skipped >= frozen {
+		t.Error("skipping asked for at least as much compression as freezing; it renders less activity, so it needs less")
+	}
+}
+
+// TestResolveHighlights_RefusesAHighlightInsideASkippedPause covers the one
+// combination of the two features that has no coherent answer.
+//
+// Under --pauses freeze the highlight is rendered and reported as a warning:
+// the dashboard is frozen through it, which is odd but is what the recording
+// says. Under --pauses skip every instant it names is gone from the render,
+// so there is no video for it to pace, name or mark -- and the Timeline's own
+// floor-at-one-frame rule cannot save it, because there is no segment left to
+// floor.
+func TestResolveHighlights_RefusesAHighlightInsideASkippedPause(t *testing.T) {
+	timer := syntheticTimer(30*time.Minute, [2]time.Duration{10 * time.Minute, 14 * time.Minute})
+	raw := []string{"from=11m,to=13m,name=Rest stop"}
+
+	got, err := resolveHighlights(raw, timer, panel.HighlightStyleBorder, panel.PausesFreeze)
+	if err != nil {
+		t.Fatalf("freeze refused a highlight it should merely warn about: %v", err)
+	}
+	if len(got) != 1 || !got[0].PausedThroughout {
+		t.Fatalf("freeze resolved %v; the highlight should be marked PausedThroughout and kept", got)
+	}
+
+	_, err = resolveHighlights(raw, timer, panel.HighlightStyleBorder, panel.PausesSkip)
+	if err == nil {
+		t.Fatal("skip accepted a highlight whose every instant it removes; it would occupy no video at all")
+	}
+	if !strings.Contains(err.Error(), "Rest stop") {
+		t.Errorf("the error does not name the highlight: %v", err)
+	}
+}
+
+// TestHighlightLiesInPause_ReadsTheListRatherThanSamplingIt is the regression
+// test for what this check used to be.
+//
+// It used to sample Paused at nine evenly spaced points, which was good
+// enough while the answer was only a warning. It is not good enough now that
+// a true answer REFUSES the render: the fixture below has a one-second
+// running gap between two pauses, positioned so that no point of that grid
+// lands in it, so the old check reported a span containing real activity as
+// wholly paused -- and a user would have been told a highlight they could see
+// was fine could not be rendered.
+func TestHighlightLiesInPause_ReadsTheListRatherThanSamplingIt(t *testing.T) {
+	// Nine samples across [10m, 11m) land every 7.5s; the gap at 10m32s-10m33s
+	// falls between two of them.
+	timer := syntheticTimer(30*time.Minute,
+		[2]time.Duration{10 * time.Minute, 10*time.Minute + 32*time.Second},
+		[2]time.Duration{10*time.Minute + 33*time.Second, 11 * time.Minute},
+	)
+	start, _ := timer.Window()
+
+	if highlightLiesInPause(timer, start, 10*time.Minute, 11*time.Minute) {
+		t.Error("a span containing a second of real activity was reported as wholly paused; " +
+			"the check is sampling rather than reading the pause list")
+	}
+	// The genuine case still answers yes, on the exact bounds of one pause.
+	if !highlightLiesInPause(timer, start, 10*time.Minute, 10*time.Minute+32*time.Second) {
+		t.Error("a span exactly matching a pause was not reported as paused")
+	}
+	// And a span one nanosecond wider than the pause is not inside it.
+	if highlightLiesInPause(timer, start, 10*time.Minute-time.Nanosecond, 10*time.Minute+32*time.Second) {
+		t.Error("a span starting before the pause was reported as inside it")
+	}
+	// A span with no pause anywhere near it.
+	if highlightLiesInPause(timer, start, 20*time.Minute, 21*time.Minute) {
+		t.Error("a span with no pause in it was reported as paused")
+	}
+}
+
+// TestWritePauseSummary_ReportsEachWayTheFlagCanSurprise covers the branches
+// that exist because the flag can do something other than what a user assumes
+// from having typed it. Reporting only the happy case would leave all of them
+// looking like a flag that worked.
+func TestWritePauseSummary_ReportsEachWayTheFlagCanSurprise(t *testing.T) {
+	run := func(t *testing.T, ctx *panel.Context, in renderInputs) string {
+		t.Helper()
+		renderOpts.quiet = false
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetErr(&buf)
+		writePauseSummary(c, ctx, in)
+		return buf.String()
+	}
+
+	newTimeline := func(t *testing.T, timer *fitactivity.TimerModel, mode string) panel.Timeline {
+		t.Helper()
+		tl, err := panel.NewTimelineForActivityWithPauses(timer, 30, 60, nil, mode)
+		if err != nil {
+			t.Fatalf("NewTimelineForActivityWithPauses: %v", err)
+		}
+		return tl
+	}
+
+	t.Run("silent under freeze", func(t *testing.T) {
+		timer := syntheticTimer(30*time.Minute, [2]time.Duration{10 * time.Minute, 14 * time.Minute})
+		ctx := &panel.Context{Timer: timer, Pauses: panel.PausesFreeze}
+		if got := run(t, ctx, renderInputs{tl: newTimeline(t, timer, panel.PausesFreeze)}); got != "" {
+			t.Errorf("a freeze render printed %q, want nothing", got)
+		}
+	})
+
+	t.Run("a mid-activity pause is reported as a seam", func(t *testing.T) {
+		timer := syntheticTimer(30*time.Minute, [2]time.Duration{10 * time.Minute, 14 * time.Minute})
+		ctx := &panel.Context{Timer: timer, Pauses: panel.PausesSkip}
+		got := run(t, ctx, renderInputs{tl: newTimeline(t, timer, panel.PausesSkip)})
+		if !strings.Contains(got, "1 seam") || !strings.Contains(got, panel.FormatClock(4*time.Minute)) {
+			t.Errorf("summary = %q, want one seam of %s", got, panel.FormatClock(4*time.Minute))
+		}
+	})
+
+	t.Run("a trailing pause is reported separately from the seams", func(t *testing.T) {
+		// Two removals: one mid-activity (a seam) and one running to the
+		// activity's own end (no seam to mark). The two figures must not be
+		// conflated, or the notices on screen would not add up to the total.
+		timer := syntheticTimer(30*time.Minute,
+			[2]time.Duration{10 * time.Minute, 14 * time.Minute},
+			[2]time.Duration{28 * time.Minute, 30 * time.Minute},
+		)
+		ctx := &panel.Context{Timer: timer, Pauses: panel.PausesSkip}
+		got := run(t, ctx, renderInputs{tl: newTimeline(t, timer, panel.PausesSkip)})
+		if !strings.Contains(got, "1 seam") {
+			t.Errorf("summary = %q, want exactly one seam", got)
+		}
+		if !strings.Contains(got, "a further "+panel.FormatClock(2*time.Minute)) {
+			t.Errorf("summary = %q, want the %s trailing pause reported on its own", got, panel.FormatClock(2*time.Minute))
+		}
+	})
+
+	t.Run("an activity that never stopped says so", func(t *testing.T) {
+		timer := syntheticTimer(30 * time.Minute)
+		ctx := &panel.Context{Timer: timer, Pauses: panel.PausesSkip}
+		got := run(t, ctx, renderInputs{tl: newTimeline(t, timer, panel.PausesSkip)})
+		if !strings.Contains(got, "never stopped") {
+			t.Errorf("summary = %q, want it to say the activity never stopped", got)
+		}
+	})
+
+	t.Run("a file with no timer events says that instead", func(t *testing.T) {
+		// Not the same fact as "never stopped": nothing was looked at. A
+		// file with no timer events cannot locate a pause at all, so
+		// reporting it as an activity that ran straight through would be
+		// claiming a measurement that was never made.
+		track := &fitactivity.Track{Timing: fitactivity.ActivityTiming{
+			Start: highlightEpoch, TotalElapsed: 30 * time.Minute, HasTotals: true,
+		}}
+		timer := fitactivity.BuildTimerModel(track)
+		if timer.HasTimerEvents() {
+			t.Fatal("precondition: this fixture must carry no timer events")
+		}
+		ctx := &panel.Context{Timer: timer, Pauses: panel.PausesSkip}
+		got := run(t, ctx, renderInputs{tl: newTimeline(t, timer, panel.PausesSkip)})
+		if !strings.Contains(got, "no timer events") {
+			t.Errorf("summary = %q, want it to say the file carries no timer events", got)
+		}
+	})
+}
+
+// TestWriteClockSummary_NamesTheOrderOnlyWhenItIsNotTheDefault keeps a render
+// that does not use --clock printing exactly the summary it always has.
+func TestWriteClockSummary_NamesTheOrderOnlyWhenItIsNotTheDefault(t *testing.T) {
+	run := func(clock string) string {
+		renderOpts.quiet = false
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetErr(&buf)
+		writeClockSummary(c, &panel.Context{Clock: clock})
+		return buf.String()
+	}
+	if got := run(panel.ClockElapsed); got != "" {
+		t.Errorf("the default order printed %q, want nothing", got)
+	}
+	if got := run(""); got != "" {
+		t.Errorf("an unset Clock printed %q, want nothing", got)
+	}
+	if got := run(panel.ClockActive); !strings.Contains(got, panel.ClockActive) {
+		t.Errorf("--clock active printed %q, want it to name the order", got)
+	}
+}
+
+// TestFrameIndices_FrameAtIsBoundedByTheActivityNotTheRender is the
+// regression test for what --pauses skip breaks if the bound is taken from
+// the wrong figure.
+//
+// The offset a user types into --frame-at is elapsed time into the ACTIVITY.
+// Under skip the frames cover less than the activity ran, so bounding
+// against Timeline.ActivityDuration refuses an offset that is plainly inside
+// the recording -- and the error message quotes a length the user has never
+// seen anywhere.
+func TestFrameIndices_FrameAtIsBoundedByTheActivityNotTheRender(t *testing.T) {
+	timer := syntheticTimer(30*time.Minute, [2]time.Duration{10 * time.Minute, 14 * time.Minute})
+	tl, err := panel.NewTimelineForActivityWithPauses(timer, 30, 60, nil, panel.PausesSkip)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithPauses: %v", err)
+	}
+	if tl.ActivitySpan() <= tl.ActivityDuration() {
+		t.Fatal("precondition: skipping must leave the render covering less than the activity ran")
+	}
+
+	// Inside the activity, past the rendered duration.
+	at := 28 * time.Minute
+	if at <= tl.ActivityDuration() {
+		t.Fatalf("precondition: %v must exceed the rendered duration %v for this test to mean anything", at, tl.ActivityDuration())
+	}
+	if _, err := frameIndices(tl, tl.Frames()-1, []time.Duration{at}, nil, nil, nil); err != nil {
+		t.Errorf("--frame-at %v was refused on a 30-minute activity: %v", at, err)
+	}
+	// And genuinely past the end is still refused.
+	if _, err := frameIndices(tl, tl.Frames()-1, []time.Duration{31 * time.Minute}, nil, nil, nil); err == nil {
+		t.Error("--frame-at past the activity's own end was accepted")
+	}
+}
+
+// TestFrameIndices_EachSeamIsALandmark keeps the fast visual loop showing the
+// one thing --pauses skip adds to the frame: the splice, and the notice that
+// names it.
+func TestFrameIndices_EachSeamIsALandmark(t *testing.T) {
+	timer := syntheticTimer(30*time.Minute,
+		[2]time.Duration{10 * time.Minute, 14 * time.Minute},
+		[2]time.Duration{20 * time.Minute, 21 * time.Minute},
+	)
+	tl, err := panel.NewTimelineForActivityWithPauses(timer, 30, 60, nil, panel.PausesSkip)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithPauses: %v", err)
+	}
+	cuts := tl.Cuts()
+	if len(cuts) != 2 {
+		t.Fatalf("precondition: two seams expected, got %d", len(cuts))
+	}
+
+	got, err := frameIndices(tl, tl.Frames()-1, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("frameIndices: %v", err)
+	}
+	for _, c := range cuts {
+		if !slices.Contains(got, c.FirstFrame) {
+			t.Errorf("frame %d, where the splice lands, is not a landmark", c.FirstFrame)
+		}
+		mid := (c.FirstFrame + c.LastFrame) / 2
+		if !slices.Contains(got, mid) {
+			t.Errorf("frame %d, the middle of the seam's notice, is not a landmark", mid)
+		}
 	}
 }

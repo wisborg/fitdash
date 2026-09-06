@@ -909,3 +909,395 @@ func TestNewSegmentedTimeline_ADominantSlowHighlightDwarfsTheBase(t *testing.T) 
 		t.Errorf("MaxSpeedup() = %v, want 60 -- a highlight SLOWER than the base must not become the coarsest rate", got)
 	}
 }
+
+// --- --pauses skip ----------------------------------------------------------
+
+// TestNewCutTimeline_LaysNoFrameOverACutStretch is the property the whole
+// feature is: the removed span has no frame showing it, and everything else
+// still does.
+//
+// Asserted by sweeping every frame rather than by checking the count. A frame
+// count alone would pass on a timeline that laid the right NUMBER of frames
+// over the wrong instants -- which is exactly what an off-by-one in the
+// subtraction produces, and it would ship as a video that skips two minutes of
+// running and dwells on two minutes of standing still.
+func TestNewCutTimeline_LaysNoFrameOverACutStretch(t *testing.T) {
+	const (
+		d    = 30 * time.Minute
+		fps  = 30
+		rate = 60
+	)
+	cut := Cut{From: 10 * time.Minute, To: 14 * time.Minute}
+	tl, err := NewCutTimeline(epoch, d, fps, rate, nil, []Cut{cut})
+	if err != nil {
+		t.Fatalf("NewCutTimeline: %v", err)
+	}
+
+	lo, hi := epoch.Add(cut.From), epoch.Add(cut.To)
+	for i := 0; i < tl.Frames(); i++ {
+		at := tl.At(i)
+		if !at.Before(lo) && at.Before(hi) {
+			t.Fatalf("frame %d shows %v, which is inside the cut [%v,%v)", i, at.Sub(epoch), cut.From, cut.To)
+		}
+	}
+
+	// And the render covers the running time, not the elapsed span: 26
+	// minutes of activity at 60x is 26 seconds of video.
+	if got, want := tl.ActivityDuration(), d-cut.Removed(); absDur(got-want) > time.Second {
+		t.Errorf("ActivityDuration() = %v, want ~%v (the activity minus the cut)", got, want)
+	}
+}
+
+// TestNewCutTimeline_TheSeamIsAdjacentFramesEitherSideOfTheCut pins the
+// splice itself: the last frame before the seam is one frame short of the
+// cut's start, and the first frame after it is at the cut's end.
+//
+// This is the frame pair a viewer sees the route dot jump between, so getting
+// it wrong by a frame means the dashboard shows a paused instant in a render
+// that promised not to.
+func TestNewCutTimeline_TheSeamIsAdjacentFramesEitherSideOfTheCut(t *testing.T) {
+	const (
+		d    = 30 * time.Minute
+		fps  = 30
+		rate = 60
+	)
+	cut := Cut{From: 10 * time.Minute, To: 14 * time.Minute}
+	tl, err := NewCutTimeline(epoch, d, fps, rate, nil, []Cut{cut})
+	if err != nil {
+		t.Fatalf("NewCutTimeline: %v", err)
+	}
+
+	cuts := tl.Cuts()
+	if len(cuts) != 1 {
+		t.Fatalf("Cuts() = %d entries, want 1", len(cuts))
+	}
+	seam := cuts[0].FirstFrame
+	if seam <= 0 || seam >= tl.Frames() {
+		t.Fatalf("the seam is frame %d of %d; it must have frames on both sides", seam, tl.Frames())
+	}
+	if got, want := cuts[0].Removed(), cut.Removed(); got != want {
+		t.Errorf("the seam reports %v removed, want %v", got, want)
+	}
+
+	// One frame's worth of activity time either side, at the base rate.
+	step := time.Duration(float64(time.Second) * rate / fps)
+	if got, want := tl.At(seam).Sub(epoch), cut.To; absDur(got-want) > step {
+		t.Errorf("the frame at the seam shows %v, want the cut's end %v", got, want)
+	}
+	if got, want := tl.At(seam-1).Sub(epoch), cut.From; got >= want {
+		t.Errorf("the frame before the seam shows %v, which is at or past the cut's start %v", got, want)
+	}
+}
+
+// TestNewCutTimeline_APauseAtEitherEndLeavesNoSeam covers the case Cut's own
+// doc comment carves out: a stretch removed at the very start or end of the
+// activity is not a splice, because there is no frame on the other side of
+// it, and announcing one would name a jump that never happens.
+//
+// The render simply begins later. IndexAt must still measure from the
+// ACTIVITY's start, which is the part a leading cut breaks if Start() is used
+// as the origin: --frame-at 20m would land twenty minutes past the wrong
+// instant.
+func TestNewCutTimeline_APauseAtEitherEndLeavesNoSeam(t *testing.T) {
+	const (
+		d    = 30 * time.Minute
+		fps  = 30
+		rate = 60
+	)
+	cuts := []Cut{
+		{From: 0, To: 2 * time.Minute},
+		{From: 28 * time.Minute, To: d},
+	}
+	tl, err := NewCutTimeline(epoch, d, fps, rate, nil, cuts)
+	if err != nil {
+		t.Fatalf("NewCutTimeline: %v", err)
+	}
+
+	if got := tl.Cuts(); len(got) != 0 {
+		t.Errorf("Cuts() = %v, want none: neither removal has running activity on both sides", got)
+	}
+	if got, want := tl.Start().Sub(epoch), 2*time.Minute; got != want {
+		t.Errorf("frame 0 shows %v into the activity, want %v (the render begins after the leading pause)", got, want)
+	}
+
+	// The offset a user types is elapsed time from the activity's own start,
+	// whatever the render then leaves out.
+	for _, offset := range []time.Duration{5 * time.Minute, 15 * time.Minute, 27 * time.Minute} {
+		i := tl.IndexAt(offset)
+		if got := tl.At(i).Sub(epoch); absDur(got-offset) > time.Second {
+			t.Errorf("IndexAt(%v) picked frame %d, which shows %v", offset, i, got)
+		}
+	}
+}
+
+// TestNewCutTimeline_ACutInsideAHighlightKeepsTheHighlight checks the order
+// the two partitions are applied in.
+//
+// A pause in the middle of a highlighted stretch splits that highlight's
+// segment in two, and BOTH halves must still belong to the highlight -- at
+// the highlight's own rate, reported by IntervalAt under the highlight's own
+// index. Subtracting the cuts before the highlights partitioned the window
+// would produce two segments the highlight no longer covers, and the
+// highlight would stop being marked halfway through itself.
+func TestNewCutTimeline_ACutInsideAHighlightKeepsTheHighlight(t *testing.T) {
+	const (
+		d    = 30 * time.Minute
+		fps  = 30
+		rate = 60
+	)
+	h := Highlight{Name: "Climb", From: 10 * time.Minute, To: 20 * time.Minute, RateFactor: 10}
+	cut := Cut{From: 14 * time.Minute, To: 16 * time.Minute}
+	tl, err := NewCutTimeline(epoch, d, fps, rate, []Highlight{h}, []Cut{cut})
+	if err != nil {
+		t.Fatalf("NewCutTimeline: %v", err)
+	}
+
+	var before, after int
+	for i := 0; i < tl.Frames(); i++ {
+		idx, _ := tl.IntervalAt(i, 0)
+		if idx != 0 {
+			continue
+		}
+		if tl.At(i).Before(epoch.Add(cut.From)) {
+			before++
+		} else {
+			after++
+		}
+	}
+	if before == 0 || after == 0 {
+		t.Fatalf("the highlight covers %d frames before the cut and %d after; both halves must stay highlighted", before, after)
+	}
+	// Both halves run at the highlight's own rate, not the base one.
+	if got, want := tl.MaxSpeedup(), rate; got != float64(want) {
+		t.Errorf("MaxSpeedup() = %v, want %v (the base is still the coarsest rate here)", got, want)
+	}
+}
+
+// TestNewCutTimeline_EveryStretchCutIsRefused covers the degenerate input a
+// wholly-paused recording would produce. A zero-frame timeline is a video no
+// player will open, and render.New's own "timeline has no frames" would
+// report it far from the cause.
+func TestNewCutTimeline_EveryStretchCutIsRefused(t *testing.T) {
+	d := 30 * time.Minute
+	_, err := NewCutTimeline(epoch, d, 30, 60, nil, []Cut{{From: 0, To: d}})
+	if err == nil {
+		t.Fatal("an activity that is paused end to end was accepted; there is nothing to render")
+	}
+}
+
+// TestNewCutTimeline_RejectsUnresolvedCuts is the last line of defence
+// against a caller inside this module passing a list TimerModel.Pauses did
+// not produce.
+func TestNewCutTimeline_RejectsUnresolvedCuts(t *testing.T) {
+	d := 30 * time.Minute
+	cases := []struct {
+		name string
+		cuts []Cut
+	}{
+		{"inverted", []Cut{{From: 10 * time.Minute, To: 5 * time.Minute}}},
+		{"empty", []Cut{{From: 10 * time.Minute, To: 10 * time.Minute}}},
+		{"before the start", []Cut{{From: -time.Minute, To: time.Minute}}},
+		{"past the end", []Cut{{From: 29 * time.Minute, To: 31 * time.Minute}}},
+		{"overlapping", []Cut{{From: 5 * time.Minute, To: 10 * time.Minute}, {From: 8 * time.Minute, To: 12 * time.Minute}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := NewCutTimeline(epoch, d, 30, 60, nil, c.cuts); err == nil {
+				t.Error("accepted an unresolved cut list")
+			}
+		})
+	}
+}
+
+// TestTimeline_CutNoticesNeverOverlap pins the truncation rule. Two rest
+// stops a few seconds of video apart would otherwise put two notices on
+// screen at once, one of them describing a splice that has already gone past.
+func TestTimeline_CutNoticesNeverOverlap(t *testing.T) {
+	const (
+		d    = 30 * time.Minute
+		fps  = 30
+		rate = 600 // an aggressive compression, so the two seams land close together
+	)
+	cuts := []Cut{
+		{From: 10 * time.Minute, To: 12 * time.Minute},
+		{From: 13 * time.Minute, To: 15 * time.Minute},
+	}
+	tl, err := NewCutTimeline(epoch, d, fps, rate, nil, cuts)
+	if err != nil {
+		t.Fatalf("NewCutTimeline: %v", err)
+	}
+	got := tl.Cuts()
+	if len(got) != 2 {
+		t.Fatalf("Cuts() = %d entries, want 2", len(got))
+	}
+	if got[0].LastFrame >= got[1].FirstFrame {
+		t.Errorf("the first notice runs to frame %d and the second begins at %d; they overlap",
+			got[0].LastFrame, got[1].FirstFrame)
+	}
+	for _, c := range got {
+		if c.LastFrame < c.FirstFrame {
+			t.Errorf("cut %v-%v occupies no frame at all", c.From, c.To)
+		}
+		if c.LastFrame > tl.Frames()-1 {
+			t.Errorf("cut %v-%v runs to frame %d, past the render's last (%d)", c.From, c.To, c.LastFrame, tl.Frames()-1)
+		}
+	}
+
+	// And CutAt agrees with the bounds: every frame in a notice's range
+	// reports that cut, every frame outside every range reports none.
+	for i := 0; i < tl.Frames(); i++ {
+		idx, _ := tl.CutAt(i, 0)
+		want := NoCut
+		for k, c := range got {
+			if i >= c.FirstFrame && i <= c.LastFrame {
+				want = k
+			}
+		}
+		if idx != want {
+			t.Fatalf("CutAt(%d) = %d, want %d", i, idx, want)
+		}
+	}
+}
+
+// TestNewTimelineForActivityWithPauses_FreezeIsTheOldConstruction is the
+// promise that a render not using the flag is unchanged.
+//
+// Not "looks similar": the same frame count, the same instants, and no cuts
+// at all, on an activity that genuinely has pauses to skip.
+func TestNewTimelineForActivityWithPauses_FreezeIsTheOldConstruction(t *testing.T) {
+	timer := pausedActivityTimer(t)
+
+	old, err := NewTimelineForActivityWithHighlights(timer, 30, 10, nil)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithHighlights: %v", err)
+	}
+	frozen, err := NewTimelineForActivityWithPauses(timer, 30, 10, nil, PausesFreeze)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithPauses: %v", err)
+	}
+	if old.Frames() != frozen.Frames() {
+		t.Fatalf("freeze lays %d frames where the plain constructor lays %d", frozen.Frames(), old.Frames())
+	}
+	for i := 0; i < old.Frames(); i++ {
+		if !old.At(i).Equal(frozen.At(i)) {
+			t.Fatalf("frame %d shows %v under freeze and %v under the plain constructor", i, frozen.At(i), old.At(i))
+		}
+	}
+	if len(frozen.Cuts()) != 0 {
+		t.Errorf("freeze recorded %d cuts; it removes nothing", len(frozen.Cuts()))
+	}
+}
+
+// TestNewTimelineForActivityWithPauses_SkipRemovesTheModelsOwnPauses is the
+// end-to-end check that the constructor reads the pause list from the
+// TimerModel rather than deriving one of its own.
+//
+// The assertion is against TimerModel.Paused, the type that owns the
+// question: no frame of a skipping render may land on an instant it calls
+// paused. A locally-derived list that was off by a second at a boundary
+// would put a frame or two inside a pause and pass any count-based check.
+func TestNewTimelineForActivityWithPauses_SkipRemovesTheModelsOwnPauses(t *testing.T) {
+	timer := pausedActivityTimer(t)
+
+	tl, err := NewTimelineForActivityWithPauses(timer, 30, 10, nil, PausesSkip)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithPauses: %v", err)
+	}
+	for i := 0; i < tl.Frames(); i++ {
+		if timer.Paused(tl.At(i)) {
+			t.Fatalf("frame %d shows %v, which the timer model calls paused", i, tl.At(i))
+		}
+	}
+	if len(tl.Cuts()) == 0 {
+		t.Fatal("no cut was recorded on an activity with a mid-activity pause; the seam would pass unannounced")
+	}
+	if got, want := tl.CutRemoved(), timer.PausedTotal(); got != want {
+		t.Errorf("CutRemoved() = %v but the activity paused for %v; every seam here is mid-activity, so the two must agree", got, want)
+	}
+
+	// And the render is shorter than the freeze one by exactly the pauses.
+	frozen, err := NewTimelineForActivityWithPauses(timer, 30, 10, nil, PausesFreeze)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithPauses: %v", err)
+	}
+	if got, want := frozen.ActivityDuration()-tl.ActivityDuration(), timer.PausedTotal(); absDur(got-want) > time.Second {
+		t.Errorf("skipping shortened the render by %v, want %v", got, want)
+	}
+}
+
+// TestNewTimelineForActivityWithPauses_RejectsAnUnknownMode keeps a typo from
+// silently rendering with the default -- the same refusal every value-taking
+// flag in this project makes at the point the user typed it.
+func TestNewTimelineForActivityWithPauses_RejectsAnUnknownMode(t *testing.T) {
+	timer := pausedActivityTimer(t)
+	if _, err := NewTimelineForActivityWithPauses(timer, 30, 10, nil, "cut"); err == nil {
+		t.Error("an unknown --pauses value was accepted")
+	}
+}
+
+// pausedActivityTimer builds a synthetic activity with two mid-activity
+// pauses -- neither touching the start or the end, so every one of them is a
+// seam.
+func pausedActivityTimer(t *testing.T) *fitactivity.TimerModel {
+	t.Helper()
+	opts := fittest.DefaultOptions()
+	opts.Count = 1800
+	opts.Pauses = []fittest.Pause{
+		{Start: 300 * time.Second, End: 480 * time.Second},
+		{Start: 900 * time.Second, End: 960 * time.Second},
+	}
+	path := filepath.Join(t.TempDir(), "paused.fit")
+	if err := fittest.WriteFile(path, opts); err != nil {
+		t.Fatalf("fittest.Write: %v", err)
+	}
+	track, err := fitactivity.Decode(path)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	return fitactivity.BuildTimerModel(track)
+}
+
+func absDur(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
+// TestTimeline_ActivitySpanIsTheWholeActivityNotJustTheRenderedPart pins the
+// distinction a caller validating a user's offset has to get right.
+//
+// Under the default the two figures are the same, which is why nothing
+// noticed the difference until a cut landed. Under --pauses skip they differ
+// by exactly the skipped time, and using the wrong one refuses a --frame-at
+// that is plainly inside the recording.
+func TestTimeline_ActivitySpanIsTheWholeActivityNotJustTheRenderedPart(t *testing.T) {
+	const (
+		d    = 30 * time.Minute
+		fps  = 30
+		rate = 60
+	)
+	cut := Cut{From: 10 * time.Minute, To: 14 * time.Minute}
+
+	plain, err := NewTimeline(epoch, d, fps, rate)
+	if err != nil {
+		t.Fatalf("NewTimeline: %v", err)
+	}
+	if got, want := plain.ActivitySpan(), plain.ActivityDuration(); absDur(got-want) > time.Second {
+		t.Errorf("without cuts the two must agree: span %v, duration %v", got, want)
+	}
+	if got := plain.ActivitySpan(); got != d {
+		t.Errorf("ActivitySpan() = %v, want the whole window %v", got, d)
+	}
+
+	cutTL, err := NewCutTimeline(epoch, d, fps, rate, nil, []Cut{cut})
+	if err != nil {
+		t.Fatalf("NewCutTimeline: %v", err)
+	}
+	if got := cutTL.ActivitySpan(); got != d {
+		t.Errorf("ActivitySpan() = %v after a cut, want the activity's whole extent %v", got, d)
+	}
+	if got, want := cutTL.ActivitySpan()-cutTL.ActivityDuration(), cut.Removed(); absDur(got-want) > time.Second {
+		t.Errorf("span exceeds rendered duration by %v, want the cut's own %v", got, want)
+	}
+}

@@ -351,6 +351,7 @@ func (r *Renderer) Frame(i int) panel.Frame {
 	at := r.ctx.Timeline.At(i)
 	interval, weight := r.ctx.Timeline.IntervalAt(i, r.ctx.HighlightTransition)
 	label, labelWeight := panel.LabelAt(r.ctx.Labels, i, r.ctx.Timeline.FPS(), r.ctx.HighlightTransition)
+	cut, cutWeight := r.ctx.Timeline.CutAt(i, r.ctx.HighlightTransition)
 	f := panel.Frame{
 		Index:   i,
 		At:      at,
@@ -365,6 +366,9 @@ func (r *Renderer) Frame(i int) panel.Frame {
 
 		Label:       label,
 		LabelWeight: labelWeight,
+
+		Cut:       cut,
+		CutWeight: cutWeight,
 	}
 	if s, ok := r.ctx.Track.AtWithGap(at, maxGap); ok {
 		// Smoothing is applied only where there IS a reading. Deep in a
@@ -555,6 +559,10 @@ func (r *Renderer) RenderDynamic(img *image.RGBA, f panel.Frame) error {
 	// around all of them. Drawn last, though the margin is never under a
 	// panel's own box so the order cannot matter today.
 	r.drawHighlightBorder(c, f)
+	// Drawn after the border, and after every panel, because unlike the
+	// border this one genuinely overlaps panel content -- it has to be on
+	// top of what it is announcing.
+	r.drawCutNotice(c, f)
 	return nil
 }
 
@@ -606,6 +614,111 @@ func (r *Renderer) drawHighlightBorder(c *panel.Canvas, f panel.Frame) {
 	c.Rect(panel.Box{X: x, Y: y + outerH - thick, W: outerW, H: thick}, col) // bottom
 	c.Rect(panel.Box{X: x, Y: y, W: thick, H: outerH}, col)                  // left
 	c.Rect(panel.Box{X: x + outerW - thick, Y: y, W: thick, H: outerH}, col) // right
+}
+
+// The cut notice's own proportions, all fractions of something already
+// resolved for this render rather than pixel constants: the text is a
+// fraction of the layout's own base size (Renderer.basePx, which is
+// Context.BasePx resolved once), and every other measure is a fraction of
+// that text size, so the whole notice scales with the frame exactly as a
+// panel's contents do.
+const (
+	cutNoticeTextFraction   = 0.55
+	cutNoticePadXFraction   = 0.70
+	cutNoticePadYFraction   = 0.45
+	cutNoticeBorderFraction = 0.06
+	cutNoticeGapFraction    = 0.40
+)
+
+// drawCutNotice draws the card that names how much activity time was spliced
+// out at this seam -- "SKIPPED 0:04:32" -- alpha ramping with Frame.CutWeight,
+// the same 0->1->0 shape the highlight border and a label's name both use.
+//
+// This is the honesty half of --pauses skip, and the reason the flag was
+// shippable at all. Cutting a pause is the one thing docs/architecture.md
+// refused outright, on the grounds that "a video where four minutes silently
+// vanish does not say so anywhere". The cut is still a splice and the route
+// dot still jumps; what changed is that the frame it jumps on says what
+// happened, in the activity's own clock format, for long enough to read.
+//
+// A render-wide overlay rather than a panel, for the reason the highlight
+// border is one: it belongs to no box in the layout tree. Unlike the border
+// it does NOT confine itself to the margin -- a duration is text, and the
+// margin is a few pixels of a frame's smaller dimension -- so it is drawn
+// over whatever panel occupies the top of the frame, opaque, for about a
+// second and a half. That is a deliberate cost: a notice a viewer can miss
+// is not a notice, and every alternative that avoided the overlap (a
+// reserved box, sitting empty for the whole render; a mark on the marker
+// strip, which is absorbed into the elevation profile in the common case)
+// pays more for less.
+//
+// Nothing is drawn outside a notice's own frames (Frame.Cut is NoCut, or the
+// ramp has not started), which under the default --pauses freeze is every
+// frame of the render: a freeze render carries no cuts at all, so this
+// returns on its first comparison and costs nothing.
+//
+// Colours are roles, not decoration (see panel.Theme): the card sits on
+// Background so it reads as something laid OVER the dashboard, the word and
+// the border are Dim because they are chrome, and the duration itself is
+// Foreground because it is a real measurement of real time. Deliberately not
+// Absent -- that role means the activity carries no such data, and this
+// activity carries it perfectly well; the RENDER is what left it out.
+func (r *Renderer) drawCutNotice(c *panel.Canvas, f panel.Frame) {
+	cuts := r.ctx.Timeline.Cuts()
+	if f.Cut == panel.NoCut || f.Cut >= len(cuts) || f.CutWeight <= 0 {
+		return
+	}
+	px := r.basePx * cutNoticeTextFraction
+	if px <= 0 {
+		return
+	}
+
+	const word = "SKIPPED "
+	clock := panel.FormatClock(cuts[f.Cut].Removed())
+	wordW, textH, err := c.MeasureText(word, px)
+	if err != nil {
+		return
+	}
+	clockW, _, err := c.MeasureText(clock, px)
+	if err != nil {
+		return
+	}
+
+	padX, padY := px*cutNoticePadXFraction, px*cutNoticePadYFraction
+	cardW, cardH := wordW+clockW+2*padX, textH+2*padY
+	cardX := (float64(r.ctx.Width) - cardW) / 2
+	// Just inside the layout's own margin, which is where the frame stops
+	// being guaranteed empty -- so the card starts exactly where panel
+	// content starts rather than at an offset invented here.
+	cardY := r.marginPx + px*cutNoticeGapFraction
+	if cardX < 0 || cardY < 0 || cardY+cardH > float64(r.ctx.Height) {
+		// Too small a frame to place the notice without running off it.
+		// Drawing a clipped card over the dashboard would be worse than
+		// drawing none: the render summary reports every cut regardless,
+		// so the fact is not lost with the pixels.
+		return
+	}
+
+	w := f.CutWeight
+	c.Rect(panel.Box{X: cardX, Y: cardY, W: cardW, H: cardH}, panel.Fade(c.Theme.Background, w))
+
+	border := px * cutNoticeBorderFraction
+	if border < 1 {
+		border = 1
+	}
+	col := panel.Fade(c.Theme.Dim, w)
+	c.Rect(panel.Box{X: cardX, Y: cardY, W: cardW, H: border}, col)
+	c.Rect(panel.Box{X: cardX, Y: cardY + cardH - border, W: cardW, H: border}, col)
+	c.Rect(panel.Box{X: cardX, Y: cardY, W: border, H: cardH}, col)
+	c.Rect(panel.Box{X: cardX + cardW - border, Y: cardY, W: border, H: cardH}, col)
+
+	// Left-anchored and laid out from one measured width, so the two runs
+	// sit against each other as one line rather than as two independently
+	// centred strings that would separate as the duration's own width
+	// changed.
+	textY := cardY + cardH/2
+	_ = c.Text(word, cardX+padX, textY, 0, 0.5, px, col)
+	_ = c.Text(clock, cardX+padX+wordW, textY, 0, 0.5, px, panel.Fade(c.Theme.Foreground, w))
 }
 
 // Render draws a complete frame from scratch: background, static content, then

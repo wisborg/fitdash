@@ -1556,9 +1556,11 @@ The dashboard **freezes through a pause**. Three reasons:
 
 Active time becomes a second `Timeline` implementation and **nothing else changes** — not a
 panel, not the loop, not the encoder. That is the point of putting the decision behind one
-type: it is reversible at exactly one seam. It is not in v1 because its visual design is
+type: it is reversible at exactly one seam. It was not in v1 because its visual design was
 unsettled (does a cut pause get a card? a fade? nothing?) and shipping the flag before
-answering that would bake in the wrong answer.
+answering that would have baked in the wrong answer. It has since shipped, as the opt-in
+`--pauses skip`, with that question answered — see "Timeline: cut" below, which is where
+the three objections above are met one at a time rather than waved away.
 
 `--fps` is a `float64` so 29.97 is expressible, and the same number feeds `Timeline.At` and
 ffmpeg's `-r`, so the container's timestamps and the dashboard's own clock derive from one
@@ -1590,6 +1592,60 @@ Two rules for panels:
   cumulative quantity is a different act from interpolating an instantaneous one, and
   lerping a *lap number* is a third thing that is simply meaningless.
 
+### Timeline: cut
+
+`--pauses skip` (default `freeze`) removes the activity's paused stretches from the
+render, so video time advances only while the timer was running. It is the thing "Timeline:
+elapsed" above refused outright, and it is shipped **opt-in, off by default, and announced
+on screen** — the freeze behaviour is untouched and a render that does not pass the flag is
+byte-identical to one from before it existed.
+
+Three objections were raised above. Two are still true and one stopped being expensive:
+
+| Objection | Status under `--pauses skip` |
+|---|---|
+| **1. It is the only affine map.** Active time requires mapping frame → active-duration → instant through the pause list, which is a search. | **No longer a cost.** Named highlights already made `Timeline` piecewise, so a pause-skipping timeline is the *same* segment list with the paused stretches left out of it — built by the same builder, searched by the same `segmentFor`. The list grows by the recording's handful of pauses, not by its length. This is not a second implementation of the type; it is one more thing the existing partition can express. |
+| **2. It never fabricates motion.** A cut splices two instants; the route dot teleports. | **Still true, and paid for rather than argued away.** The dot does jump. That is what the user asked for, and it is why this is a flag rather than a default. |
+| **3. A frozen dashboard is honest; a spliced one is not** — "a video where four minutes silently vanish does not say so anywhere". | **Answered.** Nothing vanishes silently: every seam is recorded as a `Cut`, and the render draws a `SKIPPED 0:04:32` card at it for about a second and a half of video, fading in and out on the same ramp a highlight border and a label name use. The summary reports the total besides. The word *silently* was doing all the work in the original objection, and it is what this removes. |
+
+**Where the cut is made.** In the segment builder, *after* the highlights have partitioned
+the window, never before. A highlight is a range the user typed in the activity's own
+elapsed time; clipping it against the pauses first would leave the rest of the construction
+working from bounds that no longer say which stretch was named, and a highlight straddling a
+pause would come out as two highlights rather than one interrupted one. Subtracting second
+means both halves keep the highlight's index and its rate.
+
+**What is not a seam.** A pause at the very start or the very end of a recording is removed
+too, and gets no `Cut` and no card — there is no frame on the other side of it, so nothing
+was spliced to anything and announcing a jump would name one that never happens. The render
+simply begins later or ends earlier. This is why `Timeline` carries an `origin` distinct
+from `Start()`: `IndexAt` must keep measuring the offsets a user types from the *activity's*
+start, not from whatever instant frame 0 ended up showing.
+
+**The one combination with no coherent answer** is a `--highlight` lying wholly inside a
+pause. Under `freeze` it is rendered and reported (the dashboard is frozen through it, which
+is odd but is what the recording says). Under `skip` every instant it names is gone, so it
+is refused where the user typed it — `Timeline`'s floor-at-one-frame rule, which keeps a
+named highlight from silently occupying no video, cannot save it, because there is no
+segment left to floor.
+
+**The card is a render-wide overlay, not a panel**, for the reason the highlight border is
+one: it belongs to no box in the layout tree. Unlike the border it does *not* confine itself
+to the margin — a duration is text, and the margin is a few pixels — so it is drawn over
+whatever occupies the top of the frame. That overlap is deliberate. A reserved box would sit
+empty for the whole render to be used for a second and a half; a mark on the marker strip
+would be invisible in the common case, since the strip is absorbed into the elevation
+profile whenever highlights or labels exist. A notice a viewer can miss is not a notice.
+
+**Which clock the render runs on** is now the user's to say too: `--clock elapsed|active`
+chooses which of `ElapsedPanel`'s two rows is the large one. Both are always drawn, so this
+changes the order and nothing else — and the absent-data policy travels with the value
+rather than with the row, so a file carrying no timer events shows the placeholder *large*
+under `--clock active` instead of quietly demoting it. The flag is read in `Prepare`, not in
+a keep filter like `--bottom-band` and `--gauges`: those decide whether a panel is placed,
+which cannot belong to a panel that may not be in the tree, while this decides what an
+unconditionally-placed panel draws inside its own box.
+
 ### Timeline: piecewise
 
 Named highlight intervals (`--highlight`) gave up the one property the section above spent
@@ -1610,7 +1666,12 @@ recorded here rather than resolved by changing the code back.
 
 So cutting pauses breaks the *data* (a splice, a teleport, four minutes that do not admit
 they are gone); per-segment pacing breaks only the *arithmetic convenience* of one rate for
-the whole render. The first was worth refusing outright. The second was worth paying for.
+the whole render. The first was worth refusing as a default. The second was worth paying
+for — and paying for it is what later made the first affordable as an opt-in, since the
+segment list this section introduced is exactly what a cut is expressed in. See "Timeline:
+cut" above: the splice and the teleport are still real and are the reason `--pauses skip`
+is a flag, but "four minutes that do not admit they are gone" was answerable, and was
+answered, on screen.
 
 **Where the segments live.** A `[]segment` field private to `Timeline`, built once at
 construction by the one function every constructor funnels through — a highlight-free render

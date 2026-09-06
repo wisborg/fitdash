@@ -49,6 +49,8 @@ type renderOptions struct {
 	elevationSmoothing  float64
 	elevationGain       float64
 	elevationLoss       float64
+	clock               string
+	pauses              string
 }
 
 // validateRenderOptions rejects flag combinations that cannot mean what they
@@ -145,6 +147,33 @@ func parseBottomBand(band string) (string, error) {
 // internal/render's keep filter compares Context.Gauges against them too.
 var gaugeSelections = []string{panel.GaugesMetrics, panel.GaugesBalance}
 
+// clocks and pauseModes enumerate --clock's and --pauses' legal values. The
+// values themselves live in internal/panel, beside the code that acts on
+// them, for the reason bottomBands gives: a string literal repeated across
+// two packages is one typo away from a value that validates here and
+// silently does nothing there.
+var (
+	clocks     = []string{panel.ClockElapsed, panel.ClockActive}
+	pauseModes = []string{panel.PausesFreeze, panel.PausesSkip}
+)
+
+// parseClock validates --clock, and parsePauses --pauses, refusing an unknown
+// value where the user typed it rather than rendering with the default -- the
+// precedent every other value-taking flag here follows.
+func parseClock(name string) (string, error) {
+	if slices.Contains(clocks, name) {
+		return name, nil
+	}
+	return "", fmt.Errorf("render: --clock %q is invalid; use %s", name, strings.Join(clocks, ", "))
+}
+
+func parsePauses(name string) (string, error) {
+	if slices.Contains(pauseModes, name) {
+		return name, nil
+	}
+	return "", fmt.Errorf("render: --pauses %q is invalid; use %s", name, strings.Join(pauseModes, ", "))
+}
+
 // parseGauges validates --gauges, refusing an unknown value rather than
 // silently rendering with the default -- the same precedent parseBottomBand,
 // parseHighlightStyle, SelectLayout and SelectTheme all follow.
@@ -186,6 +215,20 @@ func bindRenderFlags(c *cobra.Command) {
 			"marker strip alongside it). An activity carrying no elevation falls back to the readout under "+
 			"\"profile\" too, exactly as before this flag existed -- this flag adds a second way to reach that "+
 			"same fallback, not a different one")
+	f.StringVar(&renderOpts.clock, "clock", panel.ClockElapsed,
+		"which of the two clocks the time panel shows LARGE -- \"elapsed\" (default: wall-clock time since the "+
+			"activity began, INCLUDING any pauses -- Garmin/Strava's \"elapsed time\") or \"active\" (the same, "+
+			"EXCLUDING paused stretches -- Garmin's \"time\", Stryd/Strava's \"moving time\"). Both are always on "+
+			"screen; this chooses the order. A file carrying no timer events cannot measure active time at all, and "+
+			"shows a placeholder for it wherever it is drawn -- including as the large readout under \"active\" -- "+
+			"rather than a figure equal to elapsed")
+	f.StringVar(&renderOpts.pauses, "pauses", panel.PausesFreeze,
+		"what the render does with the stretches where the activity was paused -- \"freeze\" (default: render them "+
+			"like any other stretch, with the dashboard frozen through each one) or \"skip\" (cut them out, so video "+
+			"time advances only while the timer was running). Skipping splices two instants together, so the route "+
+			"dot jumps across whatever ground was covered while the watch was stopped; every seam draws a notice "+
+			"naming how much activity time went missing there, and the summary reports the total. Pairs naturally "+
+			"with --clock active, which is not implied: neither flag turns the other on")
 	f.StringVar(&renderOpts.theme, "theme", panel.DefaultTheme().Name,
 		"colour palette -- \"dark\" (default) or \"light\"")
 	f.StringVar(&renderOpts.gaugeStyle, "gauge-style", panel.GaugeStyleNamePlain,
@@ -285,6 +328,14 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	clock, err := parseClock(renderOpts.clock)
+	if err != nil {
+		return err
+	}
+	pauses, err := parsePauses(renderOpts.pauses)
+	if err != nil {
+		return err
+	}
 
 	activity := args[0]
 	track, err := fitactivity.Decode(activity)
@@ -293,7 +344,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 
 	timer := fitactivity.BuildTimerModel(track)
-	speedup, err := resolveSpeedup(cmd, timer)
+	speedup, err := resolveSpeedup(cmd, timer, pauses)
 	if err != nil {
 		return err
 	}
@@ -305,18 +356,19 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	highlights, err := resolveHighlights(renderOpts.highlights, timer, highlightStyle)
+	highlights, err := resolveHighlights(renderOpts.highlights, timer, highlightStyle, pauses)
 	if err != nil {
 		return err
 	}
 	if renderOpts.highlightTransition < 0 {
 		return fmt.Errorf("render: --highlight-transition %v is negative", renderOpts.highlightTransition)
 	}
-	// Always the highlighted constructor, even with no highlights: with an
-	// empty slice it is byte-identical to NewTimelineForActivity, which is
-	// the whole point of funnelling both through one segment builder rather
-	// than branching here on whether any were configured.
-	timeline, err := panel.NewTimelineForActivityWithHighlights(timer, renderOpts.fps, speedup, highlights)
+	// Always the fullest constructor, even with no highlights and under the
+	// default --pauses freeze: with an empty slice and PausesFreeze it is
+	// byte-identical to NewTimelineForActivity, which is the whole point of
+	// funnelling every case through one segment builder rather than
+	// branching here on which features were asked for.
+	timeline, err := panel.NewTimelineForActivityWithPauses(timer, renderOpts.fps, speedup, highlights, pauses)
 	if err != nil {
 		return err
 	}
@@ -375,6 +427,8 @@ func runRender(cmd *cobra.Command, args []string) error {
 		BottomBand:          bottomBand,
 		GaugeStyle:          gaugeStyle,
 		Gauges:              gauges,
+		Clock:               clock,
+		Pauses:              pauses,
 	}
 	r, err := render.New(rctx, layout, theme)
 	if err != nil {
@@ -567,7 +621,7 @@ func resolveElevationTuning(track *fitactivity.Track) (fitactivity.ElevationOpti
 // express the same intention in opposite directions, and silently preferring
 // whichever the code checks first would let a user pass both and get a video
 // of a length they did not ask for, with nothing saying which flag won.
-func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel) (float64, error) {
+func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses string) (float64, error) {
 	// Ask cobra whether the flag was TYPED, rather than comparing against its
 	// default. Comparing meant `--speedup 1 --video-duration 3m` slipped past
 	// the exclusivity check and silently took the duration branch -- exactly
@@ -585,6 +639,16 @@ func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel) (float64,
 		}
 		start, end := timer.Window()
 		activity := end.Sub(start)
+		// Under --pauses skip the render never lays a frame over a paused
+		// stretch, so the length being compressed into --video-duration is
+		// the RUNNING time, not the elapsed span. Compressing the elapsed
+		// span instead would come out short by however long the watch was
+		// stopped -- a three-minute video of an activity with twelve
+		// minutes of rest stops would run closer to two and a half -- and
+		// nothing would say why.
+		if pauses == panel.PausesSkip {
+			activity -= timer.PausedTotal()
+		}
 		if activity <= 0 {
 			return 0, fmt.Errorf("render: the activity has no duration to compress")
 		}
@@ -681,6 +745,8 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 		baseSpeedupNote(in.tl.BaseSpeedup(), len(in.highlights) > 0), strconv.FormatFloat(in.tl.FPS(), 'f', -1, 64), in.w, in.h)
 
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
+	writeClockSummary(cmd, ctx)
+	writePauseSummary(cmd, ctx, in)
 	writeGaugeSummary(cmd, r, ctx)
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
@@ -777,6 +843,86 @@ func writeGaugeSelectionSummary(cmd *cobra.Command, r *render.Renderer, ctx *pan
 	}
 	fmt.Fprintln(out, "gauges: balance was requested, but this activity carries none of the four balance "+
 		"metrics; showing the ordinary gauges instead")
+}
+
+// writeClockSummary names the clock order, and only when it is not the
+// default.
+//
+// Printed conditionally rather than folded into the layout/theme line for
+// the reason the "omitted (--bottom-band ...)" line is its own line: a
+// render that does not use the flag should print exactly the summary it
+// printed before the flag existed, so a user comparing two runs sees a
+// difference only where there is one.
+func writeClockSummary(cmd *cobra.Command, ctx *panel.Context) {
+	if renderOpts.quiet || ctx.Clock != panel.ClockActive {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "clock: %s is the large readout, %s beneath it\n", panel.ClockActive, panel.ClockElapsed)
+}
+
+// writePauseSummary reports what --pauses skip actually did, and is silent
+// under the default.
+//
+// Every branch here is a case where the flag did something other than what a
+// user would assume from having typed it, which is the whole reason it is
+// worth printing: a file with no timer events cannot locate a pause at all,
+// an activity that never stopped has nothing to cut, and a pause at the very
+// start or end of a recording is removed without leaving a seam for the
+// on-screen notice to mark. Reporting only the happy case would leave all
+// three looking identical to a flag that worked.
+//
+// The two figures are deliberately from two different owners.
+// Timeline.CutRemoved is what was spliced out of the VIDEO, and every second
+// of it is announced on screen; TimerModel.PausedTotal is what the ACTIVITY
+// spent stopped, and the difference between them is time removed at an edge
+// where there was nothing to announce. Printing one number for both would
+// make the on-screen notices fail to add up to the summary's own total, with
+// nothing saying why.
+func writePauseSummary(cmd *cobra.Command, ctx *panel.Context, in renderInputs) {
+	if renderOpts.quiet || ctx.Pauses != panel.PausesSkip {
+		return
+	}
+	out := cmd.ErrOrStderr()
+
+	if !ctx.Timer.HasTimerEvents() {
+		fmt.Fprintf(out, "pauses: --pauses %s asked for, but this file carries no timer events, so no pause can be located; nothing was skipped\n",
+			panel.PausesSkip)
+		return
+	}
+	total := ctx.Timer.PausedTotal()
+	if total <= 0 {
+		fmt.Fprintf(out, "pauses: --pauses %s asked for; this activity never stopped, so nothing was skipped\n", panel.PausesSkip)
+		return
+	}
+
+	cuts := in.tl.Cuts()
+	if len(cuts) > 0 {
+		fmt.Fprintf(out, "pauses: %s cut out at %d seam%s, each named on screen as it passes\n",
+			panel.FormatClock(in.tl.CutRemoved()), len(cuts), plural(len(cuts)))
+	}
+	if edge := total - in.tl.CutRemoved(); edge > 0 {
+		fmt.Fprintf(out, "pauses: a further %s at the activity's own start or end, left out with no seam to mark -- the render begins later or ends earlier instead\n",
+			panel.FormatClock(edge))
+	}
+
+	// A label naming an instant that no longer has a frame. Reported here
+	// rather than beside the other label warnings because it is a
+	// consequence of THIS flag: without --pauses skip the instant is
+	// rendered like any other and there is nothing to say.
+	start, _ := ctx.Timer.Window()
+	for _, l := range in.labels {
+		if ctx.Timer.Paused(start.Add(l.At)) {
+			fmt.Fprintf(out, "label %s names an instant inside a skipped pause; it is shown at the seam instead\n", labelSummaryName(l))
+		}
+	}
+}
+
+// plural is the "s" a count needs, for the summary lines that name one.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // writeElevationSummary reports the smoothing sigma BuildElevation actually
@@ -1333,6 +1479,8 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
+	writeClockSummary(cmd, ctx)
+	writePauseSummary(cmd, ctx, in)
 	writeGaugeSummary(cmd, r, ctx)
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
@@ -1375,6 +1523,16 @@ func frameIndices(tl panel.Timeline, lastFrame int, at, atVideo []time.Duration,
 	for _, l := range labels {
 		out = append(out, labelLandmarkFrames(l)...)
 	}
+	// Each --pauses skip seam is two landmarks: the frame the splice lands
+	// on, where the route dot jumps and the elapsed clock steps forward, and
+	// the middle of its notice, where the "SKIPPED" card is at full
+	// strength. The seam frame alone would not show the card at all -- the
+	// ramp starts at zero there, exactly as a label's name does at its own
+	// instant -- and the card is the half of this feature most worth
+	// looking at before committing to a whole encode.
+	for _, c := range tl.Cuts() {
+		out = append(out, c.FirstFrame, (c.FirstFrame+c.LastFrame)/2)
+	}
 	for _, d := range at {
 		// Timeline.IndexAt CLAMPS, which is right for its own callers and
 		// wrong here. Clamping made `--frame-at 40m` on a 25-minute activity
@@ -1385,9 +1543,15 @@ func frameIndices(tl panel.Timeline, lastFrame int, at, atVideo []time.Duration,
 		if d < 0 {
 			return nil, fmt.Errorf("render: --frame-at %v is negative", d)
 		}
-		if d > tl.ActivityDuration() {
+		// Bounded by the activity's own elapsed extent, NOT by how much of
+		// it the frames cover: --frame-at is an offset into the activity
+		// (see the flag's own help text), and under --pauses skip the
+		// frames cover less than the activity ran. Comparing against
+		// ActivityDuration there would refuse an offset plainly inside the
+		// recording -- see Timeline.ActivitySpan.
+		if d > tl.ActivitySpan() {
 			return nil, fmt.Errorf("render: --frame-at %v is past the end of the activity, which runs %s",
-				d, panel.FormatClock(tl.ActivityDuration()))
+				d, panel.FormatClock(tl.ActivitySpan()))
 		}
 		out = append(out, tl.IndexAt(d))
 	}

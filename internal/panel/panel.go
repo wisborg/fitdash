@@ -281,6 +281,38 @@ type Context struct {
 	// the activity genuinely carries no such reading -- which would be
 	// false.
 	Gauges string
+
+	// Clock selects which of ElapsedPanel's two clocks is the LARGE one:
+	// ClockElapsed (the zero value's behaviour too, so an unset Context
+	// renders exactly as it always has) or ClockActive, which puts moving
+	// time on top and elapsed beneath it.
+	//
+	// Read by ElapsedPanel's own Prepare rather than by internal/render's
+	// keep filter, which is the opposite of where BottomBand and Gauges are
+	// read, and the difference is real rather than an inconsistency: those
+	// two decide WHETHER a panel is placed, which is a decision about the
+	// layout tree and so cannot belong to a panel that may not be in it.
+	// This one decides what a panel that is unconditionally placed draws
+	// inside its own box, which is exactly what Prepare is for. There is
+	// also no absent-data question here for Accepts to be confused with:
+	// every activity has both clocks, and a file with no timer events is
+	// handled where every other unmeasurable reading is, by a placeholder
+	// in the dynamic pass.
+	Clock string
+
+	// Pauses selects what the render does with the activity's paused
+	// stretches: PausesFreeze (the zero value's behaviour too) shows them,
+	// with the dashboard frozen through each one, and PausesSkip cuts them
+	// out so video time advances only while the timer was running.
+	//
+	// Carried here for the SUMMARY and for the cut notice, not as an
+	// instruction any panel acts on: by the time a Context exists the
+	// decision has already been taken, in the Timeline the frames are laid
+	// over (see NewTimelineForActivityWithHighlights and Timeline.Cuts).
+	// A panel that changed what it drew based on this field would be a
+	// second place the choice was implemented, free to disagree with the
+	// timeline that actually skipped the time.
+	Pauses string
 }
 
 // captionOffset is how far above a panel's own centre a caption sits, as a
@@ -478,4 +510,18 @@ type Frame struct {
 	// the same shared rampWeight arithmetic (see LabelAt) so a highlight's
 	// ramp and a label's cannot drift a frame apart.
 	LabelWeight float64
+
+	// Cut is this frame's position in Timeline.Cuts(), or NoCut when this
+	// frame is not showing a seam's notice -- the cut analogue of Interval
+	// and Label, an index alone for the reason both of those give.
+	//
+	// A frame carrying a Cut is the frame a splice landed ON, or one of the
+	// few that follow it while the notice is still up. It says nothing
+	// about the activity: the removed stretch is gone from the render, so
+	// no frame shows it.
+	Cut int
+
+	// CutWeight is the same 0->1->0 ramp as IntervalWeight and LabelWeight,
+	// across the cut notice's own entrance and exit. See Timeline.CutAt.
+	CutWeight float64
 }

@@ -15,14 +15,43 @@ import (
 // data. The template makes the size a property of the layout instead.
 const clockTemplate = "8:88:88"
 
+// --clock's legal values -- which of the two clocks this panel draws LARGE,
+// with the other kept beneath it. Exported so the CLI's own validation and
+// Context.Clock compare against one pair of strings rather than each
+// defining its own, the same reason --bottom-band's and --gauges' values
+// live beside the panels that read them.
+const (
+	// ClockElapsed is the default and the zero value's behaviour, so an
+	// unset Context draws exactly what it always has: elapsed large,
+	// active beneath it.
+	ClockElapsed = "elapsed"
+
+	// ClockActive puts moving time on top instead. It is the natural
+	// pairing for --pauses skip, where video time advances only while the
+	// timer was running and the elapsed clock is the one that jumps -- but
+	// the two flags are deliberately independent, and neither implies the
+	// other (see Context.Pauses).
+	ClockActive = "active"
+)
+
 // ElapsedPanel shows the activity's two clocks: wall-clock time since it began,
 // and moving time with pauses subtracted.
 //
-// Both, always, even when they are equal. A dashboard has to choose which one
-// its timeline runs on -- fitdash runs on elapsed, so the readout freezes
-// through a pause -- and a viewer should see the pair and the choice rather
-// than one number that answered the question for them. A stopped activity then
-// reads AS stopped: elapsed keeps counting, active does not.
+// Both, always, even when they are equal, and in either order (see
+// Context.Clock). A dashboard has to choose which one its timeline runs on,
+// and a viewer should see the pair and the choice rather than one number
+// that answered the question for them. Under the default --pauses freeze the
+// render runs on elapsed, so a stopped activity reads AS stopped: elapsed
+// keeps counting, active does not. Under --pauses skip it runs on active,
+// and elapsed is the clock that jumps at each cut.
+//
+// Name() stays "elapsed" under either order, deliberately, and this is not
+// the small lie MarkerPanel's own rename was made to avoid: that panel would
+// have printed "highlight" on a render where no highlight was configured at
+// all, naming a thing that did not exist. This panel draws the elapsed clock
+// in every configuration -- --clock chooses which of its two rows is the
+// large one, not whether elapsed is shown -- so the name is true whatever
+// the flag says.
 type ElapsedPanel struct{}
 
 // Name identifies the panel.
@@ -44,7 +73,7 @@ func (ElapsedPanel) Accepts(*Context) bool { return true }
 // static chrome went, so the rule under the label could end up laid out
 // against one size while the clock drawn over it used another.
 func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
-	e := &elapsedPainter{box: box}
+	e := &elapsedPainter{box: box, activeFirst: ctx.Clock == ClockActive}
 
 	// Sizes are fractions of the box, not of the frame: this panel must fit
 	// the rectangle it was given, whatever shape the layout made it.
@@ -62,7 +91,12 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 		if px, err := ctx.Fonts.FitSize(clockTemplate, box.W*0.92, e.clockPx); err == nil {
 			e.clockPx = px
 		}
-		if px, err := ctx.Fonts.FitSize("ACTIVE "+clockTemplate, box.W*0.92, e.subPx); err == nil {
+		// Measured against the prefix this render will actually draw, not
+		// against the wider of the two: fitting "ELAPSED" every time would
+		// shrink the sub-line under the DEFAULT order, where the prefix is
+		// the shorter "ACTIVE", and a flag nobody passed must not change
+		// the pixels of a render that does not use it.
+		if px, err := ctx.Fonts.FitSize(e.subCaption()+" "+clockTemplate, box.W*0.92, e.subPx); err == nil {
 			e.subPx = px
 		}
 	}
@@ -104,7 +138,14 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 }
 
 type elapsedPainter struct {
-	box     Box
+	box Box
+
+	// activeFirst puts moving time in the large row and elapsed beneath it
+	// -- Context.Clock resolved once in Prepare rather than compared per
+	// frame, so which clock is where is a property of the layout the same
+	// way every size in this painter is.
+	activeFirst bool
+
 	labelPx float64
 	clockPx float64
 	subPx   float64
@@ -120,7 +161,7 @@ type elapsedPainter struct {
 // Static draws the chrome: the label and the rule beneath it. Neither changes
 // across the render, so both are rasterized once.
 func (e *elapsedPainter) Static(c *Canvas) {
-	_ = c.Text("ELAPSED", e.centerX, e.labelY, 0.5, 0.5, e.labelPx, c.Theme.Dim)
+	_ = c.Text(e.mainCaption(), e.centerX, e.labelY, 0.5, 0.5, e.labelPx, c.Theme.Dim)
 	c.Rect(Box{X: e.centerX - e.ruleW/2, Y: e.ruleY, W: e.ruleW, H: e.ruleH}, c.Theme.Dim)
 }
 
@@ -133,13 +174,44 @@ func (e *elapsedPainter) Static(c *Canvas) {
 // same confident lie as rendering a missing heart rate as zero. It is an
 // absent-data policy in exactly the sense every other panel's is.
 func (e *elapsedPainter) Dynamic(c *Canvas, f Frame) {
-	_ = c.Text(FormatClock(f.Elapsed), e.centerX, e.clockY, 0.5, 0.5, e.clockPx, c.Theme.Foreground)
-
-	if f.HasTimerEvents {
-		_ = c.Text("ACTIVE "+FormatClock(f.Active), e.centerX, e.subY, 0.5, 0.5, e.subPx, c.Theme.Dim)
-		return
+	// The absence belongs to ACTIVE wherever active is drawn, which is the
+	// whole reason this reads as "which row is the active one" rather than
+	// as two independent rows. Under --clock active the placeholder is the
+	// LARGE readout -- an unmeasurable number shown at the size the user
+	// asked to see it at, in Theme.Absent, rather than quietly demoted to
+	// the small row or replaced by the elapsed figure standing in for it.
+	main, sub := FormatClock(f.Elapsed), FormatClock(f.Active)
+	mainCol, subCol := c.Theme.Foreground, c.Theme.Dim
+	if e.activeFirst {
+		main, sub = sub, main
 	}
-	_ = c.Text("ACTIVE "+ClockPlaceholder, e.centerX, e.subY, 0.5, 0.5, e.subPx, c.Theme.Absent)
+	if !f.HasTimerEvents {
+		if e.activeFirst {
+			main, mainCol = ClockPlaceholder, c.Theme.Absent
+		} else {
+			sub, subCol = ClockPlaceholder, c.Theme.Absent
+		}
+	}
+
+	_ = c.Text(main, e.centerX, e.clockY, 0.5, 0.5, e.clockPx, mainCol)
+	_ = c.Text(e.subCaption()+" "+sub, e.centerX, e.subY, 0.5, 0.5, e.subPx, subCol)
+}
+
+// mainCaption and subCaption name the two rows. One pair of expressions, not
+// a caption stored per row: the two must always be the OTHER of each other,
+// and two independently assigned strings could say "ELAPSED" twice.
+func (e *elapsedPainter) mainCaption() string {
+	if e.activeFirst {
+		return "ACTIVE"
+	}
+	return "ELAPSED"
+}
+
+func (e *elapsedPainter) subCaption() string {
+	if e.activeFirst {
+		return "ELAPSED"
+	}
+	return "ACTIVE"
 }
 
 // ClockPlaceholder is what a clock reads when there is no measurement behind

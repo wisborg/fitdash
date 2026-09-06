@@ -29,22 +29,49 @@ import (
 // code path. See docs/architecture.md's "Timeline: elapsed" section for why
 // giving up a single affine map was worth it and what it cost.
 //
-// Cutting an activity's pauses out of the video, by contrast, remains out of
-// scope for a different reason: it would splice two instants together and
-// teleport the route dot across whatever ground was covered while the watch
-// was stopped, which looks exactly like the GPS glitch this project spends
-// its care avoiding. A dashboard that freezes through a pause is telling the
-// truth about what the recording says, and every segment here still has a
-// POSITIVE rate covering real recorded time -- nothing is spliced, nothing
-// silently vanishes, only the arithmetic convenience of a single rate is
-// given up.
+// Cutting an activity's pauses out of the video is what --pauses skip asks
+// for, and it is OPT-IN rather than the default, because the objection to it
+// is real and unchanged: a cut splices two instants together and teleports
+// the route dot across whatever ground was covered while the watch was
+// stopped, which looks exactly like the GPS glitch this project spends its
+// care avoiding. Under the default -- PausesFreeze -- every segment covers
+// real recorded time and nothing is spliced.
 //
-// Moving time, if it is ever wanted, is a second implementation of this type
-// and nothing else changes -- not a panel, not the frame loop, not the
-// encoder. See docs/architecture.md.
+// What made the opt-in cheap is this type already being piecewise: a
+// pause-skipping Timeline is the same segment list with the paused stretches
+// left out of it, built by the same builder, not a second implementation of
+// the type. What it costs is stated rather than hidden, and paid for on
+// screen: every seam is recorded as a Cut, and the render draws a notice
+// naming how much activity time went missing there, so a video where four
+// minutes silently vanish is exactly what this does NOT produce. See
+// docs/architecture.md's "Timeline: elapsed" for the original argument and
+// what changed.
 type Timeline struct {
 	fps  float64
 	segs []segment
+
+	// origin is the activity instant elapsed offsets are measured from --
+	// the start the constructor was given, which is NOT necessarily the
+	// instant frame 0 shows once --pauses skip has removed a pause that
+	// began at the activity's own start. IndexAt measures against this
+	// rather than against Start() for exactly that case; with no cuts, or
+	// no leading one, the two are the same instant and every existing
+	// timeline behaves identically.
+	origin time.Time
+
+	// span is the whole elapsed extent the frames were laid over -- the d
+	// the constructor was given -- INCLUDING anything the cuts removed. It
+	// is the clock every offset a user types is measured on, which
+	// ActivityDuration below stops being the moment a cut lands: that
+	// reports how much activity the frames actually cover, and the two
+	// differ by exactly the time skipped. See ActivitySpan.
+	span time.Duration
+
+	// cuts are the seams --pauses skip left in the render: the stretches of
+	// activity that were removed, each with the frames its on-screen notice
+	// occupies. Empty under PausesFreeze, and empty under PausesSkip on an
+	// activity that never paused. See Cut and CutAt.
+	cuts []Cut
 
 	// frames is the sum of every segment's frame count, cached at
 	// construction rather than summed on every Frames() call -- cheap either
@@ -96,6 +123,71 @@ type segment struct {
 	highlight int
 }
 
+// --pauses' legal values -- what the render does with the activity's paused
+// stretches. Exported beside the type that implements the choice, so the
+// CLI's own validation, Context.Pauses and this constructor compare against
+// one pair of strings rather than each defining its own.
+const (
+	// PausesFreeze is the default and the zero value's behaviour: a paused
+	// stretch is rendered like any other, with the dashboard frozen through
+	// it. Every recorded instant appears, in order, at a positive rate.
+	PausesFreeze = "freeze"
+
+	// PausesSkip cuts the paused stretches out, so video time advances only
+	// while the timer was running. See the Timeline doc comment for what
+	// that costs and Cut for what marks each seam.
+	PausesSkip = "skip"
+)
+
+// NoCut is the value Frame.Cut takes for a frame that is not showing a cut's
+// notice -- its own name rather than reusing NoHighlight or NoLabel, for the
+// reason NoLabel's own doc comment gives: a reader of `f.Cut == NoCut`
+// should not have to think about highlights to understand it.
+const NoCut = -1
+
+// Cut is one stretch of the activity a --pauses skip render leaves out, and
+// the frames of video where it says so.
+//
+// From and To are the removed span in the activity's ELAPSED time -- the
+// same clock Highlight.From and Label.At use -- so a Cut can be read
+// against the flags the user typed rather than against frame indices.
+// FirstFrame and LastFrame are resolved by the constructor, not by a
+// caller: they are the frames the seam's on-screen notice occupies, and
+// they exist only for a cut with running activity on BOTH sides. A pause at
+// the very start or the very end of an activity is still removed, and gets
+// no Cut here, because there is no seam: nothing was spliced to anything,
+// the render simply begins later or ends earlier.
+type Cut struct {
+	// From, To bound the removed stretch, as offsets from the activity's
+	// own start. Set by whoever builds the timeline; the rest is resolved.
+	From, To time.Duration
+
+	// FirstFrame, LastFrame are the frames this cut's notice occupies.
+	// FirstFrame is the first frame AFTER the removed stretch -- the frame
+	// the splice lands on -- and LastFrame is cutNoticeVideo of video time
+	// later, truncated where a following cut's own notice would otherwise
+	// begin first.
+	FirstFrame, LastFrame int
+}
+
+// Removed is how much activity time this cut leaves out. A method rather
+// than a third field, so it cannot disagree with the bounds it is derived
+// from.
+func (c Cut) Removed() time.Duration { return c.To - c.From }
+
+// cutNoticeVideo is how much VIDEO time a cut's notice stays on screen,
+// starting at the seam.
+//
+// Video time, not activity time, for the reason --highlight-transition is
+// also video time: this is a perceptual thing, and it should read the same
+// however compressed the render is. A second and a half is long enough to
+// read four words at a glance and short enough not to sit over the
+// dashboard as if it were part of it. It is deliberately not a flag: a
+// render that cuts pauses has to say so, so there is no value here worth
+// setting to zero, and one more knob on an already long flag list buys
+// nothing.
+const cutNoticeVideo = 1500 * time.Millisecond
+
 // NewTimeline lays frames over d at fps, beginning at start, compressing the
 // activity by speedup.
 //
@@ -144,6 +236,31 @@ func NewTimeline(start time.Time, d time.Duration, fps, speedup float64) (Timeli
 // something that was never resolved, not a second copy of that validation
 // aimed at a user.
 func NewSegmentedTimeline(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight) (Timeline, error) {
+	return NewCutTimeline(start, d, fps, rate, highlights, nil)
+}
+
+// NewCutTimeline is NewSegmentedTimeline with stretches of the activity
+// removed outright: every Cut's [From, To) is left out of the render, and
+// the frames close up around it.
+//
+// It is where the window, fps and rate checks actually live, and
+// NewSegmentedTimeline is exactly this called with no cuts -- the same
+// delegation NewTimeline already makes to NewSegmentedTimeline, and for the
+// same reason: two constructors each restating the same four refusals is two
+// places for them to drift.
+//
+// cuts must be sorted ascending, non-overlapping and within [0, d] -- which
+// is exactly what fitactivity's TimerModel.Pauses already guarantees, the
+// one producer this has. What is checked again here is the last line of
+// defence against a caller inside this module passing something that was
+// never resolved, not a second copy of a validation aimed at a user.
+//
+// A Cut is not the same shape of thing as a Highlight and is deliberately
+// not expressed as one with a rate of zero: a zero rate is not a rate, the
+// frame count arithmetic divides by it, and the floor-at-one-frame rule
+// that keeps a named highlight from silently occupying no video is exactly
+// the rule a cut must NOT get.
+func NewCutTimeline(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight, cuts []Cut) (Timeline, error) {
 	if start.IsZero() {
 		return Timeline{}, fmt.Errorf("panel: timeline has no start instant")
 	}
@@ -156,11 +273,20 @@ func NewSegmentedTimeline(start time.Time, d time.Duration, fps, rate float64, h
 	if err := checkRate(rate); err != nil {
 		return Timeline{}, err
 	}
-	return newTimelineFromSegments(start, d, fps, rate, highlights)
+	for i, c := range cuts {
+		if c.From < 0 || c.To > d || c.To <= c.From {
+			return Timeline{}, fmt.Errorf("panel: cut %d [%v,%v) is out of the timeline's own bounds [0,%v)", i, c.From, c.To, d)
+		}
+		if i > 0 && c.From < cuts[i-1].To {
+			return Timeline{}, fmt.Errorf("panel: cut %d overlaps the previous one", i)
+		}
+	}
+	return newTimelineFromSegments(start, d, fps, rate, highlights, cuts)
 }
 
-// checkFPS and checkRate are the two input checks NewSegmentedTimeline shares
-// with nothing else needing its own wording for the same failure.
+// checkFPS and checkRate are the two input checks NewCutTimeline makes -- and
+// so, through it, every constructor on this type -- with nothing else needing
+// its own wording for the same failure.
 func checkFPS(fps float64) error {
 	if fps <= 0 || math.IsInf(fps, 0) || math.IsNaN(fps) {
 		return fmt.Errorf("panel: fps must be a positive finite number, got %v", fps)
@@ -189,7 +315,7 @@ func checkRate(rate float64) error {
 // segment's rounding happened to land -- see the segment.start field comment
 // for why that anchoring is what keeps rounding error from accumulating
 // across segments.
-func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight) (Timeline, error) {
+func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight, cuts []Cut) (Timeline, error) {
 	for i, h := range highlights {
 		if h.From < 0 || h.To > d || h.To <= h.From {
 			return Timeline{}, fmt.Errorf("panel: highlight %d (%q) [%v,%v) is out of the timeline's own bounds [0,%v)",
@@ -200,33 +326,57 @@ func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64
 		}
 	}
 
-	type bound struct {
-		from, to  time.Duration
-		rate      float64
-		highlight int
-	}
 	var bounds []bound
 	cursor := time.Duration(0)
 	for i, h := range highlights {
 		if h.From > cursor {
-			bounds = append(bounds, bound{cursor, h.From, rate, NoHighlight})
+			bounds = append(bounds, bound{from: cursor, to: h.From, rate: rate, highlight: NoHighlight, cut: NoCut})
 		}
-		bounds = append(bounds, bound{h.From, h.To, h.Rate(rate), i})
+		bounds = append(bounds, bound{from: h.From, to: h.To, rate: h.Rate(rate), highlight: i, cut: NoCut})
 		cursor = h.To
 	}
 	if cursor < d {
-		bounds = append(bounds, bound{cursor, d, rate, NoHighlight})
+		bounds = append(bounds, bound{from: cursor, to: d, rate: rate, highlight: NoHighlight, cut: NoCut})
 	}
 	if len(bounds) == 0 {
 		// d > 0 is already checked by every caller, so this is only the
 		// no-highlights case: one segment, the whole window, at rate.
-		bounds = append(bounds, bound{0, d, rate, NoHighlight})
+		bounds = append(bounds, bound{from: 0, to: d, rate: rate, highlight: NoHighlight, cut: NoCut})
+	}
+
+	// The cuts are subtracted AFTER the highlights have partitioned the
+	// window, not before, and the order is not interchangeable. A highlight
+	// is a range the user typed in the activity's own elapsed time; clipping
+	// it against the cuts first would leave the rest of the construction
+	// working from bounds that no longer say which stretch the user actually
+	// named, and a highlight that straddles a pause would come out as two
+	// highlights rather than one interrupted one.
+	if len(cuts) > 0 {
+		bounds = subtractCuts(bounds, cuts)
+		if len(bounds) == 0 {
+			return Timeline{}, fmt.Errorf("panel: every stretch of this activity is paused, so skipping the pauses leaves nothing to render")
+		}
 	}
 
 	segs := make([]segment, 0, len(bounds))
+	// kept is the cuts that actually became a seam -- one with running
+	// activity on both sides. A cut at the very start or the very end of
+	// the activity is still removed and simply has nothing to mark; see
+	// Cut's own doc comment.
+	kept := make([]Cut, 0, len(cuts))
 	frameCursor := 0
 	var maxRate float64
 	for _, b := range bounds {
+		// A cut preceding the FIRST surviving bound removed a stretch that
+		// began at the activity's own start: there is no earlier frame for
+		// it to be a seam between, so it is dropped rather than recorded
+		// as a notice sitting over frame 0 announcing a splice that never
+		// happened.
+		if b.cut != NoCut && len(segs) > 0 {
+			c := cuts[b.cut]
+			c.FirstFrame = frameCursor
+			kept = append(kept, c)
+		}
 		length := b.to - b.from
 		n := int(math.Round(length.Seconds() / b.rate * fps))
 		if n < 1 {
@@ -250,7 +400,107 @@ func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64
 		}
 	}
 
-	return Timeline{fps: fps, segs: segs, frames: frameCursor, base: rate, maxRate: maxRate}, nil
+	return Timeline{
+		fps:     fps,
+		segs:    segs,
+		frames:  frameCursor,
+		base:    rate,
+		maxRate: maxRate,
+		origin:  start,
+		span:    d,
+		cuts:    resolveCutNotices(kept, fps, frameCursor),
+	}, nil
+}
+
+// bound is one stretch of the window before it becomes a segment: the
+// highlight partition, then whatever survives the cuts.
+type bound struct {
+	from, to  time.Duration
+	rate      float64
+	highlight int
+
+	// cut is the index into the cuts slice of the stretch removed
+	// IMMEDIATELY before this bound, or NoCut when this bound follows on
+	// from the previous one with nothing taken out between them.
+	cut int
+}
+
+// subtractCuts removes every cut's span from bounds, splitting a bound that
+// a cut falls inside and dropping one a cut swallows whole, and records on
+// each survivor which cut (if any) was removed immediately before it.
+//
+// O(bounds x cuts) rather than a merge walk over the two sorted lists. A
+// cut can span several bounds and a bound can contain several cuts, and the
+// index bookkeeping a single walk needs to get both right is where this
+// would acquire an off-by-one that only shows on a file with a pause
+// crossing a highlight's own boundary. Both lists are short -- at most a
+// couple of thousand bounds against a recording's handful of pauses -- and
+// this runs once, at construction, not per frame.
+func subtractCuts(bounds []bound, cuts []Cut) []bound {
+	out := make([]bound, 0, len(bounds)+len(cuts))
+	// pending carries a cut across the bound boundary it may straddle: a
+	// pause covering the end of one highlight and the start of the next
+	// removes a piece of two bounds and is still ONE seam, marked on
+	// whichever bound finally emits.
+	pending := NoCut
+	for _, b := range bounds {
+		cursor := b.from
+		for i, c := range cuts {
+			if c.To <= cursor || c.From >= b.to {
+				continue // entirely before what is left of this bound, or after it
+			}
+			if c.From > cursor {
+				out = append(out, bound{from: cursor, to: c.From, rate: b.rate, highlight: b.highlight, cut: pending})
+				pending = NoCut
+			}
+			pending = i
+			if c.To > cursor {
+				cursor = c.To
+			}
+			if cursor >= b.to {
+				break
+			}
+		}
+		if cursor < b.to {
+			out = append(out, bound{from: cursor, to: b.to, rate: b.rate, highlight: b.highlight, cut: pending})
+			pending = NoCut
+		}
+	}
+	return out
+}
+
+// resolveCutNotices gives each seam the frames its on-screen notice
+// occupies: cutNoticeVideo of video time from the seam onward, truncated
+// where the next seam's own notice would otherwise begin first, and clamped
+// to the render.
+//
+// Truncated rather than refused, and rather than allowed to overlap: two
+// notices on screen at once, one of them describing a splice that already
+// passed, is worse than a short one. This is the same rule resolveLabels
+// applies to two --label spans that would collide, deliberately -- a reader
+// who has understood one has understood the other.
+func resolveCutNotices(cuts []Cut, fps float64, frames int) []Cut {
+	if len(cuts) == 0 {
+		return nil
+	}
+	span := int(math.Round(cutNoticeVideo.Seconds() * fps))
+	if span < 1 {
+		span = 1
+	}
+	for i := range cuts {
+		last := cuts[i].FirstFrame + span - 1
+		if i+1 < len(cuts) && last >= cuts[i+1].FirstFrame {
+			last = cuts[i+1].FirstFrame - 1
+		}
+		if last > frames-1 {
+			last = frames - 1
+		}
+		if last < cuts[i].FirstFrame {
+			last = cuts[i].FirstFrame
+		}
+		cuts[i].LastFrame = last
+	}
+	return cuts
 }
 
 // SpeedupFor returns the compression that fits an activity of length activity
@@ -309,6 +559,26 @@ func NewTimelineForActivity(timer *fitactivity.TimerModel, fps, speedup float64)
 // NewTimelineForActivity is exactly this function called with no highlights;
 // both funnel through NewSegmentedTimeline.
 func NewTimelineForActivityWithHighlights(timer *fitactivity.TimerModel, fps, speedup float64, highlights []Highlight) (Timeline, error) {
+	return NewTimelineForActivityWithPauses(timer, fps, speedup, highlights, PausesFreeze)
+}
+
+// NewTimelineForActivityWithPauses is NewTimelineForActivityWithHighlights
+// told what to do with the activity's paused stretches: PausesFreeze renders
+// them like any other stretch, PausesSkip cuts them out. The two-argument
+// form above is exactly this called with PausesFreeze, so a render that
+// never mentions the flag goes through the identical construction it always
+// has.
+//
+// The pause list comes from the TimerModel, which owns it, rather than being
+// derived here from Active or sampled from Paused -- see
+// TimerModel.Pauses for why a second derivation of where the pauses are is
+// the thing this must not become.
+//
+// An unknown mode is refused rather than defaulting to freeze. A typo
+// reaching here would produce a render that quietly ignored the flag, which
+// is the failure every other value-taking flag in this project refuses at
+// the point the user typed it.
+func NewTimelineForActivityWithPauses(timer *fitactivity.TimerModel, fps, speedup float64, highlights []Highlight, pauses string) (Timeline, error) {
 	start, end, err := activityWindow(timer)
 	if err != nil {
 		return Timeline{}, err
@@ -317,7 +587,33 @@ func NewTimelineForActivityWithHighlights(timer *fitactivity.TimerModel, fps, sp
 	if d <= 0 {
 		return Timeline{}, fmt.Errorf("panel: activity spans %v; there is nothing to render", d)
 	}
-	return NewSegmentedTimeline(start, d, fps, speedup, highlights)
+	switch pauses {
+	case "", PausesFreeze:
+		return NewSegmentedTimeline(start, d, fps, speedup, highlights)
+	case PausesSkip:
+		return NewCutTimeline(start, d, fps, speedup, highlights, cutsForPauses(timer, start))
+	}
+	return Timeline{}, fmt.Errorf("panel: unknown pause handling %q; use %s or %s", pauses, PausesFreeze, PausesSkip)
+}
+
+// cutsForPauses turns the activity's paused intervals into cuts, as offsets
+// from the activity's own start.
+//
+// TimerModel.Pauses already returns them ascending, non-overlapping and
+// clipped to the same window activityWindow resolved, which is exactly what
+// NewCutTimeline requires -- so this converts instants to offsets and
+// nothing else. Any sorting, merging or clipping added here would be a
+// second copy of a rule that already has an owner.
+func cutsForPauses(timer *fitactivity.TimerModel, start time.Time) []Cut {
+	pauses := timer.Pauses()
+	if len(pauses) == 0 {
+		return nil
+	}
+	cuts := make([]Cut, len(pauses))
+	for i, p := range pauses {
+		cuts[i] = Cut{From: p.Start.Sub(start), To: p.End.Sub(start)}
+	}
+	return cuts
 }
 
 // autoSmoothingVideoWindow is how much VIDEO time the automatic smoothing
@@ -453,6 +749,19 @@ func (t Timeline) ActivityDuration() time.Duration {
 	return time.Duration(math.Round(total * float64(time.Second)))
 }
 
+// ActivitySpan is the activity's whole elapsed extent, including any stretch
+// --pauses skip removed from the render.
+//
+// Distinct from ActivityDuration, and the distinction is the one a caller
+// validating a user's offset has to get right: ActivityDuration is how much
+// activity the FRAMES cover, this is how long the activity RAN. They are
+// equal under the default and differ by exactly the skipped time under
+// --pauses skip -- so bounding a --frame-at against ActivityDuration would
+// refuse an offset that is plainly inside the activity, telling the user
+// their twenty-eight-minute mark is "past the end of the activity, which
+// runs 0:25:56".
+func (t Timeline) ActivitySpan() time.Duration { return t.span }
+
 // Start is the instant frame 0 shows.
 func (t Timeline) Start() time.Time { return t.segs[0].start }
 
@@ -533,10 +842,20 @@ func (t Timeline) segmentFor(i int) segment {
 // request the caller must have computed wrongly. A caller who needs to know
 // the offset was out of range can compare against ActivityDuration.
 func (t Timeline) IndexAt(offset time.Duration) int {
-	target := t.Start().Add(offset)
-	// Segments partition the activity's elapsed time with no gaps between
-	// them, so the last segment whose own start is at or before target is
-	// the one that contains it.
+	// Measured from the ACTIVITY's own start, not from Start(): under
+	// --pauses skip a pause at the very beginning is removed, so frame 0
+	// shows an instant some way into the activity and the two differ. Every
+	// caller passes an offset the user typed into a flag, which is elapsed
+	// time from the activity's start whatever the render then does with it.
+	target := t.origin.Add(offset)
+	// Segments partition the activity's elapsed time, with a gap exactly
+	// where a cut removed one (and none at all without --pauses skip), so
+	// the last segment whose own start is at or before target is the one
+	// that contains it -- or, for a target inside a cut, the one just
+	// before the seam, which the clamp below then resolves to that
+	// segment's last frame. An instant that was cut out of the render has
+	// no frame of its own; the frame the splice lands on is the closest
+	// true answer available.
 	idx := sort.Search(len(t.segs), func(k int) bool {
 		return t.segs[k].start.After(target)
 	}) - 1
@@ -565,6 +884,51 @@ func (t Timeline) IndexAt(offset time.Duration) int {
 		i = t.frames - 1
 	}
 	return i
+}
+
+// Cuts returns the seams --pauses skip left in this render, ascending, each
+// with the stretch of activity it removed and the frames its notice
+// occupies. Empty under PausesFreeze, and empty under PausesSkip on an
+// activity that never paused.
+//
+// Returns the slice itself rather than a copy, matching every other
+// accessor on this type: a Timeline is passed by value and read all over
+// the render, and nothing in this module writes to what it is handed.
+func (t Timeline) Cuts() []Cut { return t.cuts }
+
+// CutRemoved is how much activity time this render leaves out in total --
+// the sum of every SEAM's own removed span.
+//
+// Deliberately not the activity's whole paused total: a pause at the very
+// start or end of the activity is removed too but is not a seam (see Cut),
+// so a caller reporting "removed" from this number is reporting what was
+// spliced OUT OF the video, not what the watch spent stopped. The second
+// figure belongs to the activity and is TimerModel.PausedTotal's to
+// answer; conflating them would put a number on screen that no seam
+// accounts for.
+func (t Timeline) CutRemoved() time.Duration {
+	var total time.Duration
+	for _, c := range t.cuts {
+		total += c.Removed()
+	}
+	return total
+}
+
+// CutAt reports which cut's notice, if any, frame i falls inside, and how
+// far through its entrance or exit ramp that frame sits -- the label
+// analogue for a seam, built from the same rampWeight arithmetic (see
+// LabelAt) so a cut's notice and a label's name cannot drift a frame apart.
+//
+// A linear scan for the reason LabelAt scans: a recording carries a handful
+// of pauses, not thousands, so the search cost is irrelevant here.
+func (t Timeline) CutAt(i int, transition time.Duration) (index int, weight float64) {
+	for idx, c := range t.cuts {
+		if i < c.FirstFrame || i > c.LastFrame {
+			continue
+		}
+		return idx, rampWeight(i, c.FirstFrame, c.LastFrame-c.FirstFrame+1, t.fps, transition)
+	}
+	return NoCut, 0
 }
 
 // IntervalAt reports which highlight, if any, frame i belongs to, and how

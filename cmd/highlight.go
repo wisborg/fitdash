@@ -138,10 +138,16 @@ func splitHighlightFields(raw string) ([]string, error) {
 // specifically so the style is in scope here, the first place both a
 // highlight and the style it will be drawn under exist together.
 //
+// pauses is passed in for the same reason style is: under panel.PausesSkip a
+// highlight lying wholly inside a paused stretch is not a surprise to be
+// marked and reported, it is a highlight that would occupy no video at all,
+// and that is refused here rather than rendered as nothing. See
+// PausedThroughout below.
+//
 // Returns nil, nil when raw is empty: no --highlight given at all is not an
 // error, and a nil Context.Highlights is exactly what a highlight panel's
 // Accepts declines on.
-func resolveHighlights(raw []string, timer *fitactivity.TimerModel, style string) ([]panel.Highlight, error) {
+func resolveHighlights(raw []string, timer *fitactivity.TimerModel, style, pauses string) ([]panel.Highlight, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -175,6 +181,19 @@ func resolveHighlights(raw []string, timer *fitactivity.TimerModel, style string
 			h.To, h.Clipped = duration, true
 		}
 		h.PausedThroughout = highlightLiesInPause(timer, start, h.From, h.To)
+		// Refused, not clipped and not warned about. Under --pauses skip
+		// every instant this highlight names is removed from the render,
+		// so there is no stretch of video left for it to pace, name, mark
+		// on the strip or wash the background of -- and the Timeline's own
+		// floor-at-one-frame rule, which keeps a highlight from silently
+		// occupying no video, cannot save it: there is no segment to floor.
+		// Clipping it to the nearest running instant would be worse than
+		// either, since it would silently re-point a range the user typed
+		// at a stretch of the activity they did not.
+		if h.PausedThroughout && pauses == panel.PausesSkip {
+			return nil, fmt.Errorf("render: --highlight %q lies wholly inside a paused stretch, which --pauses %s removes from the render; there would be no video for it to mark",
+				highlightLabel(h), panel.PausesSkip)
+		}
 		highlights = append(highlights, h)
 	}
 
@@ -205,32 +224,35 @@ func highlightLabel(h panel.Highlight) string {
 // than deriving pause status some other way -- see that method's own doc
 // comment for why there is exactly one rule for it.
 //
-// It SAMPLES rather than checking exhaustively: fitactivity exposes only a
-// point-in-time query, not the pause list itself, and adding one would be a
-// change to fitactivity, out of scope here (see this repository's CLAUDE.md
-// on accessors belonging upstream). The two cases this warning exists for
-// both answer correctly from a handful of evenly spaced samples: a highlight
-// marking a genuine rest stop is paused at every one of them, and a
-// highlight over a real effort is unpaused at the first.
+// It reads the pause LIST rather than sampling Paused across the span, which
+// it used to do because fitactivity exposed only the point-in-time query.
+// Sampling answered both of the cases the warning existed for -- a highlight
+// over a genuine rest stop is paused at every sample, one over a real effort
+// is unpaused at the first -- but it could only ever be a good-enough answer
+// to a weak question, and this is no longer a weak question: under
+// --pauses skip a true answer here REFUSES the render (see
+// resolveHighlights), so a span that a nine-point grid stepped over must not
+// be able to turn into an error message about a highlight the user can see
+// is fine.
+//
+// The comparison is against one pause, not against the union of several: two
+// pauses with running time between them do not make the stretch spanning
+// both a paused one, and a highlight covering that stretch has real activity
+// in the middle of it.
 func highlightLiesInPause(timer *fitactivity.TimerModel, activityStart time.Time, from, to time.Duration) bool {
-	const samples = 9
-	span := to - from
-	if span <= 0 {
+	if to <= from {
 		return false
 	}
-	for i := 0; i < samples; i++ {
-		offset := from + span*time.Duration(i)/time.Duration(samples-1)
-		if i == samples-1 {
-			// The interval is half-open: the instant AT "to" belongs to
-			// whatever comes after it, so step back one nanosecond to stay
-			// inside the highlight itself.
-			offset--
-		}
-		if !timer.Paused(activityStart.Add(offset)) {
-			return false
+	// Half-open on both sides: the highlight covers [from, to), so it lies
+	// inside a pause exactly when that pause starts at or before `from` and
+	// ends at or after `to`.
+	first, last := activityStart.Add(from), activityStart.Add(to)
+	for _, p := range timer.Pauses() {
+		if !p.Start.After(first) && !p.End.Before(last) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // backgroundStyleError refuses a background= under a --highlight-style other

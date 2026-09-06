@@ -1805,3 +1805,195 @@ func TestRenderer_LastFrameWithSampleSkipsATrailingDeadZone(t *testing.T) {
 		}
 	}
 }
+
+// --- the cut notice ---------------------------------------------------------
+
+// buildCutContext assembles a context over a synthetic activity with one
+// mid-activity pause, rendered under --pauses skip so the timeline carries
+// exactly one seam.
+func buildCutContext(t *testing.T, w, h int, fps float64, pauses string) (*panel.Context, panel.Timeline) {
+	t.Helper()
+	opts := fittest.DefaultOptions()
+	opts.Count = 60
+	opts.Pauses = []fittest.Pause{{Start: 20 * time.Second, End: 40 * time.Second}}
+
+	ctx := buildContext(t, opts, w, h, fps)
+	tl, err := panel.NewTimelineForActivityWithPauses(ctx.Timer, fps, 1, nil, pauses)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivityWithPauses: %v", err)
+	}
+	ctx.Timeline = tl
+	ctx.Pauses = pauses
+	ctx.HighlightTransition = 400 * time.Millisecond
+	return ctx, tl
+}
+
+// TestRenderer_CutNoticeDrawsAtTheSeamAndNowhereElse is the "did it actually
+// draw" test for the one thing that makes --pauses skip honest.
+//
+// The comparison is deliberately between two renders of the SAME frame, one
+// with the cut fields cleared by hand -- identical dashboard, identical
+// instant, identical everything except the notice. A test that compared the
+// seam frame with its neighbour would differ for a dozen reasons that have
+// nothing to do with the notice, and would pass just as happily if the
+// notice never drew a pixel.
+func TestRenderer_CutNoticeDrawsAtTheSeamAndNowhereElse(t *testing.T) {
+	ctx, tl := buildCutContext(t, 400, 240, 10, panel.PausesSkip)
+	layout := highlightMarkerLayout(markerPanel{name: "a", accept: true})
+	r, err := New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cuts := tl.Cuts()
+	if len(cuts) != 1 {
+		t.Fatalf("precondition: the fixture must carry exactly one seam, got %d", len(cuts))
+	}
+
+	shot := func(f panel.Frame) *image.RGBA {
+		img := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.Render(img, f); err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		return img
+	}
+
+	// The middle of the notice's own span, not its first frame: the ramp
+	// starts at zero on the frame the splice lands on, exactly as a label's
+	// name does at its own instant, so the first frame is the one frame of
+	// the notice that is legitimately invisible.
+	withNotice := r.Frame((cuts[0].FirstFrame + cuts[0].LastFrame) / 2)
+	if withNotice.Cut != 0 || withNotice.CutWeight <= 0 {
+		t.Fatalf("the middle of the notice reports cut %d at weight %v; the notice would never draw",
+			withNotice.Cut, withNotice.CutWeight)
+	}
+	without := withNotice
+	without.Cut, without.CutWeight = panel.NoCut, 0
+
+	on, off := shot(withNotice), shot(without)
+	minX, minY, maxX, maxY, n := diffBounds(on, off)
+	if n == 0 {
+		t.Fatal("the seam frame renders identically with and without its cut; the notice drew nothing, " +
+			"and a render that silently removes four minutes is exactly what this flag must not produce")
+	}
+
+	// Placed inside the frame and in its upper half, near the horizontal
+	// centre -- the region drawCutNotice aims at. Asserted as a region
+	// rather than as exact pixels so the card's own proportions can be
+	// retuned without rewriting the test, while a notice drawn off-frame or
+	// stranded in a corner still fails.
+	if minX < 0 || minY < 0 || maxX >= ctx.Width || maxY >= ctx.Height {
+		t.Errorf("the notice's pixels run outside the frame: x %d-%d, y %d-%d in a %dx%d frame",
+			minX, maxX, minY, maxY, ctx.Width, ctx.Height)
+	}
+	if maxY > ctx.Height/2 {
+		t.Errorf("the notice reaches y=%d, past the frame's own midpoint (%d); it is meant to sit near the top", maxY, ctx.Height/2)
+	}
+	if centre := (minX + maxX) / 2; math.Abs(float64(centre-ctx.Width/2)) > float64(ctx.Width)*0.05 {
+		t.Errorf("the notice is centred on x=%d, not on the frame's centre (%d)", centre, ctx.Width/2)
+	}
+
+	// Every OTHER frame of the render must be free of it. This is the half a
+	// "did it draw" test misses: a notice that never turned off would sit
+	// over the dashboard for the whole video.
+	for i := 0; i < tl.Frames(); i++ {
+		f := r.Frame(i)
+		inNotice := i >= cuts[0].FirstFrame && i <= cuts[0].LastFrame
+		if (f.Cut != panel.NoCut) != inNotice {
+			t.Fatalf("frame %d reports cut %d, but the notice occupies frames %d-%d",
+				i, f.Cut, cuts[0].FirstFrame, cuts[0].LastFrame)
+		}
+	}
+}
+
+// TestRenderer_CutNoticeRampsRatherThanCutting checks the notice fades in the
+// way every other on-screen mark in this render does, on the same weight.
+//
+// A hard-appearing card in the middle of a compressed render reads as a
+// glitch; the ramp is what makes it read as a deliberate annotation.
+func TestRenderer_CutNoticeRampsRatherThanCutting(t *testing.T) {
+	ctx, tl := buildCutContext(t, 400, 240, 10, panel.PausesSkip)
+	layout := highlightMarkerLayout(markerPanel{name: "a", accept: true})
+	r, err := New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cuts := tl.Cuts()
+	if len(cuts) != 1 {
+		t.Fatalf("precondition: one seam expected, got %d", len(cuts))
+	}
+
+	// One frame into the notice, inside its own entrance transition: neither
+	// absent nor at full strength.
+	mid := r.Frame(cuts[0].FirstFrame + 1)
+	if mid.CutWeight <= 0 || mid.CutWeight >= 1 {
+		t.Fatalf("the frame after the seam has weight %v; this test needs a mid-ramp frame to prove anything", mid.CutWeight)
+	}
+
+	shot := func(f panel.Frame) *image.RGBA {
+		img := image.NewRGBA(image.Rect(0, 0, ctx.Width, ctx.Height))
+		if err := r.Render(img, f); err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		return img
+	}
+	full := mid
+	full.CutWeight = 1
+	none := mid
+	none.Cut, none.CutWeight = panel.NoCut, 0
+
+	partial, opaque, bare := shot(mid), shot(full), shot(none)
+	if bytes.Equal(partial.Pix, bare.Pix) {
+		t.Error("a mid-ramp notice is identical to no notice at all; it is not fading in, it is absent")
+	}
+	if bytes.Equal(partial.Pix, opaque.Pix) {
+		t.Error("a mid-ramp notice is identical to a fully opaque one; the weight is being ignored and the notice hard-cuts")
+	}
+}
+
+// TestRenderer_FreezeRendersNoNotice is the promise that a render which does
+// not ask for this feature is untouched by it: not "draws a notice with zero
+// alpha", but carries no cut on any frame at all.
+func TestRenderer_FreezeRendersNoNotice(t *testing.T) {
+	ctx, tl := buildCutContext(t, 400, 240, 10, panel.PausesFreeze)
+	layout := highlightMarkerLayout(markerPanel{name: "a", accept: true})
+	r, err := New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := len(tl.Cuts()); got != 0 {
+		t.Fatalf("a freeze render recorded %d cuts; it removes nothing", got)
+	}
+	for i := 0; i < tl.Frames(); i++ {
+		if f := r.Frame(i); f.Cut != panel.NoCut || f.CutWeight != 0 {
+			t.Fatalf("frame %d of a freeze render reports cut %d at weight %v", i, f.Cut, f.CutWeight)
+		}
+	}
+}
+
+// diffBounds returns the bounding box of the pixels where a and b differ, and
+// how many there are.
+func diffBounds(a, b *image.RGBA) (minX, minY, maxX, maxY, n int) {
+	minX, minY = a.Bounds().Dx(), a.Bounds().Dy()
+	maxX, maxY = -1, -1
+	for y := 0; y < a.Bounds().Dy(); y++ {
+		for x := 0; x < a.Bounds().Dx(); x++ {
+			if a.RGBAAt(x, y) == b.RGBAAt(x, y) {
+				continue
+			}
+			n++
+			if x < minX {
+				minX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y > maxY {
+				maxY = y
+			}
+		}
+	}
+	return minX, minY, maxX, maxY, n
+}

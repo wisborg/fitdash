@@ -254,3 +254,199 @@ func TestElapsedPanel_AcceptsEveryActivity(t *testing.T) {
 		t.Error("ElapsedPanel declined; it has no activity-level absence to decline over")
 	}
 }
+
+// --- --clock ----------------------------------------------------------------
+
+// clockShot renders one frame of ElapsedPanel under one --clock order and
+// returns the painter (for its resolved row positions) and the pixels.
+//
+// The painter comes back rather than being rebuilt by each caller because the
+// row geometry is what the assertions below actually need: "which number is
+// LARGE" is a question about the band around clockY, and re-deriving that band
+// in the test from the same fractions Prepare uses would be a second copy of
+// the layout, free to agree with a broken one.
+func clockShot(t *testing.T, c *Canvas, img *image.RGBA, ctx *Context, box Box, clock string, f Frame) (*elapsedPainter, []byte) {
+	t.Helper()
+	ctx.Clock = clock
+	p, ok := ElapsedPanel{}.Prepare(ctx, box).(*elapsedPainter)
+	if !ok {
+		t.Fatal("ElapsedPanel.Prepare no longer returns an *elapsedPainter; this test reads its resolved rows")
+	}
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	p.Dynamic(c, f)
+	out := make([]byte, len(img.Pix))
+	copy(out, img.Pix)
+	return p, out
+}
+
+// rowBand is the horizontal strip a row's text occupies, centred on the
+// baseline Prepare resolved for it and as tall as the largest text this panel
+// draws. Wide enough to contain the row and narrow enough to exclude the
+// other two.
+func rowBand(box Box, centreY, px float64) Box {
+	return Box{X: box.X, Y: centreY - px*0.7, W: box.W, H: px * 1.4}
+}
+
+func bandPixels(img *image.RGBA, b Box) []byte {
+	var out []byte
+	for y := int(b.Y); y < int(b.Y+b.H) && y < img.Bounds().Dy(); y++ {
+		for x := int(b.X); x < int(b.X+b.W) && x < img.Bounds().Dx(); x++ {
+			if x < 0 || y < 0 {
+				continue
+			}
+			r, g, bl, a := img.At(x, y).RGBA()
+			out = append(out, byte(r>>8), byte(g>>8), byte(bl>>8), byte(a>>8))
+		}
+	}
+	return out
+}
+
+// TestElapsedPanel_ClockActivePutsActiveInTheLargeRow is the test --clock
+// exists to pass, and it is deliberately not "the two orders render
+// differently".
+//
+// Two renders differing proves only that the flag changed SOMETHING -- a
+// caption alone would satisfy that while the large number went on showing
+// elapsed. The property asserted instead is an identity: the large row under
+// --clock active must be pixel-identical to the large row of a default render
+// whose ELAPSED value is the same number. That can only hold if the row is
+// showing the active value, at the same size and position, and it fails for
+// every way of changing the frame that is not the swap.
+func TestElapsedPanel_ClockActivePutsActiveInTheLargeRow(t *testing.T) {
+	c, img, ctx := elapsedFixture(t, 400, 300)
+	box := Box{X: 0, Y: 0, W: 400, H: 300}
+
+	const elapsed, active = time.Hour, 30 * time.Minute
+	f := Frame{Elapsed: elapsed, Active: active, HasTimerEvents: true}
+
+	def, defPix := clockShot(t, c, img, ctx, box, ClockElapsed, f)
+	swapped, swapPix := clockShot(t, c, img, ctx, box, ClockActive, f)
+	// The default order, handed the active figure as its ELAPSED value: its
+	// large row is what a swapped render's large row has to look like.
+	_, refPix := clockShot(t, c, img, ctx, box, ClockElapsed, Frame{Elapsed: active, Active: elapsed, HasTimerEvents: true})
+
+	if def.clockPx != swapped.clockPx || def.clockY != swapped.clockY {
+		t.Fatalf("the large row moved or resized between the two orders (px %v->%v, y %v->%v); "+
+			"--clock chooses which clock is drawn there, not how the panel is laid out",
+			def.clockPx, swapped.clockPx, def.clockY, swapped.clockY)
+	}
+
+	band := rowBand(box, def.clockY, def.clockPx)
+	if string(bandPixels(img2(defPix, img), band)) == string(bandPixels(img2(swapPix, img), band)) {
+		t.Fatal("the large row is identical under --clock elapsed and --clock active; the swap did not reach the number")
+	}
+	if got, want := bandPixels(img2(swapPix, img), band), bandPixels(img2(refPix, img), band); string(got) != string(want) {
+		t.Error("the large row under --clock active does not match a default render of the same figure; " +
+			"it is showing something other than the active clock")
+	}
+}
+
+// TestElapsedPanel_ClockActiveNamesTheRowsTheOtherWayRound checks the two
+// captions swap with the numbers.
+//
+// A swap that moved the values but left the captions would be the worst
+// possible outcome of this flag: every number on screen mislabelled, in a
+// render nothing else would flag as wrong.
+func TestElapsedPanel_ClockActiveNamesTheRowsTheOtherWayRound(t *testing.T) {
+	for _, c := range []struct {
+		clock     string
+		main, sub string
+	}{
+		{ClockElapsed, "ELAPSED", "ACTIVE"},
+		{ClockActive, "ACTIVE", "ELAPSED"},
+		// The zero value is the default order: an unset Context must render
+		// what it always has.
+		{"", "ELAPSED", "ACTIVE"},
+	} {
+		t.Run(c.clock, func(t *testing.T) {
+			e := &elapsedPainter{activeFirst: c.clock == ClockActive}
+			if got := e.mainCaption(); got != c.main {
+				t.Errorf("mainCaption() = %q, want %q", got, c.main)
+			}
+			if got := e.subCaption(); got != c.sub {
+				t.Errorf("subCaption() = %q, want %q", got, c.sub)
+			}
+			if e.mainCaption() == e.subCaption() {
+				t.Error("both rows are captioned the same; one of the two clocks is mislabelled")
+			}
+		})
+	}
+}
+
+// TestElapsedPanel_ClockActivePromotesThePlaceholder is the absent-data half
+// of the flag.
+//
+// A file with no timer events cannot measure active time at all. Under
+// --clock active the unmeasurable number is the one the user asked to see
+// LARGE, and the honest answer is a large placeholder in Theme.Absent -- not
+// a demotion of the placeholder to the small row, and emphatically not the
+// elapsed figure standing in for it, which is the confident lie this project
+// spends its care avoiding.
+func TestElapsedPanel_ClockActivePromotesThePlaceholder(t *testing.T) {
+	c, img, ctx := elapsedFixture(t, 400, 300)
+	box := Box{X: 0, Y: 0, W: 400, H: 300}
+	f := Frame{Elapsed: time.Hour, Active: time.Hour, HasTimerEvents: false}
+
+	for _, tc := range []struct {
+		clock           string
+		absentRow       func(*elapsedPainter) (float64, float64)
+		measuredRow     func(*elapsedPainter) (float64, float64)
+		absentRowName   string
+		measuredRowName string
+	}{
+		{
+			clock:           ClockActive,
+			absentRow:       func(e *elapsedPainter) (float64, float64) { return e.clockY, e.clockPx },
+			measuredRow:     func(e *elapsedPainter) (float64, float64) { return e.subY, e.subPx },
+			absentRowName:   "large",
+			measuredRowName: "small",
+		},
+		{
+			clock:           ClockElapsed,
+			absentRow:       func(e *elapsedPainter) (float64, float64) { return e.subY, e.subPx },
+			measuredRow:     func(e *elapsedPainter) (float64, float64) { return e.clockY, e.clockPx },
+			absentRowName:   "small",
+			measuredRowName: "large",
+		},
+	} {
+		t.Run(tc.clock, func(t *testing.T) {
+			p, _ := clockShot(t, c, img, ctx, box, tc.clock, f)
+
+			y, px := tc.absentRow(p)
+			if !bandContainsColor(img, rowBand(box, y, px), c.Theme.Absent) {
+				t.Errorf("the %s row carries no Theme.Absent ink; the unmeasurable clock is being drawn as though it were measured", tc.absentRowName)
+			}
+			y, px = tc.measuredRow(p)
+			if bandContainsColor(img, rowBand(box, y, px), c.Theme.Absent) {
+				t.Errorf("the %s row carries Theme.Absent ink; the clock that IS measurable is being shown as absent", tc.measuredRowName)
+			}
+		})
+	}
+}
+
+// img2 reinterprets a captured pixel buffer as an image sharing the fixture's
+// bounds, so a band can be read back out of a shot taken earlier.
+func img2(pix []byte, like *image.RGBA) *image.RGBA {
+	out := image.NewRGBA(like.Bounds())
+	copy(out.Pix, pix)
+	return out
+}
+
+func bandContainsColor(img *image.RGBA, b Box, want interface {
+	RGBA() (uint32, uint32, uint32, uint32)
+}) bool {
+	wr, wg, wb, _ := want.RGBA()
+	for y := int(b.Y); y < int(b.Y+b.H) && y < img.Bounds().Dy(); y++ {
+		for x := int(b.X); x < int(b.X+b.W) && x < img.Bounds().Dx(); x++ {
+			if x < 0 || y < 0 {
+				continue
+			}
+			r, g, bl, _ := img.At(x, y).RGBA()
+			if r == wr && g == wg && bl == wb {
+				return true
+			}
+		}
+	}
+	return false
+}
