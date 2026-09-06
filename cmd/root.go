@@ -67,6 +67,20 @@ resolved as the subcommand. Write ./inspect to render it.`,
 // from dumping the whole usage text after it, which buries the message that
 // actually says what went wrong.
 func Execute() {
+	// cobra creates the `completion` command lazily, during Execute, so it
+	// is asked for explicitly here in order to hang `install` beneath it.
+	// The alternative -- a top-level command of our own -- would put the
+	// install step somewhere nobody looks: a person who wants completion
+	// types `fitdash completion` first, and should find the whole story
+	// there rather than two commands that do not mention each other.
+	root.InitDefaultCompletionCmd()
+	for _, c := range root.Commands() {
+		if c.Name() == "completion" {
+			c.AddCommand(newCompletionInstallCmd(root))
+			break
+		}
+	}
+
 	root.PersistentFlags().Var(&format, "format", "output format: text, csv, json or yaml")
 	bindRenderFlags(root)
 	if err := root.Execute(); err != nil {

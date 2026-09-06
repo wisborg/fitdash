@@ -208,6 +208,23 @@ scripts/fd check-deps
 scripts/fd gates
 ```
 
+## Shell completion
+
+```
+fitdash completion install
+```
+
+Writes the completion script into a directory your shell searches, creating it if
+needed, and then says whether that directory is one your shell actually reads. If it
+is not, it prints the line to add and where to add it — a completion script in an
+unsearched directory does nothing and says nothing about it, which is the failure
+worth reporting rather than reproducing.
+
+It picks the destination for you (`--shell zsh|bash|all`, `--dir` to override,
+`--dry-run` to see the choice first) and never edits your startup files; it only
+quotes the line you would add. `fitdash completion zsh` still prints the script to
+stdout if you would rather place it yourself.
+
 ## Looking at a render without waiting for one
 
 `--frames` writes selected frames as PNGs instead of encoding a video, through the
