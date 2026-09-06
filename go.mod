@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/fogleman/gg v1.3.0
 	github.com/spf13/cobra v1.8.1
-	github.com/wisborg/fitactivity v0.4.0
+	github.com/wisborg/fitactivity v0.5.0
 	github.com/wisborg/output v0.2.0
 	golang.org/x/image v0.44.0
 )
