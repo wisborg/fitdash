@@ -43,6 +43,17 @@ file, writes no location metadata into it, and does nothing else with it.
 
 Note that an activity file named exactly like a subcommand -- "inspect" -- is
 resolved as the subcommand. Write ./inspect to render it.`,
+	// Setting Version is what makes cobra add --version at all, and it lives
+	// here rather than in Execute so the command is fully described by its
+	// own declaration -- a test, or anything else that reaches for root
+	// without going through Execute, gets the same command the user does.
+	//
+	// Cobra answers --version BEFORE it validates Args, which is what makes
+	// the flag usable at all on a root command declaring ExactArgs(1): the
+	// render needs an activity and `fitdash --version` has none.
+	// TestVersionFlag_NeedsNoActivity pins that ordering, because it is
+	// cobra's behaviour rather than a guarantee this package makes.
+	Version:       version(),
 	Args:          cobra.ExactArgs(1),
 	RunE:          runRender,
 	SilenceUsage:  true,
