@@ -170,7 +170,7 @@ func TestHasAnyBalanceMetric_TrueOnlyWithAGenuineReading(t *testing.T) {
 func TestBalanceReadout_AcceptsRequiresBalanceDataAlongsideItsOwnCoverage(t *testing.T) {
 	for _, w := range []struct {
 		name  string
-		build func() Panel
+		build func() balanceReadout
 		cover string // which gaugesFixture field this readout's own coverage needs
 	}{
 		{"balancePace", balancePace, "speed"},
@@ -338,6 +338,48 @@ func TestResolve_GaugeAltOverTheRealLayoutsPlacesTheRightPanels(t *testing.T) {
 					assertNoOverlap(t, placed)
 				})
 			}
+		}
+	}
+}
+
+// TestSizedAsPeers_GivesEveryMemberTheWidestTemplate pins the one property
+// that keeps two readouts seated side by side from printing at different
+// sizes.
+//
+// A Readout fits its reading to its own widest template, so the member
+// needing the FEWEST characters wins the most font size. Stacked in a column
+// nobody notices; seated in a Row, a step length printed visibly larger than
+// the pace beside it, which reads as a claim that one of the two matters
+// more -- made by nothing but how many characters each happens to need.
+//
+// The assertion is deliberately that every member carries the SAME template
+// and that it is the widest of the group, rather than that it equals any
+// particular string: the templates belong to Pace and StepLength and may
+// change without this rule changing.
+func TestSizedAsPeers_GivesEveryMemberTheWidestTemplate(t *testing.T) {
+	pace, step := balancePace(), balanceStepLength()
+	widest := pace.valueTemplate()
+	if w := step.valueTemplate(); len([]rune(w)) > len([]rune(widest)) {
+		widest = w
+	}
+	// A group whose members already agreed would prove nothing, so refuse to
+	// pass vacuously: this rule only has work to do while they differ.
+	if pace.valueTemplate() == step.valueTemplate() {
+		t.Fatalf("fixture is vacuous: pace and step length already share a template (%q)", widest)
+	}
+
+	slots := sizedAsPeers(pace, step)
+	if len(slots) != 2 {
+		t.Fatalf("sizedAsPeers returned %d slots, want 2", len(slots))
+	}
+	for _, s := range slots {
+		r, ok := s.Panel.(balanceReadout)
+		if !ok {
+			t.Fatalf("slot holds %T, want balanceReadout", s.Panel)
+		}
+		if got := r.valueTemplate(); got != widest {
+			t.Errorf("%s sizes against %q, want the group's widest %q -- it will print at a different size from its neighbour",
+				r.Name(), got, widest)
 		}
 	}
 }

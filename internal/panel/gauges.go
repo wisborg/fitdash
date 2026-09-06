@@ -83,7 +83,7 @@ func (p balanceReadout) Accepts(ctx *Context) bool {
 // balancePace is Pace(), wrapped so it survives in the balance branch of the
 // gauge Alt slot only when the activity carries at least one of the four
 // balance metrics beside it -- see balanceReadout.
-func balancePace() Panel {
+func balancePace() balanceReadout {
 	return balanceReadout{Pace()}
 }
 
@@ -93,7 +93,7 @@ func balancePace() Panel {
 // second piece of effort context the bars are read against: a step length is
 // a magnitude, not a balance, so it belongs in this column as an ordinary
 // Readout rather than as a fifth bar (see StepLength's own doc comment).
-func balanceStepLength() Panel {
+func balanceStepLength() balanceReadout {
 	return balanceReadout{StepLength()}
 }
 
@@ -155,13 +155,48 @@ func gaugeBalanceColumn() Slot {
 		// (layout_test.go) checks by reconstructing each leaf's pre-pad box:
 		// a leaf under a padded Row would need its OWN pad added back twice
 		// to recover what the tree actually handed it.
-		{Dir: Row, Weight: gaugeBalanceReadoutRowWeight, Children: []Slot{
-			{Panel: balancePace(), Pad: 0.01},
-			{Panel: balanceStepLength(), Pad: 0.01},
-		}},
+		{Dir: Row, Weight: gaugeBalanceReadoutRowWeight, Children: sizedAsPeers(
+			balancePace(), balanceStepLength(),
+		)},
 		{Panel: ContactBalance(), Weight: gaugeBalanceBarWeight, Pad: 0.01},
 		{Panel: ImpactBalance(), Weight: gaugeBalanceBarWeight, Pad: 0.01},
 		{Panel: StiffnessBalance(), Weight: gaugeBalanceBarWeight, Pad: 0.01},
 		{Panel: OscillationBalance(), Weight: gaugeBalanceBarWeight, Pad: 0.01},
 	}}
+}
+
+// sizedAsPeers seats readouts side by side in one Row at the same text size.
+//
+// A Readout sizes its reading against its OWN widest template, which is
+// right when readouts are stacked in a column: each fills the width it was
+// given, and nobody compares them. Seated in a Row they are compared, by
+// anyone who looks. Pace's template is "88:88" and a step length's is three
+// digits, so the narrower template won more font size and the step length
+// printed visibly larger than the pace beside it -- which reads as a claim
+// that one of the two matters more, made by nothing but the number of
+// characters each happens to need.
+//
+// So every member is given the widest template of the group. They then fit
+// against the same string in boxes the Row already made the same width, and
+// come out the same size. Nothing else about them changes: each still reads
+// its own metric, prints its own unit, and declines on its own terms.
+//
+// Widest is measured in RUNES, which orders width faithfully only because
+// this project draws in gomono (canvas.go) and every glyph there is one
+// advance wide. Under a proportional face this would have to measure the
+// string through the face instead -- and it could not do it here, because
+// there is no Fonts to measure with until Prepare.
+func sizedAsPeers(rs ...balanceReadout) []Slot {
+	widest := ""
+	for _, r := range rs {
+		if t := r.valueTemplate(); len([]rune(t)) > len([]rune(widest)) {
+			widest = t
+		}
+	}
+	out := make([]Slot, 0, len(rs))
+	for _, r := range rs {
+		r.Readout.template = widest
+		out = append(out, Slot{Panel: r, Pad: 0.01})
+	}
+	return out
 }
