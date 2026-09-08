@@ -46,6 +46,27 @@ does not turn on for you.
 fitdash activity.fit --video-duration 3m --pauses skip --clock active
 ```
 
+**Several files render as one video, for a workout recorded in pieces.** A race started
+as its own activity partway through a long run leaves three recordings of one afternoon;
+pass them all and fitdash renders the afternoon.
+
+```
+fitdash warmup.fit race.fit cooldown.fit --video-duration 3m
+```
+
+They are ordered by the start time inside each file, never by the order you typed them,
+so `fitdash *.fit` works and the video is named after the file the activity *starts* in.
+The stretch between two recordings becomes a pause like any the watch was stopped for —
+frozen through by default, cut by `--pauses skip` — and no distance is added across it,
+because the ground covered while nothing was recording was never measured. The summary
+names every file that went in and reports the total unrecorded gap. `fitdash inspect`
+takes the same list and reports the merged activity.
+
+Two files covering the same stretch of time — the same file twice, or two watches
+recording one run — are refused rather than merged, naming both. Concatenating them would
+count that distance twice, and a run that reports 24km instead of 12km looks exactly as
+convincing in a rendered frame as a correct one.
+
 ## What it is
 
 There is no input video. fitdash generates every pixel of every frame from the

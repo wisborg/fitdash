@@ -28,6 +28,70 @@ because the other direction is an import cycle. `internal/render` imports `inter
 and `internal/encode`; `internal/panel` imports only `fitactivity`, `internal/inspect` and
 the drawing libraries.
 
+## Input: several files, one activity
+
+The CLI takes one or more `ACTIVITY.fit` paths and `fitactivity.DecodeAll` returns a
+single `Track`. A workout is not always one file — a race started as its own activity
+partway through a long run leaves the warm-up, the race and the cool-down as three
+recordings of one afternoon, and rendering them separately produces three videos of a
+thing that happened once.
+
+**The merge is upstream, in `fitactivity`, and nothing below the decode call knows it
+happened.** That is the whole design. `Merge` rebases each file's cumulative
+`Sample.Distance` onto the running total (it restarts at zero in every FIT file), sums the
+session totals, unions the `timer` events, and hands back an ordinary `Track`. No panel,
+no model, no timeline learns that an activity came from more than one file, which is why
+this cost one line in `runRender` rather than a flag threaded through the render path. It
+also belongs upstream because it is FIT semantics — the per-file distance restart is the
+kind of knowledge `CLAUDE.md` forbids this repository from holding a second copy of.
+
+Three properties fall out of the existing design rather than being built:
+
+- **The gap between two files is a pause.** A file's closing `stop_all` pairs with the
+  next file's opening `start` in `buildPauses` exactly as an intermediate pause does, so
+  the stretch where no watch was running freezes (or cuts, under `--pauses skip`) with no
+  special case. `TotalTimer` is the sum of the files' own moving time and excludes it.
+- **The gap is also a data gap.** `AtWithGap` already reports absent across it, so every
+  panel's placeholder branch fires there without being told anything.
+- **The distance across the gap is not invented.** Ground covered between two recordings
+  was never measured. The merged distance is the sum of what the devices recorded, which
+  is the only figure the files support.
+
+**Ordering is by the start time inside each file, never by argument order**, because
+argument order is whatever a shell glob produced: `fitdash *.fit` hands over
+`cooldown.fit race.fit warmup.fit`. The same rule names the output — the video is named
+after the file the activity *starts* in (`Track.SourcePath`, which `Merge` sets to the
+earliest source), so that glob does not produce `cooldown.mp4` for a run that began with
+the warm-up. `Track.Sources` carries the full ordered list for the summary and for
+`inspect`.
+
+### Overlapping files are refused
+
+Two activities covering the same stretch of time — the same file twice, or two devices
+recording one run — are rejected, naming both. This is the "absence is not zero" argument
+in a different dress: concatenating them double-counts that ground, and a run reporting
+24km instead of 12km has **no visible symptom in a rendered frame**. There is no pixel a
+viewer could inspect to catch it, nothing downstream can recover the original, and the
+result looks exactly as convincing as a correct one. A refusal costs the user one message.
+
+Merging remains the wrong tool for that job in any case: combining two simultaneous
+recordings means reconciling two sensors' disagreeing readings per instant, which is a
+different operation with different questions (which device wins — per field, or per
+file?).
+
+The test is *sample* coverage, not the window `BuildTimerModel` resolves, which can run
+past the last record when a session's totals include a trailing pause. It is the samples
+that carry the metrics a merge would double-count, so two files whose windows touch but
+whose records do not are a merge that works.
+
+### The merge is announced
+
+`writeMergeSummary` names every file, in time order, and reports the total unrecorded gap
+before any figure derived from the merge is printed. A single file prints nothing — the
+path is on the command line already. Several files are different: every number in the
+summary describes an activity that exists nowhere on disk, and this project renders
+personal data and does not make that kind of decision quietly.
+
 ## The panel contract: three phases
 
 ```go
@@ -1836,5 +1900,5 @@ Map imagery, 3D and TCX/GPX input are future work. What the design must not fore
 - **3D** is a different projection and almost certainly a different panel. A panel already
   owns its box and its projection, so there is nothing to do now.
 - **GPX/TCX input** is a fitactivity change, not a fitdash one. The requirement this design
-  imposes: nothing outside the single `Decode` call may assume the input was FIT. No panel
-  reads the source path or its extension.
+  imposes: nothing outside the single `DecodeAll` call may assume the input was FIT. No
+  panel reads the source path or its extension.

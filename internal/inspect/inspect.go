@@ -73,8 +73,18 @@ func (m Metric) Coverage(total int) float64 {
 
 // Report is the whole answer for one activity.
 type Report struct {
-	// Path is the file the report describes.
+	// Path is the file the report describes -- the FIRST one, when several
+	// were merged. Paths is all of them.
 	Path string
+	// Paths is every activity file that went into this report, in time
+	// order: one entry normally, several when a workout recorded in pieces
+	// was merged into a single activity.
+	//
+	// The whole report describes the MERGED activity, so a reader checking a
+	// coverage figure against their own expectation needs to know which files
+	// produced it. A single Path could not say that without becoming a
+	// joined string that is no longer a path.
+	Paths []string
 	// Sport is the FIT session's sport, or "" when the file did not say. An
 	// empty sport is normal for some devices and is NOT an error.
 	Sport string
@@ -118,7 +128,7 @@ type Report struct {
 
 // Build computes the report for track.
 func Build(track *fitactivity.Track) Report {
-	r := Report{Path: track.SourcePath, Sport: track.Sport, Samples: len(track.Samples)}
+	r := Report{Path: track.SourcePath, Paths: track.Sources, Sport: track.Sport, Samples: len(track.Samples)}
 
 	// Start, End, Elapsed and Active all come from the timer model, which owns
 	// the question of when an activity ran.

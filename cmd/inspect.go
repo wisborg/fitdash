@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,7 +15,7 @@ import (
 )
 
 var inspectCmd = &cobra.Command{
-	Use:   "inspect ACTIVITY.fit",
+	Use:   "inspect ACTIVITY.fit [ACTIVITY.fit ...]",
 	Short: "Report what metrics an activity actually contains",
 	Long: `inspect reports, metric by metric, what a recorded activity contains and how
 much of it: the fraction of samples carrying each metric and the range it spans.
@@ -29,15 +28,24 @@ the answer worth having.
 
 Metrics with no coverage at all are still listed. "Does this file have power?"
 is what a reader is asking, and a missing row cannot be told apart from a
-metric fitdash forgot about.`,
-	Args: cobra.ExactArgs(1),
+metric fitdash forgot about.
+
+Several activity files are merged and reported as one activity, exactly as the
+render merges them -- so what this prints is what the dashboard will have to
+draw, which is the whole point of the report.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: runInspect,
 }
 
 func init() { root.AddCommand(inspectCmd) }
 
-func runInspect(_ *cobra.Command, args []string) error {
-	track, err := fitactivity.Decode(args[0])
+func runInspect(cmd *cobra.Command, args []string) error {
+	// The same DecodeAll the render calls, rather than a decode of args[0]:
+	// this report is the single source of truth for whether an activity
+	// carries a metric, so it has to be built from the same Track the render
+	// builds its panels from. Reporting on one file of a merge would answer
+	// a question nobody asked.
+	track, err := fitactivity.DecodeAll(args...)
 	if err != nil {
 		return fmt.Errorf("inspect: %w", err)
 	}
@@ -52,8 +60,9 @@ func runInspect(_ *cobra.Command, args []string) error {
 	// metrics whose first rows are "sport" and "elapsed" has two different
 	// kinds of thing in one column, and the CSV a reader computes with would
 	// carry them too.
+	out := cmd.OutOrStdout()
 	if format.Format == output.Text {
-		writeSummary(os.Stdout, rep)
+		writeSummary(out, rep)
 	}
 
 	// Two representations, built independently: the object carries the whole
@@ -61,7 +70,7 @@ func runInspect(_ *cobra.Command, args []string) error {
 	// terminal. Deriving one from the other forces the richer shape through
 	// the poorer one and makes both worse -- see github.com/wisborg/output.
 	doc := output.Document{Data: rep, Table: inspectTable(rep)}
-	if err := doc.Write(os.Stdout, format.Format); err != nil {
+	if err := doc.Write(out, format.Format); err != nil {
 		return fmt.Errorf("inspect: writing report: %w", err)
 	}
 	return nil
@@ -81,7 +90,19 @@ func writeSummary(w io.Writer, rep inspect.Report) {
 	if sport == "" {
 		sport = "(not recorded)"
 	}
-	fmt.Fprintf(w, "%s\n", rep.Path)
+	// Every file on its own line rather than one joined line: these are
+	// paths, and a reader who has to check one against their filesystem
+	// should be able to select it without trimming a separator off the end.
+	// The count is stated too -- a merge of three files reporting one
+	// activity is the surprising part, not the paths themselves.
+	if len(rep.Paths) > 1 {
+		fmt.Fprintf(w, "%d files merged into one activity:\n", len(rep.Paths))
+		for _, path := range rep.Paths {
+			fmt.Fprintf(w, "  %s\n", path)
+		}
+	} else {
+		fmt.Fprintf(w, "%s\n", rep.Path)
+	}
 	fmt.Fprintf(w, "sport    %s\n", sport)
 	fmt.Fprintf(w, "samples  %d\n", rep.Samples)
 	if rep.Samples > 0 {

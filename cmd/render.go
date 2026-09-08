@@ -337,11 +337,18 @@ func runRender(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	activity := args[0]
-	track, err := fitactivity.Decode(activity)
+	// DecodeAll, not Decode, and unconditionally rather than behind a check
+	// on len(args): one file is decoded and returned unchanged, so every
+	// render below this line works on a single Track regardless of how many
+	// files produced it. Nothing downstream -- no panel, no model, no
+	// timeline -- learns that an activity was assembled from several files,
+	// which is what keeps this feature one line here instead of a flag
+	// threaded through the render path.
+	track, err := fitactivity.DecodeAll(args...)
 	if err != nil {
 		return fmt.Errorf("render: %w", err)
 	}
+	activity := track.SourcePath
 
 	timer := fitactivity.BuildTimerModel(track)
 	speedup, err := resolveSpeedup(cmd, timer, pauses)
@@ -730,6 +737,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 		return
 	}
 	out := cmd.ErrOrStderr()
+	writeMergeSummary(cmd, in.track)
 	// Both durations, always. A user who asked for a three-minute video wants
 	// to see that they got three minutes AND that it still covers the whole
 	// activity; printing one of them leaves the other to be guessed at.
@@ -753,6 +761,47 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	markersOnProfile := markersAbsorbedIntoProfile(r)
 	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
 	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
+}
+
+// writeMergeSummary names the files a merged activity came from, and how much
+// time separates them, before any figure derived from the merge is printed.
+//
+// A single file prints nothing: the path is already on the command line and
+// the video is named after it, so restating it is noise. Several files are a
+// different matter -- every number below this line (total distance, elapsed
+// time, the whole activity's span) describes an activity that exists nowhere
+// on disk, and the reader has to be able to see what was combined to produce
+// it. This project renders personal data and declines to make that kind of
+// decision quietly.
+//
+// The gaps are reported because they are the part a reader will not predict.
+// fitdash never fills them in: the ground covered between two recordings was
+// never measured, so the merged distance omits it, and the gap becomes a pause
+// that the video freezes through (or cuts, under --pauses skip). A 40-minute
+// hole between two files is worth seeing before watching the render, not
+// after.
+func writeMergeSummary(cmd *cobra.Command, track *fitactivity.Track) {
+	if renderOpts.quiet || track == nil || len(track.Sources) < 2 {
+		return
+	}
+	out := cmd.ErrOrStderr()
+	fmt.Fprintf(out, "merged %d files into one activity, ordered by their own start times:\n", len(track.Sources))
+	for _, path := range track.Sources {
+		fmt.Fprintf(out, "  %s\n", path)
+	}
+	// Read off the merged track's pauses rather than re-deriving the seams
+	// from the files: a gap between two recordings resolves as a pause like
+	// any other, and this must report the same intervals the timeline
+	// freezes through. Recomputing them here would be free to disagree with
+	// what the render actually did.
+	if pauses := fitactivity.BuildTimerModel(track).Pauses(); len(pauses) > 0 {
+		var total time.Duration
+		for _, p := range pauses {
+			total += p.End.Sub(p.Start)
+		}
+		fmt.Fprintf(out, "  %s not recorded across %d pause%s (gaps between files, and any the watch was stopped for) -- frozen through, and no distance added\n",
+			panel.FormatClock(total), len(pauses), plural(len(pauses)))
+	}
 }
 
 // writeGaugeSummary reports, for a render styled GaugeStyleTrack or
@@ -1478,6 +1527,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	for _, p := range sink.Written() {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
+	writeMergeSummary(cmd, in.track)
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)

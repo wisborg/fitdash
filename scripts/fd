@@ -107,22 +107,30 @@ render)
 	# hardcoded: this script ships in the public repo and must not name a
 	# path to somebody's real recording.
 	[ -f .scratch/env ] && . ./.scratch/env
-	# The activity is $1 only when $1 is actually a path. A leading dash
-	# means the caller gave flags and expects FD_FIT to supply the file --
-	# without this test, `fd frames --theme light` silently treats
-	# "--theme" as the activity and fails on a file that does not exist.
+	# The activities are however many leading paths were given, and they are
+	# passed straight through: a workout split across several files -- a race
+	# recorded separately inside a long run -- renders as one video, so this
+	# takes one or many rather than exactly one.
+	#
+	# "$@" is forwarded untouched rather than picked apart into a variable,
+	# which is what keeps a path with spaces in it working -- every recording
+	# exported under its own name has them. Flags may be interleaved with the
+	# paths; cobra sorts them out.
+	#
+	# A leading dash (or nothing at all) means the caller gave only flags and
+	# expects FD_FIT to supply the activity, so it is prepended. Without that
+	# test, `fd render --theme light` would treat "--theme" as the activity
+	# and fail on a file that does not exist.
 	case ${1:-} in
-	'' | -*) fit=${FD_FIT:-} ;;
-	*)
-		fit=$1
-		shift
+	'' | -*)
+		if [ -z "${FD_FIT:-}" ]; then
+			echo "usage: fd render ACTIVITY.fit [ACTIVITY.fit ...] [flags]   (or set FD_FIT in .scratch/env)" >&2
+			report render 2
+		fi
+		set -- "$FD_FIT" "$@"
 		;;
 	esac
-	if [ -z "$fit" ]; then
-		echo "usage: fd render ACTIVITY.fit [flags]   (or set FD_FIT in .scratch/env)" >&2
-		report render 2
-	fi
-	go run . "$fit" --output-dir .scratch "$@"
+	go run . --output-dir .scratch "$@"
 	report render $?
 	;;
 
@@ -130,22 +138,30 @@ frames)
 	# Render single frames to PNG for visual inspection, without encoding a
 	# whole video. The fast loop for a panel change.
 	[ -f .scratch/env ] && . ./.scratch/env
-	# The activity is $1 only when $1 is actually a path. A leading dash
-	# means the caller gave flags and expects FD_FIT to supply the file --
-	# without this test, `fd frames --theme light` silently treats
-	# "--theme" as the activity and fails on a file that does not exist.
+	# The activities are however many leading paths were given, and they are
+	# passed straight through: a workout split across several files -- a race
+	# recorded separately inside a long run -- renders as one video, so this
+	# takes one or many rather than exactly one.
+	#
+	# "$@" is forwarded untouched rather than picked apart into a variable,
+	# which is what keeps a path with spaces in it working -- every recording
+	# exported under its own name has them. Flags may be interleaved with the
+	# paths; cobra sorts them out.
+	#
+	# A leading dash (or nothing at all) means the caller gave only flags and
+	# expects FD_FIT to supply the activity, so it is prepended. Without that
+	# test, `fd frames --theme light` would treat "--theme" as the activity
+	# and fail on a file that does not exist.
 	case ${1:-} in
-	'' | -*) fit=${FD_FIT:-} ;;
-	*)
-		fit=$1
-		shift
+	'' | -*)
+		if [ -z "${FD_FIT:-}" ]; then
+			echo "usage: fd frames ACTIVITY.fit [ACTIVITY.fit ...] [flags]   (or set FD_FIT in .scratch/env)" >&2
+			report frames 2
+		fi
+		set -- "$FD_FIT" "$@"
 		;;
 	esac
-	if [ -z "$fit" ]; then
-		echo "usage: fd frames ACTIVITY.fit [flags]   (or set FD_FIT in .scratch/env)" >&2
-		report frames 2
-	fi
-	go run . "$fit" --frames --output-dir .scratch "$@"
+	go run . --frames --output-dir .scratch "$@"
 	report frames $?
 	;;
 

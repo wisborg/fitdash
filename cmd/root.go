@@ -27,7 +27,7 @@ type formatFlag struct{ output.Format }
 func (formatFlag) Type() string { return "format" }
 
 var root = &cobra.Command{
-	Use:   "fitdash ACTIVITY.fit",
+	Use:   "fitdash ACTIVITY.fit [ACTIVITY.fit ...]",
 	Short: "Render a recorded exercise as a dashboard video",
 	Long: `fitdash reads a Garmin FIT activity and renders it as a dashboard video:
 the metrics animate as the activity progresses.
@@ -41,6 +41,14 @@ A rendered dashboard is a video of where you were, minute by minute, and what
 your body was doing. It is yours to publish or not -- fitdash writes it to a
 file, writes no location metadata into it, and does nothing else with it.
 
+Several activity files render as ONE video when a workout was recorded in
+pieces -- a race started as its own activity partway through a long run. They
+are ordered by the start time inside each file, never by the order they are
+typed, and the stretch between two recordings becomes a pause like any other
+the watch was stopped for. Two files covering the same stretch of time are
+refused rather than merged, because concatenating them would count that
+distance twice and no frame of the result would look wrong.
+
 Note that an activity file named exactly like a subcommand -- "inspect" -- is
 resolved as the subcommand. Write ./inspect to render it.`,
 	// Setting Version is what makes cobra add --version at all, and it lives
@@ -49,12 +57,12 @@ resolved as the subcommand. Write ./inspect to render it.`,
 	// without going through Execute, gets the same command the user does.
 	//
 	// Cobra answers --version BEFORE it validates Args, which is what makes
-	// the flag usable at all on a root command declaring ExactArgs(1): the
-	// render needs an activity and `fitdash --version` has none.
+	// the flag usable at all on a root command declaring MinimumNArgs(1):
+	// the render needs an activity and `fitdash --version` has none.
 	// TestVersionFlag_NeedsNoActivity pins that ordering, because it is
 	// cobra's behaviour rather than a guarantee this package makes.
 	Version:       version(),
-	Args:          cobra.ExactArgs(1),
+	Args:          cobra.MinimumNArgs(1),
 	RunE:          runRender,
 	SilenceUsage:  true,
 	SilenceErrors: true,
