@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ type renderOptions struct {
 	frameAt             []time.Duration
 	frameAtVideo        []time.Duration
 	quiet               bool
+	dryRun              bool
 	power               string
 	layout              string
 	bottomBand          string
@@ -66,6 +68,13 @@ func validateRenderOptions() error {
 	// the flag anyone intended.
 	if renderOpts.frames && renderOpts.output != "" {
 		return fmt.Errorf("render: -o names a single file and --frames writes several; use --output-dir")
+	}
+	// --dry-run's entire output IS the summary, and --quiet suppresses the
+	// summary. Together they resolve the whole render and then print nothing
+	// at all, which is not a reading of either flag anyone intended -- the
+	// same class of contradiction the -o/--frames check above refuses.
+	if renderOpts.dryRun && renderOpts.quiet {
+		return fmt.Errorf("render: --dry-run prints the summary and --quiet suppresses it; pass one")
 	}
 	// 0 is x264's spelling of lossless and this program's spelling of "unset",
 	// and it cannot be both. Passing it through silently produced the default
@@ -203,6 +212,10 @@ func bindRenderFlags(c *cobra.Command) {
 	f.DurationSliceVar(&renderOpts.frameAtVideo, "frame-at-video", nil, "with --frames, also write the frame at this offset into the rendered VIDEO's own clock, rather than the activity's (repeatable, e.g. 9.8s) -- "+
 		"what checking a highlight's entrance or exit transition needs, since --frame-at cannot land a frame a fixed distance from a boundary once the render runs at more than one rate")
 	f.BoolVar(&renderOpts.quiet, "quiet", false, "suppress the progress line and the summary")
+	f.BoolVar(&renderOpts.dryRun, "dry-run", false,
+		"resolve everything and print the summary, but write no video and no frames -- the fast way to check "+
+			"a --label or --highlight lands where you meant before paying for an encode, and to read off where "+
+			"each file of a merged activity starts")
 	f.StringVar(&renderOpts.layout, "layout", panel.LayoutAuto,
 		"panel arrangement -- \"auto\" (default: a column for a portrait frame, a row-based one otherwise), "+
 			"\"landscape\", or \"portrait\". Naming one overrides the frame's shape, which is occasionally what you want "+
@@ -337,14 +350,14 @@ func runRender(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// DecodeAll, not Decode, and unconditionally rather than behind a check
-	// on len(args): one file is decoded and returned unchanged, so every
-	// render below this line works on a single Track regardless of how many
-	// files produced it. Nothing downstream -- no panel, no model, no
-	// timeline -- learns that an activity was assembled from several files,
-	// which is what keeps this feature one line here instead of a flag
-	// threaded through the render path.
-	track, err := fitactivity.DecodeAll(args...)
+	// One Track regardless of how many files produced it, and unconditionally
+	// rather than behind a check on len(args). Nothing downstream -- no
+	// panel, no model, no timeline -- learns that an activity was assembled
+	// from several files, which is what keeps this feature one call here
+	// instead of a flag threaded through the render path. sources is the one
+	// thing that does not survive the merge and is wanted anyway: where each
+	// file begins, for the summary. See decodeActivities.
+	track, sources, err := decodeActivities(args)
 	if err != nil {
 		return fmt.Errorf("render: %w", err)
 	}
@@ -443,10 +456,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 
 	in := renderInputs{
-		track: track, tl: timeline, w: w, h: h,
+		track: track, sources: sources, tl: timeline, w: w, h: h,
 		layoutName: layout.Name, theme: theme, smoothing: smoothing,
 		highlights: highlights, labels: labels,
 		elevation: rctx.Elevation, elevationSource: elevSource,
+	}
+	if renderOpts.dryRun {
+		return runDryRun(cmd, r, activity, rctx, in)
 	}
 	if renderOpts.frames {
 		return runFrames(cmd, r, rctx, in)
@@ -479,6 +495,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 // business being called with anything but runRender's own resolved values.
 type renderInputs struct {
 	track      *fitactivity.Track
+	sources    []activitySource
 	tl         panel.Timeline
 	w, h       int
 	layoutName string
@@ -494,6 +511,84 @@ type renderInputs struct {
 	// as this bundle.
 	elevation       *fitactivity.ElevationModel
 	elevationSource string
+}
+
+// plannedOutputPath is where a render WOULD write, with no side effect: it
+// creates no directory and does not care whether the file already exists.
+//
+// Split out of outputPath for --dry-run, which has to name the destination
+// without touching the filesystem -- a dry run that created an --output-dir,
+// or that failed because the file it was never going to write already
+// existed, would be doing something. Both callers derive the name here so the
+// path a dry run reports is the path a real render then writes.
+func plannedOutputPath(activity, explicit, dir, ext string) string {
+	if explicit != "" {
+		return explicit
+	}
+	stem := strings.TrimSuffix(filepath.Base(activity), filepath.Ext(activity))
+	return filepath.Join(dir, stem+ext)
+}
+
+// runDryRun resolves the whole render and reports it, without writing a video
+// or a single frame.
+//
+// Everything that decides what the output looks like has already happened by
+// the time this is called: the activity is decoded and merged, the timeline
+// and its highlights and labels are resolved, and render.New has run every
+// panel's Prepare -- which is what settles the layout and what each panel
+// declined to draw. So the summary a dry run prints is not a prediction, it
+// is the same summary a real render prints, produced by the same functions
+// from the same values. Only the frame loop and the encoder are skipped.
+//
+// That is what makes this useful for authoring a --label or a --highlight:
+// the refusals (an instant past the end of the activity, two labels at the
+// same moment, a marker with no distance to sit at on the profile) all fire
+// during resolution, so they are reported here in a second rather than after
+// an encode.
+//
+// Everything goes to stderr, including the destination. runVideo puts the
+// output path on stdout so it can be piped into the next command, and a dry
+// run must not do that: the file is not there, and a script reading it would
+// be handed a path to something that was never written.
+func runDryRun(cmd *cobra.Command, r *render.Renderer, activity string, ctx *panel.Context, in renderInputs) error {
+	out := cmd.ErrOrStderr()
+	fmt.Fprintf(out, "dry run: resolved the whole render; no video and no frames were written\n")
+
+	if renderOpts.frames {
+		indices, err := frameIndices(in.tl, r.LastFrameWithSample(), renderOpts.frameAt, renderOpts.frameAtVideo, in.highlights, in.labels)
+		if err != nil {
+			return err
+		}
+		// Sorted, because the real run reports what the sink actually
+		// wrote and the sink writes as the frame loop passes each index --
+		// ascending. frameIndices returns the --frame-at/--frame-at-video
+		// extras after the evenly spaced ones, so listing it unsorted would
+		// have a dry run and a real run name the same files in different
+		// orders, for no reason a reader could work out.
+		sorted := append([]int(nil), indices...)
+		sort.Ints(sorted)
+		fmt.Fprintf(out, "would write %d frame%s to %s:\n", len(sorted), plural(len(sorted)), renderOpts.outputDir)
+		for _, i := range sorted {
+			// encode.FrameName, not a format string spelled again here:
+			// a dry run naming files the sink would not create is worse
+			// than one that says nothing.
+			fmt.Fprintf(out, "  %s\n", encode.FrameName(renderOpts.outputDir, i))
+		}
+	} else {
+		path := plannedOutputPath(activity, renderOpts.output, renderOpts.outputDir, ".mp4")
+		fmt.Fprintf(out, "would write %s\n", path)
+		// Reported, not refused. A real render fails on an existing output
+		// (see outputPath), and a dry run whose whole job is to say what
+		// would happen should say that this is what would happen -- rather
+		// than either erroring, which stops the summary the user came for,
+		// or staying silent about a render that cannot succeed.
+		if _, err := os.Stat(path); err == nil {
+			fmt.Fprintf(out, "  note: %s already exists; a real render would refuse it and ask for -o\n", path)
+		}
+	}
+
+	writeRenderSummary(cmd, r, ctx, in)
+	return nil
 }
 
 // runVideo encodes the whole render to a video file.
@@ -737,7 +832,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 		return
 	}
 	out := cmd.ErrOrStderr()
-	writeMergeSummary(cmd, in.track)
+	writeMergeSummary(cmd, in.track, in.sources)
 	// Both durations, always. A user who asked for a three-minute video wants
 	// to see that they got three minutes AND that it still covers the whole
 	// activity; printing one of them leaves the other to be guessed at.
@@ -761,47 +856,6 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	markersOnProfile := markersAbsorbedIntoProfile(r)
 	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
 	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
-}
-
-// writeMergeSummary names the files a merged activity came from, and how much
-// time separates them, before any figure derived from the merge is printed.
-//
-// A single file prints nothing: the path is already on the command line and
-// the video is named after it, so restating it is noise. Several files are a
-// different matter -- every number below this line (total distance, elapsed
-// time, the whole activity's span) describes an activity that exists nowhere
-// on disk, and the reader has to be able to see what was combined to produce
-// it. This project renders personal data and declines to make that kind of
-// decision quietly.
-//
-// The gaps are reported because they are the part a reader will not predict.
-// fitdash never fills them in: the ground covered between two recordings was
-// never measured, so the merged distance omits it, and the gap becomes a pause
-// that the video freezes through (or cuts, under --pauses skip). A 40-minute
-// hole between two files is worth seeing before watching the render, not
-// after.
-func writeMergeSummary(cmd *cobra.Command, track *fitactivity.Track) {
-	if renderOpts.quiet || track == nil || len(track.Sources) < 2 {
-		return
-	}
-	out := cmd.ErrOrStderr()
-	fmt.Fprintf(out, "merged %d files into one activity, ordered by their own start times:\n", len(track.Sources))
-	for _, path := range track.Sources {
-		fmt.Fprintf(out, "  %s\n", path)
-	}
-	// Read off the merged track's pauses rather than re-deriving the seams
-	// from the files: a gap between two recordings resolves as a pause like
-	// any other, and this must report the same intervals the timeline
-	// freezes through. Recomputing them here would be free to disagree with
-	// what the render actually did.
-	if pauses := fitactivity.BuildTimerModel(track).Pauses(); len(pauses) > 0 {
-		var total time.Duration
-		for _, p := range pauses {
-			total += p.End.Sub(p.Start)
-		}
-		fmt.Fprintf(out, "  %s not recorded across %d pause%s (gaps between files, and any the watch was stopped for) -- frozen through, and no distance added\n",
-			panel.FormatClock(total), len(pauses), plural(len(pauses)))
-	}
 }
 
 // writeGaugeSummary reports, for a render styled GaugeStyleTrack or
@@ -1527,7 +1581,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	for _, p := range sink.Written() {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
-	writeMergeSummary(cmd, in.track)
+	writeMergeSummary(cmd, in.track, in.sources)
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)
@@ -1683,11 +1737,7 @@ func parseSize(s string) (w, h int, err error) {
 // message names the flag that resolves it, because "file exists" on its own
 // leaves the user guessing.
 func outputPath(activity, explicit, dir, ext string) (string, error) {
-	out := explicit
-	if out == "" {
-		stem := strings.TrimSuffix(filepath.Base(activity), filepath.Ext(activity))
-		out = filepath.Join(dir, stem+ext)
-	}
+	out := plannedOutputPath(activity, explicit, dir, ext)
 	if d := filepath.Dir(out); d != "" {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return "", fmt.Errorf("render: creating %s: %w", d, err)

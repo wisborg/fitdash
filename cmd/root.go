@@ -45,7 +45,10 @@ Several activity files render as ONE video when a workout was recorded in
 pieces -- a race started as its own activity partway through a long run. They
 are ordered by the start time inside each file, never by the order they are
 typed, and the stretch between two recordings becomes a pause like any other
-the watch was stopped for. Two files covering the same stretch of time are
+the watch was stopped for. The summary reports where each file begins in the
+merged activity, as a duration --label and --highlight will accept, so a leg
+can be marked up without first rendering the whole thing to find it. Two files
+covering the same stretch of time are
 refused rather than merged, because concatenating them would count that
 distance twice and no frame of the result would look wrong.
 

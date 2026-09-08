@@ -2,7 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
+	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +15,8 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/fittest"
+
+	"github.com/wisborg/fitdash/internal/encode"
 )
 
 // mergeBase is an arbitrary round instant for the fixtures below to hang off.
@@ -243,5 +249,212 @@ func TestOutputPath_NamesAMergeAfterItsEarliestFile(t *testing.T) {
 	}
 	if got, want := filepath.Base(out), "warmup.mp4"; got != want {
 		t.Errorf("output named %q, want %q (the file the activity starts in)", got, want)
+	}
+}
+
+// TestDecodeActivities_ReportsWhereEachFileStarts pins the offsets the merge
+// summary prints, and the reason they exist: once five files are one
+// timeline, "the race" is a stretch some way into it rather than a file, and
+// marking it up with --highlight or --label means knowing where each leg
+// begins.
+//
+// The files are passed shuffled, because the offsets have to come out in the
+// merged activity's order rather than the caller's.
+func TestDecodeActivities_ReportsWhereEachFileStarts(t *testing.T) {
+	dir := t.TempDir()
+	warmup := mergePiece(t, dir, "warmup.fit", mergeBase)
+	race := mergePiece(t, dir, "race.fit", mergeBase.Add(10*time.Minute))
+	cooldown := mergePiece(t, dir, "cooldown.fit", mergeBase.Add(20*time.Minute))
+
+	_, sources, err := decodeActivities([]string{cooldown, warmup, race})
+	if err != nil {
+		t.Fatalf("decodeActivities: %v", err)
+	}
+
+	want := []activitySource{
+		{Path: warmup, Offset: 0},
+		{Path: race, Offset: 10 * time.Minute},
+		{Path: cooldown, Offset: 20 * time.Minute},
+	}
+	if !reflect.DeepEqual(sources, want) {
+		t.Errorf("sources = %v, want %v", sources, want)
+	}
+}
+
+// TestDecodeActivities_OffsetsArePastableIntoTheFlags is the property that
+// makes the offsets worth printing at all. A summary that reported "0:19:43"
+// would still have to be converted by hand before --label at= would take it,
+// which is exactly the work this is meant to remove -- so the rendered line
+// has to parse as the Go duration those flags accept.
+func TestDecodeActivities_OffsetsArePastableIntoTheFlags(t *testing.T) {
+	dir := t.TempDir()
+	first := mergePiece(t, dir, "first.fit", mergeBase)
+	second := mergePiece(t, dir, "second.fit", mergeBase.Add(19*time.Minute+43*time.Second))
+
+	_, sources, err := decodeActivities([]string{first, second})
+	if err != nil {
+		t.Fatalf("decodeActivities: %v", err)
+	}
+
+	lines := mergedSourceLines(sources)
+	if len(lines) != 2 {
+		t.Fatalf("mergedSourceLines returned %d lines, want 2", len(lines))
+	}
+	if !strings.Contains(lines[1], "19m43s") {
+		t.Errorf("line %q does not carry the offset as a Go duration", lines[1])
+	}
+	// The literal a user would copy, parsed the way the flag parses it.
+	for _, line := range lines {
+		offset := strings.Fields(line)[0]
+		if _, err := time.ParseDuration(offset); err != nil {
+			t.Errorf("offset %q from %q is not a duration --label at= would accept: %v", offset, line, err)
+		}
+	}
+}
+
+// TestRunRender_DryRunWritesNothingButReportsEverything covers the flag's two
+// halves together, because either alone would pass while the feature was
+// broken: a dry run that printed the summary but still encoded, or one that
+// wrote nothing and reported nothing, would each satisfy half this test.
+func TestRunRender_DryRunWritesNothingButReportsEverything(t *testing.T) {
+	dir := t.TempDir()
+	first := mergePiece(t, dir, "first.fit", mergeBase)
+	second := mergePiece(t, dir, "second.fit", mergeBase.Add(10*time.Minute))
+	outDir := t.TempDir()
+
+	stdout, stderr, err := runCLI(t, runRender, true,
+		"--dry-run", "--output-dir", outDir, "--size", "640x360", "--video-duration", "10s",
+		"--label", "at=10m,name=Second leg",
+		first, second)
+	if err != nil {
+		t.Fatalf("dry run: %v\nstderr:\n%s", err, stderr)
+	}
+
+	// Nothing written, and nothing on stdout: runVideo puts the output path
+	// there so it can be piped, and a dry run must not hand a script a path
+	// to a file that was never created.
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatalf("reading output dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("dry run wrote %d file(s) into the output directory, want none: %v", len(entries), entries)
+	}
+	if stdout != "" {
+		t.Errorf("dry run wrote to stdout, which is where a real render puts the path it created: %q", stdout)
+	}
+
+	// It says so, names the destination, and still produces the summary the
+	// flag exists to show -- including the label, which is the thing being
+	// checked in the workflow this serves.
+	for _, want := range []string{
+		"dry run",
+		"would write",
+		filepath.Join(outDir, "first.mp4"),
+		"merged 2 files into one activity",
+		"panels:",
+		"Second leg",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("dry run summary is missing %q:\n%s", want, stderr)
+		}
+	}
+}
+
+// TestRunRender_DryRunRefusesQuiet pins the contradiction. --dry-run's entire
+// output is the summary and --quiet suppresses the summary, so together they
+// resolve the whole render and then print nothing at all.
+func TestRunRender_DryRunRefusesQuiet(t *testing.T) {
+	path := mergePiece(t, t.TempDir(), "activity.fit", mergeBase)
+
+	_, _, err := runCLI(t, runRender, true, "--dry-run", "--quiet", "--output-dir", t.TempDir(), path)
+	if err == nil {
+		t.Fatal("accepted --dry-run with --quiet")
+	}
+	if !strings.Contains(err.Error(), "--dry-run") || !strings.Contains(err.Error(), "--quiet") {
+		t.Errorf("error should name both flags; got: %v", err)
+	}
+}
+
+// TestRunRender_DryRunHasNoFilesystemSideEffects pins that a dry run does not
+// quietly do the parts of the job that are not the encode. outputPath creates
+// the output directory and refuses an existing file; plannedOutputPath exists
+// precisely so a dry run does neither.
+func TestRunRender_DryRunHasNoFilesystemSideEffects(t *testing.T) {
+	path := mergePiece(t, t.TempDir(), "activity.fit", mergeBase)
+	base := t.TempDir()
+	missing := filepath.Join(base, "not", "created", "yet")
+
+	_, stderr, err := runCLI(t, runRender, true,
+		"--dry-run", "--output-dir", missing, "--size", "640x360", "--video-duration", "10s", path)
+	if err != nil {
+		t.Fatalf("dry run into a missing directory: %v\nstderr:\n%s", err, stderr)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Errorf("dry run created %s; it must not touch the filesystem", missing)
+	}
+
+	t.Run("an existing destination is reported, not refused", func(t *testing.T) {
+		outDir := t.TempDir()
+		existing := filepath.Join(outDir, "activity.mp4")
+		if err := os.WriteFile(existing, []byte("not a video"), 0o644); err != nil {
+			t.Fatalf("seeding an existing output: %v", err)
+		}
+
+		_, stderr, err := runCLI(t, runRender, true,
+			"--dry-run", "--output-dir", outDir, "--size", "640x360", "--video-duration", "10s", path)
+		// Refusing here would stop the summary the user came for, and the
+		// clash is exactly the kind of thing a dry run should report.
+		if err != nil {
+			t.Fatalf("dry run refused an existing destination: %v", err)
+		}
+		if !strings.Contains(stderr, "already exists") {
+			t.Errorf("dry run did not report the existing destination:\n%s", stderr)
+		}
+		if got, err := os.ReadFile(existing); err != nil || string(got) != "not a video" {
+			t.Errorf("dry run overwrote the existing file (read %q, %v)", got, err)
+		}
+	})
+}
+
+// TestRunRender_DryRunFramesNamesTheFilesTheSinkWouldWrite pins that the
+// listing agrees with the real thing on both the names and their order. The
+// names come from encode.FrameName, the same function the sink uses, and the
+// order is ascending because that is the order the sink writes them in --
+// frameIndices returns the --frame-at extras last.
+func TestRunRender_DryRunFramesNamesTheFilesTheSinkWouldWrite(t *testing.T) {
+	path := mergePiece(t, t.TempDir(), "activity.fit", mergeBase)
+	outDir := t.TempDir()
+
+	_, stderr, err := runCLI(t, runRender, true,
+		"--dry-run", "--frames", "--output-dir", outDir, "--size", "640x360",
+		"--video-duration", "10s", "--frame-at", "1m", path)
+	if err != nil {
+		t.Fatalf("dry run with --frames: %v\nstderr:\n%s", err, stderr)
+	}
+
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatalf("reading output dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("dry run wrote %d frame(s), want none", len(entries))
+	}
+	if !strings.Contains(stderr, encode.FrameName(outDir, 0)) {
+		t.Errorf("frame listing does not name the file the sink would write:\n%s", stderr)
+	}
+
+	var listed []int
+	for _, line := range strings.Split(stderr, "\n") {
+		var i int
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), filepath.Join(outDir, "frame-%06d.png"), &i); err == nil {
+			listed = append(listed, i)
+		}
+	}
+	if len(listed) < 2 {
+		t.Fatalf("expected several frames listed, got %v:\n%s", listed, stderr)
+	}
+	if !sort.IntsAreSorted(listed) {
+		t.Errorf("frames listed %v, want ascending -- the order the sink writes them", listed)
 	}
 }

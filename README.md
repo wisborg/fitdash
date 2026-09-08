@@ -59,13 +59,44 @@ so `fitdash *.fit` works and the video is named after the file the activity *sta
 The stretch between two recordings becomes a pause like any the watch was stopped for —
 frozen through by default, cut by `--pauses skip` — and no distance is added across it,
 because the ground covered while nothing was recording was never measured. The summary
-names every file that went in and reports the total unrecorded gap. `fitdash inspect`
-takes the same list and reports the merged activity.
+names every file that went in, **where each one starts in the merged activity**, and the
+total unrecorded gap. `fitdash inspect` takes the same list and reports the merged activity.
+
+```
+merged 5 files into one activity, ordered by their own start times; each
+offset is into the activity's elapsed time, ready for --label at= or --highlight from=:
+  0s        morning-01.fit
+  19m43s    morning-02.fit
+  52m30s    morning-03.fit
+  1h17m31s  morning-04.fit
+  2h0m52s   morning-05.fit
+```
+
+The offsets are Go durations rather than the `h:mm:ss` clock the rest of the summary uses,
+because that is what `--label at=` and `--highlight from=` parse — so a leg you want to
+mark up can be copied straight into a flag.
 
 Two files covering the same stretch of time — the same file twice, or two watches
 recording one run — are refused rather than merged, naming both. Concatenating them would
 count that distance twice, and a run that reports 24km instead of 12km looks exactly as
 convincing in a rendered frame as a correct one.
+
+**`--dry-run` resolves the whole render and prints the summary, writing nothing.** The
+activity is decoded and merged, the timeline is built, and every panel is prepared — so the
+layout, the panels that declined, the gauge ranges, the highlights and the labels are all
+reported exactly as a real render would report them. Only the frame loop and the encoder
+are skipped.
+
+```
+fitdash morning-0*.fit --dry-run --label 'at=1h17m31s,name=Last climb'
+```
+
+That makes it the quick way to check a `--highlight` or a `--label` lands where you meant:
+every refusal — an instant past the end of the activity, two labels at the same moment, a
+marker with no distance to sit at on the profile — happens while resolving, so you see it
+in a second instead of after an encode. It creates no files and no directories, reports the
+destination it *would* write rather than piping it to stdout, and under `--frames` lists
+the frames it would produce.
 
 ## What it is
 

@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/output"
 	"github.com/wisborg/output/table"
 
@@ -40,12 +39,12 @@ draw, which is the whole point of the report.`,
 func init() { root.AddCommand(inspectCmd) }
 
 func runInspect(cmd *cobra.Command, args []string) error {
-	// The same DecodeAll the render calls, rather than a decode of args[0]:
-	// this report is the single source of truth for whether an activity
-	// carries a metric, so it has to be built from the same Track the render
-	// builds its panels from. Reporting on one file of a merge would answer
-	// a question nobody asked.
-	track, err := fitactivity.DecodeAll(args...)
+	// The same decode-and-merge the render performs, rather than a decode of
+	// args[0]: this report is the single source of truth for whether an
+	// activity carries a metric, so it has to be built from the same Track
+	// the render builds its panels from. Reporting on one file of a merge
+	// would answer a question nobody asked.
+	track, sources, err := decodeActivities(args)
 	if err != nil {
 		return fmt.Errorf("inspect: %w", err)
 	}
@@ -62,7 +61,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	// carry them too.
 	out := cmd.OutOrStdout()
 	if format.Format == output.Text {
-		writeSummary(out, rep)
+		writeSummary(out, rep, sources)
 	}
 
 	// Two representations, built independently: the object carries the whole
@@ -85,7 +84,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 // the file carried no timer events there is nothing to derive active time
 // from, and that is said outright rather than printing a number equal to
 // elapsed and letting it pass for a measurement.
-func writeSummary(w io.Writer, rep inspect.Report) {
+func writeSummary(w io.Writer, rep inspect.Report, sources []activitySource) {
 	sport := rep.Sport
 	if sport == "" {
 		sport = "(not recorded)"
@@ -95,10 +94,17 @@ func writeSummary(w io.Writer, rep inspect.Report) {
 	// should be able to select it without trimming a separator off the end.
 	// The count is stated too -- a merge of three files reporting one
 	// activity is the surprising part, not the paths themselves.
-	if len(rep.Paths) > 1 {
-		fmt.Fprintf(w, "%d files merged into one activity:\n", len(rep.Paths))
-		for _, path := range rep.Paths {
-			fmt.Fprintf(w, "  %s\n", path)
+	//
+	// The offsets come from sources rather than from rep, because they are a
+	// property of the MERGE and not of the activity the report describes:
+	// inspect.Build is handed one Track and cannot know where its files
+	// began. rep.Paths still carries the list for the JSON/YAML views, which
+	// is why both exist.
+	if len(sources) > 1 {
+		fmt.Fprintf(w, "%d files merged into one activity; each offset is into the\n", len(sources))
+		fmt.Fprintf(w, "activity's elapsed time, ready for --label at= or --highlight from=:\n")
+		for _, line := range mergedSourceLines(sources) {
+			fmt.Fprintf(w, "%s\n", line)
 		}
 	} else {
 		fmt.Fprintf(w, "%s\n", rep.Path)

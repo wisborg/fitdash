@@ -90,6 +90,18 @@ func (p *PNGFrames) note(i int) {
 	p.seen[i] = true
 }
 
+// FrameName is the path PNGFrames writes frame i to.
+//
+// Exported so a caller can report which files a render WOULD write without
+// running it (--dry-run) and name the same files the sink then creates. The
+// alternative -- spelling "frame-%06d.png" a second time at that call site --
+// is a format string that can drift from this one, and the drift would show
+// up as a dry run confidently naming files that never appear under those
+// names.
+func FrameName(dir string, i int) string {
+	return filepath.Join(dir, fmt.Sprintf("frame-%06d.png", i))
+}
+
 // WriteFrame writes img when its index was requested, and otherwise discards
 // it. As with Video, the first error is remembered and returned by every later
 // call rather than repeated once per frame.
@@ -109,7 +121,7 @@ func (p *PNGFrames) WriteFrame(i int, img *image.RGBA) error {
 		p.writeErr = fmt.Errorf("encode: nil frame at index %d", i)
 		return p.writeErr
 	}
-	name := filepath.Join(p.dir, fmt.Sprintf("frame-%06d.png", i))
+	name := FrameName(p.dir, i)
 	f, err := os.Create(name)
 	if err != nil {
 		p.writeErr = fmt.Errorf("encode: creating %s: %w", name, err)

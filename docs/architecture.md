@@ -65,6 +65,32 @@ earliest source), so that glob does not produce `cooldown.mp4` for a run that be
 the warm-up. `Track.Sources` carries the full ordered list for the summary and for
 `inspect`.
 
+### Each file's offset into the merged activity
+
+The summary prints where every file begins in the merged activity's own elapsed timeline,
+because that is the number the merge destroys and somebody then needs. Once five files are
+one timeline, "the race" is no longer a file — it is a stretch some way in — and marking it
+up with `--highlight` or `--label` means knowing where each leg starts. Without the offsets
+the only way to find out is to render the whole thing and watch it.
+
+**They are printed as Go durations (`19m43s`), not as the `h:mm:ss` clock every other
+summary in this program uses.** That inconsistency is the point: `--label at=` and
+`--highlight from=` parse Go durations, so a clock reading would have to be converted by
+hand before it could be used, which is precisely the work the offsets exist to remove. They
+are measured with `TimerModel.Elapsed` against the merged track — the same clock
+`Timeline.IndexAt` resolves those flags against — so a printed offset is a value that can be
+typed straight back in.
+
+`cmd.decodeActivities` decodes and merges in two steps rather than calling
+`fitactivity.DecodeAll`, which does both in one, **and that is deliberate**. A merged `Track`
+does not record where its sources begin, and must not: it is one activity, and no panel or
+model may care which file an instant came from. That is the right shape for the library and
+the wrong shape for a summary written for somebody about to author a `--label`, so the
+per-file tracks are kept here, in the layer that wants them, rather than pushed upstream
+into the type that is meant not to have them. The *order* still comes from
+`merged.Sources` — never from a second sort written at that call site, which would be free
+to disagree with the order the samples are actually in.
+
 ### Overlapping files are refused
 
 Two activities covering the same stretch of time — the same file twice, or two devices
@@ -1786,6 +1812,33 @@ nothing goes backwards or repeats — the irregularity is bounded, does not accu
 smaller than what a viewer can perceive at any frame rate this project targets. It is pinned
 by a test that walks every seam of a render rather than asserted in prose, because it is not
 something a future reader would otherwise re-derive by inspection.
+
+### `--dry-run`: everything except the encode
+
+`--dry-run` resolves the whole render and prints the summary without writing a video or a
+single frame. It is not a prediction. By the time it runs, the activity is decoded and
+merged, the timeline and its highlights and labels are resolved, and `render.New` has run
+every panel's `Prepare` — which is what settles the layout and what each panel declined to
+draw. The summary it prints comes from the same functions, over the same values, as a real
+render's. Only the frame loop and the encoder are skipped.
+
+That is what makes it the tool for authoring a `--highlight` or a `--label`: every refusal
+(an instant past the end of the activity, two labels at the same moment, a marker with no
+distance to sit at on the profile) fires during resolution, so it is reported in a second
+rather than after a full encode.
+
+Two rules keep it honest. **It touches nothing**: `plannedOutputPath` exists so the
+destination can be named without `outputPath`'s directory creation and existing-file
+refusal, and an existing destination is *reported* rather than refused — refusing would stop
+the summary the user came for, and the clash is exactly the kind of thing a dry run should
+say. **Everything goes to stderr**, including the destination: `runVideo` puts the output
+path on stdout so it can be piped, and a dry run must not hand a script a path to a file
+that was never written. Under `--frames` it lists the frames via `encode.FrameName`, the
+same function the sink uses, sorted into the order the sink would write them.
+
+`--dry-run` and `--quiet` are refused together. The flag's entire output is the summary and
+`--quiet` suppresses the summary, so the pair resolves the whole render and then prints
+nothing at all.
 
 ## Encoding
 
