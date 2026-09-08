@@ -1240,6 +1240,83 @@ decline: a pace panel just drew from this activity, so the activity demonstrably
 A name that also drew is now filtered out of that heading. The rule is deliberately about the
 two lists rather than about pace, so it keeps holding for the next panel seated twice.
 
+## The route zoom: the one projection that moves
+
+`--highlight ... ,zoom=true` reframes the route panel's map onto that highlight's own
+stretch of course while it plays. It exists because a merged activity makes the whole-course
+view useless for exactly the part worth watching: five files spanning a morning draw a route
+23km end to end, and a 5km race inside it is a squiggle a few dozen pixels across. Off by
+default, and **per highlight rather than per render** — the useful case is mixed, with race
+legs worth seeing in detail and transit legs whose whole point is the distance covered, and a
+single flag could not tell them apart.
+
+### It costs the static outline, and that is the trade
+
+Everything above says the route projection is computed once in `Prepare` and the outline is
+rasterized once in `Static`. A zooming route has a different outline on every frame of its
+transitions, so **there is no longer one image to cache**, and `Static` draws nothing at all
+when a zoom is configured — the outline moves into `Dynamic`.
+
+The alternative was to keep the static outline and paint over the box before redrawing it. It
+is worse in two ways. The panel would have to know the background colour it is covering; and
+under `--highlight-style wash` that colour is a per-frame blend of two static bases the loop
+computed, so the route's box would be the one rectangle in the frame the wash did not reach.
+
+The cost is real and is confined to renders that ask for it: the outline is restroked every
+frame for the *whole* render, not only during a highlight, because `Static` has no way to
+draw it for the other frames only. `anyZoom` is deliberately "a highlight actually resolved a
+zoom view" rather than "a highlight asked for one", so a render whose every `zoom=` was
+declined for want of GPS keeps the cheap path it would have had if the flag had never been
+typed.
+
+### Clipping, which nothing else here needs
+
+Every other panel stays inside its box by construction: it is handed a `Box` and computes its
+coordinates from it. A zoomed route deliberately does not — the view is fitted to one stretch,
+so the rest of the course is placed *outside* the box, and without clipping the outline
+strokes straight across the readouts beside it. Nothing about the geometry can prevent that,
+because the overflow **is** the zoom. Hence `Canvas.Clipped`, used by this one panel, on the
+zoom path only.
+
+`gg`'s own `Push`/`Pop` does not save the clip mask, so `Clipped` resets rather than restores.
+Nothing here nests clips, so the two are the same thing today — but a clip inside the callback
+would leave the outer one cleared on the way out.
+
+### One shared `cosLat`, and a geometric zoom
+
+`Projection.Sub` fits a sub-range **keeping the parent's longitude scaling** rather than
+calling `Fit` on the subset. `Fit` derives `cosLat` from the points it is given, so a short
+stretch's own mean latitude — a fraction of a degree from the whole route's — would give a
+slightly different scaling, and the two views would draw the same piece of course at subtly
+different proportions. Animating between them would then *shear* the shape as it scaled, which
+is the one thing `Place`'s aspect-preserving rule exists to prevent. Sharing `cosLat` is also
+what makes `Lerp` meaningful at all: two projections with different scalings are not two views
+of one plane.
+
+`Lerp` moves the centre linearly and the span **geometrically**. What the eye reads as zoom
+speed is the ratio between successive frames, not the difference, so a viewport shrinking
+linearly from 4km to 200m crosses most of that ground in the first few frames and then crawls.
+An axis with no extent — a stretch running exactly east-west has no `spanY` — falls back to
+linear, because no number of doublings reaches zero from a positive start.
+
+The blend rides `Frame.IntervalWeight`, the same 0→1→0 ramp the highlight's fade and the
+strip's blocks already use, rather than a second ramp computed in the panel. That is what
+makes the map finish arriving exactly as the highlight finishes lighting up.
+
+### What it declines, and what follows it
+
+A highlight whose span carries no GPS gets **no zoom**, for the same reason it gets no route
+mark: there is no stretch of course to frame, and framing the nearest one would claim the
+highlight happened there. `cmd` reports that in words, as it already does for the mark.
+
+The zoom is fitted to the very vertices the mark is drawn from — `extendMarkAlongPolyline`'s
+output, not the raw span — so what the zoomed view frames is exactly the stretch drawn in
+`Theme.Highlight`. And the covered prefix, the marks and the position dot are all placed
+through the *frame's* projection, not `Prepare`'s. Leaving the dot on the old one is the
+tempting bug: it would keep drawing at its whole-course position while the outline moved
+underneath it, putting the dot off the line entirely — a confident claim that the runner was
+somewhere the route does not go, which would pass every "is there a dot" assertion.
+
 ## Absent data
 
 The two policies map onto the two phases, and the mapping follows from *when* each kind of
@@ -1942,14 +2019,18 @@ Map imagery, 3D and TCX/GPX input are future work. What the design must not fore
 
 - **Map imagery.** The route Painter computes its projection in `Prepare` and `Static` draws
   the outline over whatever is beneath. The whole hook is one interface consulted **once, in
-  `Prepare`**, defaulting to nil. Two constraints follow now and cost nothing now: the
-  projection must be fixed for the render, so a tile fetch cannot re-fit the box mid-render
-  and tiles are never fetched per frame; and a tile failure must degrade to no basemap
+  `Prepare`**, defaulting to nil. Two constraints follow now and cost nothing now: a tile
+  fetch cannot re-fit the box mid-render and tiles are never fetched per frame; and a tile
+  failure must degrade to no basemap
   *inside* the route panel's own `Prepare`, which is what makes "offline must keep working"
   structural rather than aspirational. Everything else — opt-in, off by default, visible when
   it happens, credentials never reaching a commit or a log or a frame, and the attribution
   obligations that attach to the rendered video — is already in `CLAUDE.md` and `NOTICE` and
-  is not re-decided here.
+  is not re-decided here. **The route zoom has since made the projection per-frame** (see "The
+  route zoom" above), which does not change the rule that tiles are never fetched per frame —
+  it makes it harder to keep. A basemap must be resolved for the views the render will
+  actually use, which are knowable in `Prepare` (the whole-course projection, plus one per
+  zooming highlight), and never per frame for the blended views in between.
 - **3D** is a different projection and almost certainly a different panel. A panel already
   owns its box and its projection, so there is nothing to do now.
 - **GPX/TCX input** is a fitactivity change, not a fitdash one. The requirement this design

@@ -276,3 +276,91 @@ func SpanIndices(pts []Point, from, to time.Time) (i0, i1 int, ok bool) {
 		return 0, 0, false
 	}
 }
+
+// Sub returns a projection covering only pts, keeping p's own longitude
+// scaling rather than recomputing it.
+//
+// Sharing cosLat is the whole point. A projection fitted independently to a
+// short stretch of a route would use that stretch's own mean latitude, which
+// differs from the whole route's by a fraction of a degree -- enough that the
+// two views draw the SAME piece of course at very slightly different
+// proportions. Zooming from one to the other would then subtly shear the
+// shape as it scaled, which is the one thing Place's aspect-preserving rule
+// exists to prevent. With cosLat shared, the two projections differ only in
+// which rectangle of the plane they show, so moving between them is a pure
+// pan and scale.
+//
+// That shared scaling is also what makes Lerp meaningful: two projections
+// with different cosLat values are not two views of one plane, and
+// interpolating their bounds would mix two coordinate systems.
+//
+// Reports false on the same terms as Fit -- fewer than two points, or every
+// point at the same place -- so a caller can treat "no sub-view" exactly as
+// it treats "no route".
+func (p Projection) Sub(pts []Point) (Projection, bool) {
+	if len(pts) < 2 {
+		return Projection{}, false
+	}
+	minX, maxX := math.Inf(1), math.Inf(-1)
+	minY, maxY := math.Inf(1), math.Inf(-1)
+	for _, pt := range pts {
+		x, y := pt.Lon*p.cosLat, pt.Lat
+		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
+	}
+	spanX, spanY := maxX-minX, maxY-minY
+	if spanX <= 0 && spanY <= 0 {
+		return Projection{}, false
+	}
+	return Projection{cosLat: p.cosLat, minX: minX, minY: minY, spanX: spanX, spanY: spanY}, true
+}
+
+// Lerp blends two projections of the same plane, for animating a view from
+// one to the other. t <= 0 returns a, t >= 1 returns b.
+//
+// Both must share a cosLat -- which is what Sub guarantees, and is the only
+// way this function is meant to be called. a's is kept; blending two
+// different longitude scalings would produce a plane that is neither view's.
+//
+// The CENTRE moves linearly and the SPAN scales geometrically, which is not
+// an affectation: a viewport whose width shrinks linearly from 4km to 200m
+// covers most of that ground in the first few frames and then crawls, because
+// what the eye reads as "zoom speed" is the RATIO between successive frames,
+// not the difference. Interpolating the span geometrically holds that ratio
+// constant, so the zoom appears to travel at an even rate throughout. It is
+// the same reason a map application's zoom control is exponential.
+//
+// An axis with no extent -- a route stretch running exactly east-west has no
+// spanY -- cannot be scaled geometrically, since no number of doublings
+// reaches zero from a positive start. Those fall back to linear, which is
+// well defined at both ends and correct for the only case that produces them.
+func Lerp(a, b Projection, t float64) Projection {
+	switch {
+	case !(t > 0): // NaN included: an undefined weight animates nothing
+		return a
+	case t >= 1:
+		return b
+	}
+	cx := lerp(a.minX+a.spanX/2, b.minX+b.spanX/2, t)
+	cy := lerp(a.minY+a.spanY/2, b.minY+b.spanY/2, t)
+	spanX := scaleLerp(a.spanX, b.spanX, t)
+	spanY := scaleLerp(a.spanY, b.spanY, t)
+	return Projection{
+		cosLat: a.cosLat,
+		minX:   cx - spanX/2,
+		minY:   cy - spanY/2,
+		spanX:  spanX,
+		spanY:  spanY,
+	}
+}
+
+func lerp(a, b, t float64) float64 { return a + (b-a)*t }
+
+// scaleLerp interpolates a span geometrically, falling back to linear when
+// either end is zero -- see Lerp.
+func scaleLerp(a, b, t float64) float64 {
+	if a <= 0 || b <= 0 {
+		return lerp(a, b, t)
+	}
+	return a * math.Pow(b/a, t)
+}

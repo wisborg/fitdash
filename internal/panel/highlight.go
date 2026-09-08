@@ -69,6 +69,22 @@ type Highlight struct {
 	// resolveHighlights.
 	PausedThroughout bool
 
+	// Zoom asks the route panel to zoom its map onto the stretch of course
+	// this highlight covers, for as long as it is playing.
+	//
+	// Per highlight rather than per render, because the useful case is
+	// mixed: a workout merged from five files can have two race legs worth
+	// seeing in detail and three transit legs whose whole point is the
+	// distance covered, and a single flag could not tell them apart. Off by
+	// default -- the whole-course view is what a route panel is for, and a
+	// render that silently reframed its map would be answering a question
+	// the user did not ask.
+	//
+	// The panel decides what to do with it, and can decline: a highlight
+	// whose span carries no GPS fix has no stretch to zoom to, and the map
+	// stays where it was. See RoutePanel.Prepare.
+	Zoom bool
+
 	// Background is the exact colour this highlight's own background=
 	// resolved to, meaningful only under --highlight-style wash -- every
 	// other style refuses background= outright (see cmd/highlight.go's

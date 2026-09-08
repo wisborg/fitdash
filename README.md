@@ -98,6 +98,24 @@ in a second instead of after an encode. It creates no files and no directories, 
 destination it *would* write rather than piping it to stdout, and under `--frames` lists
 the frames it would produce.
 
+**A highlight can zoom the route map onto its own stretch of course** with `zoom=true`, off
+by default. On a workout merged from several files the whole-course view is useless for
+exactly the part worth watching — a 5km race inside a 23km morning is a squiggle a few dozen
+pixels across — so a highlight can reframe the map while it plays and ease back out
+afterwards.
+
+```
+fitdash morning-0*.fit \
+  --highlight 'from=19m43s,to=52m30s,name=Race 1,zoom=true' \
+  --highlight 'from=1h17m31s,to=2h0m52s,name=Race 2,zoom=true'
+```
+
+It is per highlight rather than per render because the useful case is mixed: the race legs
+are worth seeing in detail, while a long transit leg's whole point is the distance covered.
+The map pans and scales over `--highlight-transition`, the same ramp the highlight's own fade
+rides, so the two arrive together. A highlight whose span carries no GPS keeps the
+whole-course view, and the summary says so rather than leaving you to wonder.
+
 ## What it is
 
 There is no input video. fitdash generates every pixel of every frame from the

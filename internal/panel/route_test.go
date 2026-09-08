@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"strconv"
 	"testing"
 	"time"
 
@@ -723,4 +724,279 @@ func countDiffPixels(a, b *image.RGBA) int {
 		}
 	}
 	return n
+}
+
+// zoomFixture builds the context these zoom tests share: a square loop, one
+// highlight covering a quarter of it, and a box to draw into.
+//
+// A quarter of a closed loop is the useful span. It has extent in both axes,
+// so a zoom that dropped one would be obvious, and it is small enough that
+// the zoomed view is dramatically different from the whole-course one --
+// which is what makes "did it actually zoom" answerable in pixels.
+func zoomFixture(t *testing.T, zoom bool, w, h int) (*Context, Box) {
+	t.Helper()
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	const fixes = 1200
+	track := squareTrack(base, fixes)
+	h0 := Highlight{Name: "Leg", From: 0, To: (fixes / 4) * time.Second, Zoom: zoom}
+	ctx := routeHighlightContext(t, track, fixes, []Highlight{h0}, w, h)
+	return ctx, Box{X: 40, Y: 40, W: float64(w) - 80, H: float64(h) - 80}
+}
+
+func zoomCanvas(t *testing.T, w, h int) (*image.RGBA, *Canvas) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewCanvas(img, 20, DefaultTheme(), faces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img, c
+}
+
+// TestRoutePanel_ZoomStaysInsideItsBox is the test the whole feature hangs
+// on, and the one thing a zoom can break that nothing else here can.
+//
+// Every other panel stays in its box by construction: it is handed a Box and
+// computes its coordinates from it. A zoomed route deliberately does not --
+// the view is fitted to a quarter of the loop, so the other three quarters
+// are placed OUTSIDE the box, and without clipping the outline strokes
+// straight across the readouts next to it. That is not a subtle
+// misalignment; it is a line drawn through another panel's numbers, and no
+// test that only asks "did the route draw something" would see it.
+//
+// Checked at full zoom and mid-transition, because the overflow exists at
+// every weight above zero and the two are different rectangles.
+func TestRoutePanel_ZoomStaysInsideItsBox(t *testing.T) {
+	const w, h = 800, 800
+	for _, weight := range []float64{0.35, 1} {
+		t.Run("weight "+strconv.FormatFloat(weight, 'f', 2, 64), func(t *testing.T) {
+			ctx, box := zoomFixture(t, true, w, h)
+			img, c := zoomCanvas(t, w, h)
+			p := RoutePanel{}.Prepare(ctx, box)
+
+			c.Fill(c.Theme.Background)
+			p.Static(c)
+			p.Dynamic(c, Frame{
+				At:       ctx.Timeline.Start().Add(100 * time.Second),
+				Interval: 0, IntervalWeight: weight,
+			})
+
+			in := inkCount(img, box, c.Theme)
+			if in == 0 {
+				t.Fatal("nothing drawn")
+			}
+			if whole := inkCount(img, Box{W: w, H: h}, c.Theme); whole != in {
+				t.Errorf("%d pixels of a zoomed route escaped its box and drew over its neighbours", whole-in)
+			}
+		})
+	}
+}
+
+// TestRoutePanel_ZoomKeepsTheDotAndTheCoveredPrefix pins that zooming
+// reframes the map without dropping anything the panel was already drawing.
+//
+// The dot and the covered prefix are placed through the frame's own
+// projection rather than the one Prepare resolved, and a zoom that reframed
+// the outline while leaving those two behind would put the dot somewhere it
+// never was -- a claim about position, drawn confidently, which is the exact
+// failure this project spends its care avoiding. Counting them is the only
+// way to ask: at a few hundred pixels across, a 3px dot in the wrong place
+// and a 3px dot in the right one look identical in a screenshot.
+func TestRoutePanel_ZoomKeepsTheDotAndTheCoveredPrefix(t *testing.T) {
+	const w, h = 800, 800
+	for _, weight := range []float64{0, 0.35, 1} {
+		t.Run("weight "+strconv.FormatFloat(weight, 'f', 2, 64), func(t *testing.T) {
+			ctx, box := zoomFixture(t, true, w, h)
+			img, c := zoomCanvas(t, w, h)
+			p := RoutePanel{}.Prepare(ctx, box)
+
+			c.Fill(c.Theme.Background)
+			p.Static(c)
+			// 100s into a 300s highlight: the runner is inside the span
+			// being zoomed to, so the dot is inside the zoomed view at
+			// every weight and has nowhere legitimate to disappear to.
+			p.Dynamic(c, Frame{
+				At:       ctx.Timeline.Start().Add(100 * time.Second),
+				Interval: 0, IntervalWeight: weight,
+			})
+
+			if got := countNear(img, c.Theme.Accent, 20); got == 0 {
+				t.Error("no accent-coloured pixels: the position dot vanished when the map zoomed")
+			}
+		})
+	}
+}
+
+// TestRoutePanel_ZoomMovesTheDotWithTheMap is the sharper half of the test
+// above, and the failure it guards against is the nastier one.
+//
+// The dot is placed from the full fix list through the frame's projection.
+// If it were placed through the projection Prepare resolved -- the obvious
+// way to leave it, since that is where it lived before -- it would keep
+// drawing at its whole-course position while the outline underneath it moved
+// to the zoomed one. The dot would then sit off the line entirely: a
+// confident claim that the runner was somewhere the route does not go, which
+// is exactly the class of invention this project refuses. It would also pass
+// every "is there a dot" assertion, including the one above.
+func TestRoutePanel_ZoomMovesTheDotWithTheMap(t *testing.T) {
+	const w, h = 800, 800
+	dotAt := func(weight float64) (float64, float64) {
+		t.Helper()
+		ctx, box := zoomFixture(t, true, w, h)
+		img, c := zoomCanvas(t, w, h)
+		p := RoutePanel{}.Prepare(ctx, box)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		p.Dynamic(c, Frame{
+			At:       ctx.Timeline.Start().Add(100 * time.Second),
+			Interval: 0, IntervalWeight: weight,
+		})
+		ar, ag, ab, _ := c.Theme.Accent.RGBA()
+		var sx, sy, n float64
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				if r == ar && g == ag && b == ab {
+					sx, sy, n = sx+float64(x), sy+float64(y), n+1
+				}
+			}
+		}
+		if n == 0 {
+			t.Fatalf("no dot at weight %v", weight)
+		}
+		return sx / n, sy / n
+	}
+
+	x0, y0 := dotAt(0)
+	x1, y1 := dotAt(1)
+	if x0 == x1 && y0 == y1 {
+		t.Errorf("the dot is at (%.1f, %.1f) both zoomed and not; it is not being placed through the frame's own projection, "+
+			"so it will sit off the line the zoom moved underneath it", x0, y0)
+	}
+}
+
+// TestRoutePanel_ZoomEnlargesTheHighlightedStretch is "did it actually zoom".
+//
+// The marked stretch is drawn in Theme.Highlight either way, so the question
+// is whether it covers MORE of the box when zoomed -- a reframing that
+// resolved but never reached the placement would still draw a mark, still
+// pass every other test here, and still show the same tiny squiggle.
+func TestRoutePanel_ZoomEnlargesTheHighlightedStretch(t *testing.T) {
+	const w, h = 800, 800
+	count := func(zoom bool, weight float64) int {
+		ctx, box := zoomFixture(t, zoom, w, h)
+		img, c := zoomCanvas(t, w, h)
+		p := RoutePanel{}.Prepare(ctx, box)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		p.Dynamic(c, Frame{
+			At:       ctx.Timeline.Start().Add(100 * time.Second),
+			Interval: 0, IntervalWeight: weight,
+		})
+		return countNear(img, c.Theme.Highlight, 20)
+	}
+
+	plain := count(false, 1)
+	zoomed := count(true, 1)
+	if plain == 0 {
+		t.Fatal("the unzoomed fixture drew no mark at all; this test cannot say anything")
+	}
+	if zoomed <= plain {
+		t.Errorf("the marked stretch covers %d pixels zoomed against %d unzoomed; zooming did not enlarge it", zoomed, plain)
+	}
+
+	// And at weight 0 -- the highlight's own first frame, before the ramp
+	// has moved -- the map must still be the whole-course view, or the zoom
+	// would snap in rather than ease.
+	//
+	// Compared against the UNZOOMED render at the same weight, never against
+	// the full-weight one: the mark's own alpha rides this same weight (see
+	// restAlpha), so a mark at weight 0 is drawn at rest brightness and
+	// counts differently from one at weight 1 for reasons that have nothing
+	// to do with the map's scale.
+	if got, want := count(true, 0), count(false, 0); got != want {
+		t.Errorf("at weight 0 the mark covers %d pixels zoomed against %d unzoomed; the zoom is not starting from the whole course", got, want)
+	}
+}
+
+// TestRoutePanel_ZoomMovesTheOutlineOutOfStatic pins the structural half of
+// this feature.
+//
+// A static base is one image reused for every frame, and a zooming route has
+// a different outline on every frame of its transitions -- so the outline has
+// to move into Dynamic. If it stayed in Static, the un-zoomed outline would
+// remain burnt into the base underneath every zoomed frame, and the panel
+// would show two routes at two scales at once. Both halves are asserted,
+// because a change that stopped Static drawing without starting Dynamic
+// drawing would leave an empty box that no other test here would notice.
+func TestRoutePanel_ZoomMovesTheOutlineOutOfStatic(t *testing.T) {
+	const w, h = 800, 800
+	cases := []struct {
+		name        string
+		zoom        bool
+		wantsStatic bool
+	}{
+		{"no zoom configured: the outline is static, as it always was", false, true},
+		{"a zoom configured: the outline is drawn per frame instead", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, box := zoomFixture(t, c.zoom, w, h)
+			img, canvas := zoomCanvas(t, w, h)
+			p := RoutePanel{}.Prepare(ctx, box)
+
+			canvas.Fill(canvas.Theme.Background)
+			p.Static(canvas)
+			staticInk := inkCount(img, box, canvas.Theme)
+			if got := staticInk > 0; got != c.wantsStatic {
+				t.Errorf("Static drew ink = %v (%d pixels), want %v", got, staticInk, c.wantsStatic)
+			}
+
+			// Whichever phase owns it, the outline must be on screen once
+			// both have run -- that is the property a viewer sees.
+			p.Dynamic(canvas, Frame{At: ctx.Timeline.Start().Add(100 * time.Second), Interval: NoHighlight})
+			if inkCount(img, box, canvas.Theme) == 0 {
+				t.Error("nothing on screen after Static and Dynamic; the outline was dropped rather than moved")
+			}
+		})
+	}
+}
+
+// TestRoutePanel_ZoomDeclinesWithNoGPSInTheSpan covers the absent-data case.
+//
+// A highlight whose span carries no fix has no stretch of course to frame,
+// and framing the nearest one would claim the highlight happened there. The
+// panel must decline -- and, because nothing then zooms, keep the cheap
+// static outline it would have had if zoom= had never been typed. The second
+// half is what makes this more than a crash test: a render that quietly
+// switched to per-frame outlines for a zoom it was never going to perform
+// would pay the cost for nothing and no test would say so.
+func TestRoutePanel_ZoomDeclinesWithNoGPSInTheSpan(t *testing.T) {
+	const w, h = 800, 800
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	const fixes = 600
+	// The GPS locks on halfway through; the highlight sits entirely in the
+	// blind stretch before it.
+	track := squareTrackWithLateGPS(base, fixes, fixes/2)
+	highlight := Highlight{Name: "Before the lock", From: 0, To: 60 * time.Second, Zoom: true}
+	ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
+	box := Box{X: 40, Y: 40, W: w - 80, H: h - 80}
+
+	img, c := zoomCanvas(t, w, h)
+	p := RoutePanel{}.Prepare(ctx, box)
+
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	if inkCount(img, box, c.Theme) == 0 {
+		t.Error("Static drew nothing: a declined zoom must leave the outline where it was, not move it per-frame for a zoom that never happens")
+	}
+
+	p.Dynamic(c, Frame{At: base.Add(30 * time.Second), Interval: 0, IntervalWeight: 1})
+	if whole, in := inkCount(img, Box{W: w, H: h}, c.Theme), inkCount(img, box, c.Theme); whole != in {
+		t.Errorf("%d pixels escaped the box", whole-in)
+	}
 }

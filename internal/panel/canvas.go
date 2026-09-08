@@ -290,6 +290,30 @@ func (c *Canvas) Rect(b Box, col color.Color) {
 	c.dc.Fill()
 }
 
+// Clipped runs draw with every drawing operation confined to b.
+//
+// A panel is trusted to stay inside its own box, and every panel here does so
+// by construction -- it is handed a Box and computes its coordinates from it.
+// The route panel's zoom breaks that: a zoomed view deliberately shows a
+// fraction of the course at a scale where the rest of it falls outside the
+// box, so the polyline runs off across whatever panels sit next to it. Nothing
+// about the geometry can prevent that, because the overflow IS the zoom.
+//
+// The clip is RESET afterwards rather than restored to whatever was set
+// before, and that is a real limitation rather than an oversight: gg's own
+// Push/Pop deliberately does not save the mask, so there is nothing to
+// restore it from without reaching past the Canvas API. Nothing in this
+// program nests clips or sets a mask by any other route, so "reset" and
+// "restore" are the same thing here -- but a second clip inside draw would
+// leave the outer one cleared on the way out, so do not add one without
+// fixing this first.
+func (c *Canvas) Clipped(b Box, draw func()) {
+	c.dc.DrawRectangle(b.X, b.Y, b.W, b.H)
+	c.dc.Clip()
+	defer c.dc.ResetClip()
+	draw()
+}
+
 // Polyline strokes the path through the given points, which must be the same
 // length. Fewer than two points draws nothing -- a single point is not a line,
 // and a route with one GPS fix is a real input.

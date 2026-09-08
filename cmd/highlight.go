@@ -22,7 +22,9 @@ import (
 // time -- fitdash has already committed to Go durations for --frame-at and
 // --video-duration, and two time grammars in one CLI would be a worse cost
 // than differing from videofx's three-form parser. name is optional free
-// text. video and speedup are optional and mutually exclusive: how much
+// text. zoom is optional and takes true or false (default false): whether the
+// route panel reframes its map onto this highlight's own stretch of course
+// while it plays. video and speedup are optional and mutually exclusive: how much
 // VIDEO time this stretch should occupy, or its own compression factor.
 // Neither set is a real use too -- "mark it, do not re-pace it", calling out
 // a climb without stretching the video around it. background is optional,
@@ -86,6 +88,12 @@ func parseHighlight(raw string) (panel.Highlight, error) {
 				return panel.Highlight{}, fmt.Errorf("render: --highlight %q: speedup must be a positive finite number, got %v", raw, f)
 			}
 			h.RateFactor, hasSpeedup = f, true
+		case "zoom":
+			b, err := strconv.ParseBool(value)
+			if err != nil {
+				return panel.Highlight{}, fmt.Errorf("render: --highlight %q: zoom %q is not true or false: %w", raw, value, err)
+			}
+			h.Zoom = b
 		case "background":
 			col, err := parseBackgroundColor(flag, raw, value)
 			if err != nil {

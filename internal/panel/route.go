@@ -61,21 +61,15 @@ func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 	if box.H*0.06 < inset {
 		inset = box.H * 0.06
 	}
-	place, ok := proj.Placer(box.W-2*inset, box.H-2*inset)
+	p.inset, p.base = inset, proj
+	// One placement function for the outline and the dot, so the dot cannot
+	// drift off the line it is meant to be travelling along.
+	place, ok := p.placer(proj)
 	if !ok {
 		return p
 	}
-	// One placement function for the outline and the dot, so the dot cannot
-	// drift off the line it is meant to be travelling along.
-	p.place = func(pt route.Point) (float64, float64) {
-		x, y := place(pt)
-		return x + box.X + inset, y + box.Y + inset
-	}
-	xs := make([]float64, len(pts))
-	ys := make([]float64, len(pts))
-	for i, pt := range pts {
-		xs[i], ys[i] = p.place(pt)
-	}
+	p.place = place
+	xs, ys := p.placeAll(pts, place)
 
 	unit := box.H
 	if box.W < unit {
@@ -112,7 +106,22 @@ func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 			if ok {
 				i0, i1 = extendMarkAlongPolyline(xs, ys, i0, i1, minLen)
 			}
-			p.marks[i] = routeMark{ok: ok, i0: i0, i1: i1}
+			m := routeMark{ok: ok, i0: i0, i1: i1}
+			// The zoom is fitted to the very vertices the mark is drawn
+			// from, not to the raw span, so the two cannot disagree: what
+			// the zoomed view frames is exactly the stretch drawn in
+			// Theme.Highlight, including whatever extendMarkAlongPolyline
+			// added to make it visible in the first place.
+			//
+			// A highlight whose span has no GPS anywhere near it (ok
+			// false) gets no zoom, for the same reason it gets no mark:
+			// there is no stretch of course to frame, and framing the
+			// nearest one would claim the highlight happened there.
+			if h.Zoom && ok {
+				m.zoom, m.zoomOK = proj.Sub(pts[i0 : i1+1])
+				p.anyZoom = p.anyZoom || m.zoomOK
+			}
+			p.marks[i] = m
 		}
 	}
 	return p
@@ -173,6 +182,15 @@ func polylineLength(xs, ys []float64, i0, i1 int) float64 {
 type routeMark struct {
 	ok     bool
 	i0, i1 int
+
+	// zoom is the view this highlight reframes the map to while it plays,
+	// and zoomOK whether it has one at all -- false both for a highlight
+	// that never asked (the default) and for one whose span could not be
+	// fitted. The pair follows the same absence rule as every reading in
+	// this project: a zero Projection is a legitimate-looking value that
+	// would silently place the whole route in a corner.
+	zoom   route.Projection
+	zoomOK bool
 }
 
 func maxf(a, b float64) float64 {
@@ -192,6 +210,21 @@ type routePainter struct {
 	coveredW float64
 	dotR     float64
 
+	// base and inset are what placer needs to rebuild a placement function
+	// for a projection other than the whole-route one. Kept because a
+	// zooming render resolves a new projection every frame; a render with
+	// no zoom never reads them again after Prepare.
+	base  route.Projection
+	inset float64
+
+	// anyZoom is true when at least one highlight resolved a zoom view, and
+	// it is what moves the outline out of Static and into Dynamic -- see
+	// Static. It is deliberately "any highlight actually got one" rather
+	// than "any highlight asked", so a render whose every zoom= was
+	// declined for want of GPS keeps the cheap static outline it would have
+	// had if the flag had never been typed.
+	anyZoom bool
+
 	// marks is parallel to Context.Highlights and indexed by Frame.Interval,
 	// the same convention the highlight strip's own blocks/names/anchorX
 	// slices use, so a lookup here can never disagree with which highlight
@@ -199,9 +232,73 @@ type routePainter struct {
 	marks []routeMark
 }
 
+// placer builds the function that puts a point of proj into this painter's
+// box, inset and all. Every placement in this panel goes through it, so the
+// outline, the marks and the dot cannot be laid out by three subtly
+// different arithmetics -- which is the same guarantee Prepare's original
+// single closure gave, kept while the projection stopped being fixed.
+func (p *routePainter) placer(proj route.Projection) (func(route.Point) (float64, float64), bool) {
+	place, ok := proj.Placer(p.box.W-2*p.inset, p.box.H-2*p.inset)
+	if !ok {
+		return nil, false
+	}
+	return func(pt route.Point) (float64, float64) {
+		x, y := place(pt)
+		return x + p.box.X + p.inset, y + p.box.Y + p.inset
+	}, true
+}
+
+func (p *routePainter) placeAll(pts []route.Point, place func(route.Point) (float64, float64)) (xs, ys []float64) {
+	xs = make([]float64, len(pts))
+	ys = make([]float64, len(pts))
+	for i, pt := range pts {
+		xs[i], ys[i] = place(pt)
+	}
+	return xs, ys
+}
+
+// frameProjection is the view the map is drawn in on this frame: the
+// whole-route projection, the active highlight's zoom, or -- while a zooming
+// highlight is ramping in or out -- a blend of the two.
+//
+// It rides Frame.IntervalWeight, the same 0->1->0 ramp the highlight's own
+// fade and the strip's block brightness already use, rather than a second
+// ramp computed here. That is what makes the map finish arriving exactly as
+// the highlight finishes lighting up, instead of the two drifting a frame
+// apart in a way only a side-by-side comparison would catch.
+//
+// The second return says whether the result differs from the base view, so
+// the common frame -- no highlight, or one that does not zoom -- can reuse
+// the placements Prepare already computed instead of redoing 500 of them.
+func (p *routePainter) frameProjection(f Frame) (route.Projection, bool) {
+	if !p.anyZoom || f.Interval < 0 || f.Interval >= len(p.marks) {
+		return p.base, false
+	}
+	m := p.marks[f.Interval]
+	if !m.zoomOK || f.IntervalWeight <= 0 {
+		return p.base, false
+	}
+	return route.Lerp(p.base, m.zoom, f.IntervalWeight), true
+}
+
 // Static draws the whole route, dim. The expensive part, drawn once.
+//
+// It draws NOTHING when a zoom is configured, and the outline moves into
+// Dynamic instead. A static base is by definition one image reused for every
+// frame, and a zooming route has a different outline on every frame of its
+// transitions -- so there is no longer one image to cache. The alternative
+// considered was to keep the static outline and paint over the box before
+// redrawing it, which is worse in two ways: it needs the panel to know the
+// background colour it is covering, and under --highlight-style wash that
+// colour is the blend of two bases the loop computed, so the route's box
+// would be the one rectangle in the frame that the wash did not reach.
+//
+// The cost is real and is confined to renders that asked for it: the outline
+// is restroked every frame for the whole render, not only during a highlight,
+// because Static has no way to draw it for the other frames only. That is the
+// price of the flag, and it is off by default.
 func (p *routePainter) Static(c *Canvas) {
-	if len(p.xs) < 2 {
+	if len(p.xs) < 2 || p.anyZoom {
 		return
 	}
 	c.Polyline(p.xs, p.ys, p.outlineW, c.Theme.Dim)
@@ -244,13 +341,56 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 		return
 	}
 
+	// The view for THIS frame, and the placements that go with it. On the
+	// common frame -- every frame of a render with no zoom, and every frame
+	// outside a zooming highlight -- this is the projection Prepare already
+	// resolved and the placements it already computed.
+	place, xs, ys := p.place, p.xs, p.ys
+	proj, zoomed := p.frameProjection(f)
+	if zoomed {
+		zoomPlace, ok := p.placer(proj)
+		if !ok {
+			// A blend of two placeable projections is placeable, so this
+			// is unreachable; falling back to the base view rather than
+			// returning keeps a map on screen if it ever is reached.
+			zoomed = false
+		} else {
+			place = zoomPlace
+			xs, ys = p.placeAll(p.pts, zoomPlace)
+		}
+	}
+	// Everything below draws through place/xs/ys, so it follows the frame's
+	// view. Clipping is what makes that safe: a zoomed view puts most of the
+	// route outside the box by design, and without this the outline would
+	// stroke straight across the panels beside it. Only the zoom path pays
+	// for the clip; the default render is untouched.
+	if p.anyZoom {
+		c.Clipped(p.box, func() { p.draw(c, f, place, xs, ys) })
+		return
+	}
+	p.draw(c, f, place, xs, ys)
+}
+
+// draw is Dynamic's body, taking the frame's own placement so the outline,
+// the covered prefix, the marks and the dot are all laid out by one view --
+// the property that kept the dot on the line when the projection was fixed,
+// preserved now that it is not.
+func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64, float64), xs, ys []float64) {
+	// The dim outline, when Static did not draw it. Under a zoom there is
+	// no single image to cache it in (see Static), so it is restroked here,
+	// first, exactly as Static would have laid it down -- everything below
+	// is drawn over it in the same order either way.
+	if p.anyZoom {
+		c.Polyline(xs, ys, p.outlineW, c.Theme.Dim)
+	}
+
 	// The covered portion is a prefix of the DRAWN points, so it is looked up
 	// in those -- a prefix of the outline has to end on one of the outline's
 	// own vertices or the bright line would not lie on the dim one. Before
 	// the first fix, IndexAt returns -1 here exactly as it does against
 	// p.all below, so nothing is drawn -- there is nothing covered yet.
 	if drawn := route.IndexAt(p.pts, f.At); drawn >= 1 {
-		c.Polyline(p.xs[:drawn+1], p.ys[:drawn+1], p.coveredW, c.Theme.Foreground)
+		c.Polyline(xs[:drawn+1], ys[:drawn+1], p.coveredW, c.Theme.Foreground)
 	}
 
 	// Every markable highlight draws, not only the one active this frame --
@@ -273,7 +413,7 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 		if i == f.Interval {
 			alpha = restAlpha(f.IntervalWeight)
 		}
-		c.Polyline(p.xs[m.i0:m.i1+1], p.ys[m.i0:m.i1+1], p.coveredW, Fade(c.Theme.Highlight, alpha))
+		c.Polyline(xs[m.i0:m.i1+1], ys[m.i0:m.i1+1], p.coveredW, Fade(c.Theme.Highlight, alpha))
 	}
 
 	// The dot comes from the full fix list and is placed directly, so it moves
@@ -286,6 +426,6 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	if cur < 0 {
 		return
 	}
-	x, y := p.place(p.all[cur])
+	x, y := place(p.all[cur])
 	c.Circle(x, y, p.dotR, c.Theme.Accent)
 }

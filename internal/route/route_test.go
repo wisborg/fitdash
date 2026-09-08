@@ -416,3 +416,190 @@ func TestSpanIndices_ToJustPastTheLastVertexIncludesIt(t *testing.T) {
 			"an off-by-one here would silently truncate the mark short of the route's own finish", i0, i1)
 	}
 }
+
+// zoomPts is a small east-north staircase: enough extent on both axes that a
+// sub-range is a genuinely different rectangle from the whole.
+func zoomPts() []Point {
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	pts := make([]Point, 10)
+	for i := range pts {
+		pts[i] = Point{
+			Lat:  55.0 + float64(i)*0.001,
+			Lon:  12.0 + float64(i)*0.002,
+			Time: base.Add(time.Duration(i) * time.Second),
+		}
+	}
+	return pts
+}
+
+// TestProjectionSub_KeepsTheParentsLongitudeScaling is the property the whole
+// zoom rests on, and the one a naive implementation (calling Fit on the
+// subset) silently gets wrong.
+//
+// Fit derives cosLat from the points it is given, so a sub-range's own mean
+// latitude -- a fraction of a degree from the whole route's -- would give a
+// slightly different longitude scaling. The two views would then draw the SAME
+// piece of course at subtly different proportions, and animating between them
+// would shear the shape as it scaled. Nothing about that is visible in a
+// single frame, which is why it is asserted here rather than looked at.
+func TestProjectionSub_KeepsTheParentsLongitudeScaling(t *testing.T) {
+	pts := zoomPts()
+	whole, ok := Fit(pts)
+	if !ok {
+		t.Fatal("Fit: no projection")
+	}
+
+	sub, ok := whole.Sub(pts[6:])
+	if !ok {
+		t.Fatal("Sub: no projection")
+	}
+	if sub.cosLat != whole.cosLat {
+		t.Errorf("Sub cosLat = %v, want %v (the parent's) -- a sub-view fitted independently shears as it scales",
+			sub.cosLat, whole.cosLat)
+	}
+
+	// Independently fitting the same subset is what must NOT happen; if it
+	// ever produced the same scaling this test would be proving nothing.
+	own, ok := Fit(pts[6:])
+	if !ok {
+		t.Fatal("Fit(subset): no projection")
+	}
+	if own.cosLat == whole.cosLat {
+		t.Skip("this fixture's subset happens to share the whole route's mean latitude; the test cannot distinguish the two rules")
+	}
+}
+
+// TestProjectionSub_FramesOnlyTheSubset checks the actual point of Sub: a
+// smaller rectangle, tight around the points given.
+func TestProjectionSub_FramesOnlyTheSubset(t *testing.T) {
+	pts := zoomPts()
+	whole, _ := Fit(pts)
+	sub, ok := whole.Sub(pts[6:])
+	if !ok {
+		t.Fatal("Sub: no projection")
+	}
+
+	if sub.spanX >= whole.spanX || sub.spanY >= whole.spanY {
+		t.Errorf("sub span (%v, %v) is not inside the whole (%v, %v)", sub.spanX, sub.spanY, whole.spanX, whole.spanY)
+	}
+	// Every point of the subset must land inside the sub-view's own box,
+	// which is what "the zoomed view shows the whole highlighted stretch"
+	// means in coordinates.
+	place, ok := sub.Placer(100, 100)
+	if !ok {
+		t.Fatal("Placer: none")
+	}
+	for i, pt := range pts[6:] {
+		x, y := place(pt)
+		if x < -0.001 || x > 100.001 || y < -0.001 || y > 100.001 {
+			t.Errorf("subset point %d places at (%v, %v), outside the 100x100 view fitted to it", i, x, y)
+		}
+	}
+}
+
+// TestProjectionSub_RefusesWhatFitRefuses keeps the two entry points agreeing,
+// so a caller can treat "no sub-view" exactly as it treats "no route".
+func TestProjectionSub_RefusesWhatFitRefuses(t *testing.T) {
+	pts := zoomPts()
+	whole, _ := Fit(pts)
+
+	if _, ok := whole.Sub(pts[:1]); ok {
+		t.Error("Sub accepted a single point; one point is not an extent")
+	}
+	if _, ok := whole.Sub(nil); ok {
+		t.Error("Sub accepted no points")
+	}
+	same := []Point{pts[3], pts[3], pts[3]}
+	if _, ok := whole.Sub(same); ok {
+		t.Error("Sub accepted three copies of one place; a stuck fix has no extent to frame")
+	}
+}
+
+// TestLerp_EndpointsAndMonotonicZoom pins the animation's two ends exactly and
+// its middle loosely, which is the right split: the endpoints are what a
+// viewer notices (a zoom that does not finish arriving, or that starts from
+// the wrong place), and the path between them only has to be monotone.
+func TestLerp_EndpointsAndMonotonicZoom(t *testing.T) {
+	pts := zoomPts()
+	whole, _ := Fit(pts)
+	sub, _ := whole.Sub(pts[6:])
+
+	if got := Lerp(whole, sub, 0); got != whole {
+		t.Errorf("Lerp at 0 = %+v, want the starting view %+v", got, whole)
+	}
+	if got := Lerp(whole, sub, 1); got != sub {
+		t.Errorf("Lerp at 1 = %+v, want the destination view %+v", got, sub)
+	}
+	// Out of range clamps rather than extrapolating: a weight outside [0,1]
+	// would otherwise fly the view past its destination.
+	if got := Lerp(whole, sub, -0.5); got != whole {
+		t.Errorf("Lerp at -0.5 = %+v, want the starting view", got)
+	}
+	if got := Lerp(whole, sub, 2); got != sub {
+		t.Errorf("Lerp at 2 = %+v, want the destination view", got)
+	}
+
+	prev := whole.spanX
+	for _, at := range []float64{0.25, 0.5, 0.75, 1} {
+		span := Lerp(whole, sub, at).spanX
+		if span > prev {
+			t.Errorf("span grew from %v to %v between weights; the zoom reversed direction", prev, span)
+		}
+		prev = span
+	}
+}
+
+// TestLerp_ScalesGeometrically pins the reason the span is not interpolated
+// linearly. What the eye reads as zoom speed is the RATIO between successive
+// frames, so a linear span crosses most of the distance in the first few
+// frames and then crawls. Halfway through, a geometric zoom sits at the
+// geometric mean of the two spans, which is strictly smaller than the
+// arithmetic one this replaced.
+func TestLerp_ScalesGeometrically(t *testing.T) {
+	pts := zoomPts()
+	whole, _ := Fit(pts)
+	sub, _ := whole.Sub(pts[8:])
+
+	mid := Lerp(whole, sub, 0.5).spanX
+	geometric := math.Sqrt(whole.spanX * sub.spanX)
+	arithmetic := (whole.spanX + sub.spanX) / 2
+
+	if math.Abs(mid-geometric) > 1e-12 {
+		t.Errorf("half-way span = %v, want the geometric mean %v", mid, geometric)
+	}
+	if mid >= arithmetic {
+		t.Errorf("half-way span %v is not below the arithmetic mean %v; the zoom is still linear", mid, arithmetic)
+	}
+}
+
+// TestLerp_AnAxisWithNoExtent covers the route that runs exactly east-west:
+// spanY is zero, no number of doublings reaches zero from a positive start,
+// and the geometric path is undefined. Linear is well defined at both ends
+// and is what that case falls back to.
+func TestLerp_AnAxisWithNoExtent(t *testing.T) {
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	flat := []Point{
+		{Lat: 55, Lon: 12.000, Time: base},
+		{Lat: 55, Lon: 12.004, Time: base.Add(time.Second)},
+		{Lat: 55, Lon: 12.008, Time: base.Add(2 * time.Second)},
+	}
+	whole, ok := Fit(flat)
+	if !ok {
+		t.Fatal("Fit: no projection for an east-west route")
+	}
+	sub, ok := whole.Sub(flat[1:])
+	if !ok {
+		t.Fatal("Sub: no projection")
+	}
+
+	mid := Lerp(whole, sub, 0.5)
+	if math.IsNaN(mid.spanY) || math.IsInf(mid.spanY, 0) {
+		t.Errorf("half-way spanY = %v on a route with no north-south extent", mid.spanY)
+	}
+	if mid.spanY != 0 {
+		t.Errorf("half-way spanY = %v, want 0: neither end has any extent to interpolate", mid.spanY)
+	}
+	if _, ok := mid.Placer(100, 100); !ok {
+		t.Error("the half-way view cannot place a point; an intermediate view must be as drawable as its endpoints")
+	}
+}

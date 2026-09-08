@@ -457,3 +457,48 @@ func TestResolveHighlights_RefusesBackgroundUnderNonWashStyles(t *testing.T) {
 		}
 	}
 }
+
+// TestParseHighlight_Zoom covers the new field's three states: asked for,
+// refused explicitly, and -- the one that matters most -- not mentioned.
+//
+// The default has to be false, and has to stay false. A render that reframed
+// its map because a highlight existed would be answering a question the user
+// did not ask, and the whole-course view is what a route panel is for.
+func TestParseHighlight_Zoom(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"absent", "from=1m,to=2m,name=Leg", false},
+		{"true", "from=1m,to=2m,zoom=true", true},
+		{"false", "from=1m,to=2m,zoom=false", false},
+		{"1 is true, as ParseBool reads it", "from=1m,to=2m,zoom=1", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, err := parseHighlight(c.raw)
+			if err != nil {
+				t.Fatalf("parseHighlight(%q): %v", c.raw, err)
+			}
+			if h.Zoom != c.want {
+				t.Errorf("Zoom = %v, want %v", h.Zoom, c.want)
+			}
+		})
+	}
+}
+
+// TestParseHighlight_ZoomRejectsANonBoolean keeps a typo from being read as
+// "off". zoom=yes silently parsing to false would leave a user watching a
+// render that never zooms, with nothing anywhere saying why -- the same
+// silent-substitution failure the repeated-key and unknown-field rules in
+// this grammar already refuse.
+func TestParseHighlight_ZoomRejectsANonBoolean(t *testing.T) {
+	_, err := parseHighlight("from=1m,to=2m,zoom=yes")
+	if err == nil {
+		t.Fatal("accepted zoom=yes")
+	}
+	if !strings.Contains(err.Error(), "zoom") {
+		t.Errorf("error should name the field; got: %v", err)
+	}
+}

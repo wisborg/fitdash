@@ -294,10 +294,13 @@ func bindRenderFlags(c *cobra.Command) {
 			"ELAPSED time, e.g. 12m30s), name=TEXT (optional, free text; a literal comma needs \\, and a literal "+
 			"backslash needs \\\\), video=DURATION or speedup=N (optional, mutually exclusive -- how much video "+
 			"this stretch should take, or its own compression factor; neither means mark it without re-pacing it), "+
+			"zoom=true (optional, default false -- the route panel reframes its map onto this highlight's own "+
+			"stretch of course while it plays, easing in and out over --highlight-transition; a highlight whose "+
+			"span carries no GPS keeps the whole-course view and the summary says so), "+
 			"and background=#RRGGBB or #RGB (optional, hex only, opaque only -- the exact colour the frame washes "+
 			"to while this highlight is active; only meaningful under --highlight-style wash, and refused under "+
 			"any other style). "+
-			"Example: --highlight 'from=12m30s,to=16m10s,video=10s,name=Hill climb'")
+			"Example: --highlight 'from=12m30s,to=16m10s,video=10s,name=Hill climb,zoom=true'")
 	f.StringVar(&renderOpts.highlightStyle, "highlight-style", panel.HighlightStyleBorder,
 		"how a highlight is marked on screen -- \"border\" (default: an accent border in the frame's margin, plus "+
 			"the marker strip), \"wash\" (additionally tints the whole background toward the highlight's own "+
@@ -1214,6 +1217,21 @@ func writePanelSummary(cmd *cobra.Command, r *render.Renderer, tl panel.Timeline
 // escape hatch -- every highlight is placeable on it regardless of distance
 // (MarkerPanel positions blocks in VIDEO time, never distance), so nothing
 // here would be true to report.
+// highlightZoomNote marks a highlight that reframes the route panel's map, so
+// the highlights line says which ones do. Silent for the default, which is
+// every highlight until somebody types zoom=true.
+//
+// It reports what was ASKED for, not what the panel resolved -- the two differ
+// only when there is no GPS to zoom to, and that case gets a line of its own
+// saying exactly that, rather than being folded into a silently absent word
+// here.
+func highlightZoomNote(h panel.Highlight) string {
+	if !h.Zoom {
+		return ""
+	}
+	return ", zoomed"
+}
+
 func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, highlights []panel.Highlight, smoothing panel.Smoothing, theme panel.Theme, markersOnProfile bool) {
 	if renderOpts.quiet || len(highlights) == 0 {
 		return
@@ -1245,9 +1263,9 @@ func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitacti
 	for i, h := range highlights {
 		rate := h.Rate(tl.BaseSpeedup())
 		video := float64(highlightFrames(tl, h)) / tl.FPS()
-		lines[i] = fmt.Sprintf("%s %s -> %ss (%sx)%s",
+		lines[i] = fmt.Sprintf("%s %s -> %ss (%sx)%s%s",
 			highlightSummaryName(h), panel.FormatClock(h.From), strconv.FormatFloat(video, 'f', 1, 64), formatMultiplier(rate),
-			highlightSmoothingNote(tl, h, smoothing))
+			highlightZoomNote(h), highlightSmoothingNote(tl, h, smoothing))
 	}
 	fmt.Fprintf(out, "highlights: %s\n", strings.Join(lines, ", "))
 
@@ -1270,9 +1288,21 @@ func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitacti
 				fmt.Fprintf(out, "highlight %s background %s\n", highlightSummaryName(h), warning)
 			}
 		}
+		if h.Zoom && !canMarkRoute {
+			// Asked for on an activity with no route panel at all. Said
+			// plainly rather than ignored: the flag was typed, it will do
+			// nothing, and the reason is a property of the activity rather
+			// than a mistake in the value.
+			fmt.Fprintf(out, "highlight %s asked to zoom the route, but this activity has no route to draw\n",
+				highlightSummaryName(h))
+		}
 		if canMarkRoute {
 			start := tl.Start()
 			if _, _, ok := route.SpanIndices(routePts, start.Add(h.From), start.Add(h.To)); !ok {
+				if h.Zoom {
+					fmt.Fprintf(out, "highlight %s asked to zoom the route, but has no GPS fixes in its span; the map stays on the whole course\n",
+						highlightSummaryName(h))
+				}
 				fmt.Fprintf(out, "highlight %s has no GPS fixes; it is not marked on the route\n", highlightSummaryName(h))
 			}
 		}
