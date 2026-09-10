@@ -15,11 +15,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/output/progress"
 
 	"github.com/wisborg/fitdash/internal/encode"
 	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/panel"
-	"github.com/wisborg/fitdash/internal/progress"
 	"github.com/wisborg/fitdash/internal/render"
 	"github.com/wisborg/fitdash/internal/route"
 )
@@ -618,12 +618,18 @@ func runVideo(cmd *cobra.Command, r *render.Renderer, activity string, ctx *pane
 	// Close is the encode's own verdict. Both happen at most once.
 	defer sink.Close()
 
-	prog := newReporter(cmd, r.Frames())
-	if err := render.Run(cmd.Context(), r, sink, func(i, n int) { prog.Update(i) }); err != nil {
-		prog.Done()
+	// Stopped before anything else is written, always: the display owns the
+	// bottom of the terminal until it is told otherwise, and a summary
+	// printed underneath a live bar lands inside the region the next redraw
+	// would erase. Stop is idempotent, so the deferred call covers the paths
+	// that return early.
+	d, bar := newProgress(cmd, r.Frames())
+	defer d.Stop()
+	if err := render.Run(cmd.Context(), r, sink, func(i, n int) { bar.Set(int64(i)) }); err != nil {
+		d.Stop()
 		return err
 	}
-	prog.Done()
+	d.Stop()
 	if err := sink.Close(); err != nil {
 		return err
 	}
@@ -766,20 +772,24 @@ func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses st
 	}
 }
 
-// newReporter builds the progress reporter, or nil under --quiet.
+// newProgress builds the live progress display and its bar, or nils under
+// --quiet.
 //
-// A nil *progress.Reporter is safe to call, which is why --quiet is one
-// decision here rather than a condition at every call site.
-func newReporter(cmd *cobra.Command, total int) *progress.Reporter {
+// A nil *progress.Display and a nil *progress.Bar are both usable and do
+// nothing, which is why --quiet is one decision here rather than a condition
+// at every call site and in the render loop's per-frame callback.
+//
+// Whether the bar renders in place or as periodic plain lines is the
+// display's own decision, made from the writer: this used to be fitdash's
+// judgement (an os.Stat for a character device), and it was wrong for
+// /dev/null, which IS one -- so `fitdash 2>/dev/null` took the inline path
+// and wrote escape sequences into it.
+func newProgress(cmd *cobra.Command, total int) (*progress.Display, *progress.Bar) {
 	if renderOpts.quiet {
-		return nil
+		return nil, nil
 	}
-	w := cmd.ErrOrStderr()
-	inline := false
-	if f, ok := w.(*os.File); ok {
-		inline = progress.IsTerminal(f)
-	}
-	return progress.New(w, total, inline)
+	d := progress.New(cmd.ErrOrStderr(), progress.Options{})
+	return d, d.Bar(progress.BarSpec{Label: "rendering", Total: int64(total), Unit: "frames"})
 }
 
 // formatMultiplier renders a compression factor for display, rounded to two
@@ -1599,12 +1609,18 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	}
 	defer sink.Close()
 
-	prog := newReporter(cmd, r.Frames())
-	if err := render.Run(cmd.Context(), r, sink, func(i, n int) { prog.Update(i) }); err != nil {
-		prog.Done()
+	// Stopped before anything else is written, always: the display owns the
+	// bottom of the terminal until it is told otherwise, and a summary
+	// printed underneath a live bar lands inside the region the next redraw
+	// would erase. Stop is idempotent, so the deferred call covers the paths
+	// that return early.
+	d, bar := newProgress(cmd, r.Frames())
+	defer d.Stop()
+	if err := render.Run(cmd.Context(), r, sink, func(i, n int) { bar.Set(int64(i)) }); err != nil {
+		d.Stop()
 		return err
 	}
-	prog.Done()
+	d.Stop()
 	if err := sink.Close(); err != nil {
 		return err
 	}

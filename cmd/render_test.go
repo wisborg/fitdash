@@ -260,50 +260,59 @@ func TestFrameIndices_RejectsAnOffsetPastTheActivity(t *testing.T) {
 	}
 }
 
-// TestNewReporter_QuietReturnsNil pins how --quiet is implemented.
+// TestNewProgress_QuietReturnsNils pins how --quiet is implemented.
 //
-// A nil *progress.Reporter is safe to call, so quiet is one decision here
-// rather than a condition at every call site -- and the render loop's progress
-// callback stays unconditional.
-func TestNewReporter_QuietReturnsNil(t *testing.T) {
+// A nil *progress.Display and a nil *progress.Bar are both usable and do
+// nothing, so quiet is one decision here rather than a condition at every
+// call site -- and the render loop's per-frame callback stays unconditional.
+func TestNewProgress_QuietReturnsNils(t *testing.T) {
 	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
 
 	cmd := &cobra.Command{}
 	cmd.SetErr(io.Discard)
 
 	renderOpts.quiet = false
-	if newReporter(cmd, 100) == nil {
-		t.Error("a reporter was expected without --quiet")
+	if d, bar := newProgress(cmd, 100); d == nil || bar == nil {
+		t.Error("a display and a bar were expected without --quiet")
 	}
 
 	renderOpts.quiet = true
-	r := newReporter(cmd, 100)
-	if r != nil {
-		t.Error("--quiet should produce no reporter")
+	d, bar := newProgress(cmd, 100)
+	if d != nil || bar != nil {
+		t.Error("--quiet should produce no display and no bar")
 	}
-	// The nil must be usable, or every call site needs a guard.
-	r.Update(1)
-	r.Done()
+	// Both nils must be usable, or every call site needs a guard.
+	bar.Set(1)
+	d.Stop()
 }
 
-// TestNewReporter_UsesInlineOnlyForATerminal keeps a redirected stderr from
-// collecting one enormous line full of carriage returns.
-func TestNewReporter_UsesInlineOnlyForATerminal(t *testing.T) {
+// TestNewProgress_WritesNoEscapeSequencesToANonTerminal keeps a redirected
+// stderr from collecting cursor movements.
+//
+// The decision now belongs to the display rather than to fitdash, which is
+// the point of the change: this program's own version tested for a character
+// device, and /dev/null is one -- so `fitdash 2>/dev/null` took the inline
+// path. The assertion is kept here anyway, because it is fitdash's output
+// that would be wrong.
+func TestNewProgress_WritesNoEscapeSequencesToANonTerminal(t *testing.T) {
 	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
 	renderOpts.quiet = false
 
-	// A bytes.Buffer is not an *os.File at all, so inline must be off.
 	var buf bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetErr(&buf)
-	rep := newReporter(cmd, 10)
-	if rep == nil {
-		t.Fatal("no reporter")
+	d, bar := newProgress(cmd, 10)
+	if d == nil || bar == nil {
+		t.Fatal("no display")
 	}
-	rep.Update(0)
-	rep.Update(5)
-	if strings.Contains(buf.String(), "\r") {
-		t.Error("progress to a non-terminal used a carriage return")
+	if d.Live() {
+		t.Error("a bytes.Buffer was taken for a terminal")
+	}
+	bar.Set(0)
+	bar.Set(5)
+	d.Stop()
+	if strings.ContainsAny(buf.String(), "\r\x1b") {
+		t.Errorf("progress to a non-terminal used terminal control characters: %q", buf.String())
 	}
 }
 
