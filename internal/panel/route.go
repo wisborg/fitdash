@@ -135,8 +135,12 @@ func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 	// it and runs BEFORE Dynamic ever writes it, so a render that never zooms
 	// would otherwise composite against a zero rectangle and draw no map at
 	// all -- on exactly the renders where the basemap is simplest.
-	vx, vy, vw, vh := proj.CoverProjected(box.W, box.H)
-	p.viewport = [4]float64{vx, vy, vw, vh}
+	// Left at zero on a box with no area, which draws no imagery -- and a
+	// projection that cannot be placed draws no route either, so there is
+	// nothing for the basemap to sit under in that case anyway.
+	if vx, vy, vw, vh, ok := proj.CoverProjected(box.W, box.H); ok {
+		p.viewport = [4]float64{vx, vy, vw, vh}
+	}
 
 	// Fetched here, after the marks exist, because the zoomed views are
 	// defined by them -- and in Prepare at all because this is the phase that
@@ -394,7 +398,11 @@ func (p *routePainter) drawCredit(c *Canvas) {
 	if p.baseMap == nil || p.mapCredit == "" {
 		return
 	}
-	const pad = 3.0
+	// The plate's margin, sized from the text it surrounds rather than
+	// written as a pixel count -- the same rule outlineW, coveredW, dotR and
+	// creditPx already follow in this file. A fixed 3 pixels is oversized
+	// beside the clamped-small credit on a little panel and invisible at 4K.
+	pad := maxf(2, p.creditPx*0.25)
 
 	// Shrunk to fit the panel, once. The credit is a fixed sentence and the
 	// box is whatever the layout gave this panel, so at a small size or a
@@ -478,8 +486,9 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	// The viewport in projected units, which is what the basemap is
 	// composited against. Recorded even when nothing zoomed, so Static and
 	// Dynamic composite against the same rectangle.
-	vpX, vpY, vpW, vpH := proj.CoverProjected(p.box.W, p.box.H)
-	p.viewport = [4]float64{vpX, vpY, vpW, vpH}
+	if vpX, vpY, vpW, vpH, ok := proj.CoverProjected(p.box.W, p.box.H); ok {
+		p.viewport = [4]float64{vpX, vpY, vpW, vpH}
+	}
 	if zoomed {
 		zoomPlace, ok := p.placer(proj)
 		if !ok {

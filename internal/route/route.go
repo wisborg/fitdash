@@ -132,19 +132,6 @@ func Fit(pts []Point) (Projection, bool) {
 	return Projection{minX: minX, minY: minY, spanX: spanX, spanY: spanY}, true
 }
 
-// Bounds returns the geographic rectangle this projection covers, which is
-// what a map service is asked for.
-//
-// North and south come back from the Mercator y axis, which runs SOUTH -- so
-// minY is the NORTH edge. Getting that backwards yields a view mirrored about
-// its own centre, which on a real route looks like a plausible map of
-// somewhere else.
-func (p Projection) Bounds() (north, west, south, east float64) {
-	north, west = tilemap.Unproject(p.minX, p.minY)
-	south, east = tilemap.Unproject(p.minX+p.spanX, p.minY+p.spanY)
-	return north, west, south, east
-}
-
 // Place returns pixel coordinates for pts, fitted into a w by h box and
 // centred in it.
 //
@@ -177,18 +164,8 @@ func (p Projection) Place(pts []Point, w, h float64) (xs, ys []float64) {
 // Sharing the closure rather than reimplementing the arithmetic is what keeps
 // the dot on the line it is supposed to be travelling along.
 func (p Projection) Placer(w, h float64) (func(Point) (x, y float64), bool) {
-	if w <= 0 || h <= 0 {
-		return nil, false
-	}
-
-	scale := math.Inf(1)
-	if p.spanX > 0 {
-		scale = math.Min(scale, w/p.spanX)
-	}
-	if p.spanY > 0 {
-		scale = math.Min(scale, h/p.spanY)
-	}
-	if math.IsInf(scale, 1) {
+	scale, ok := p.scaleFor(w, h)
+	if !ok {
 		return nil, false
 	}
 
@@ -203,22 +180,17 @@ func (p Projection) Placer(w, h float64) (func(Point) (x, y float64), bool) {
 	}, true
 }
 
-// Cover returns the geographic rectangle that fills a w by h box this
-// projection has been fitted into.
+// scaleFor is the pixels-per-projected-unit that fits this projection into a
+// w by h box, and the one place that arithmetic lives.
 //
-// It is Bounds widened to the box: Placer preserves aspect and centres what
-// is left over, so the box shows MORE ground than the route's own bounds on
-// one axis, and a basemap fetched for Bounds would sit letterboxed inside the
-// box with the route flush against its edges. Asking for what the box
-// actually covers is what lets imagery reach the panel's edges with the route
-// inset in the middle of it, which is what a map under a route should look
-// like.
-//
-// Returns false on a box with no area, matching Placer -- a caller that got a
-// placer got a cover too.
-func (p Projection) Cover(w, h float64) (north, west, south, east float64, ok bool) {
+// Placer and CoverProjected both need it and used to compute it separately,
+// along with a third copy that has since gone. Three answers to one question
+// is how a basemap ends up a few pixels off the route it was fetched for --
+// the two calls have to agree exactly or the imagery sits beside the line
+// instead of under it, and nothing but a pixel comparison would notice.
+func (p Projection) scaleFor(w, h float64) (float64, bool) {
 	if w <= 0 || h <= 0 {
-		return 0, 0, 0, 0, false
+		return 0, false
 	}
 	scale := math.Inf(1)
 	if p.spanX > 0 {
@@ -228,39 +200,34 @@ func (p Projection) Cover(w, h float64) (north, west, south, east float64, ok bo
 		scale = math.Min(scale, h/p.spanY)
 	}
 	if math.IsInf(scale, 1) || scale <= 0 {
-		return 0, 0, 0, 0, false
+		return 0, false
 	}
-
-	// The box, measured in projected units, centred on the projection's own
-	// centre.
-	halfX, halfY := w/scale/2, h/scale/2
-	cx, cy := p.minX+p.spanX/2, p.minY+p.spanY/2
-
-	north, west = tilemap.Unproject(cx-halfX, cy-halfY)
-	south, east = tilemap.Unproject(cx+halfX, cy+halfY)
-	return north, west, south, east, true
+	return scale, true
 }
 
-// CoverProjected is Cover in projected units: the rectangle of the plane a
-// w by h box covers when this projection is fitted into it.
+// CoverProjected is the rectangle of the projected plane that a w by h box
+// covers when this projection is fitted into it.
 //
-// The same arithmetic as Cover without the trip through degrees and back,
-// for the caller that is going to compare it against another rectangle of
-// the same plane rather than ask a map service about it.
-func (p Projection) CoverProjected(w, h float64) (minX, minY, spanX, spanY float64) {
-	scale := math.Inf(1)
-	if p.spanX > 0 {
-		scale = math.Min(scale, w/p.spanX)
-	}
-	if p.spanY > 0 {
-		scale = math.Min(scale, h/p.spanY)
-	}
-	if math.IsInf(scale, 1) || scale <= 0 || w <= 0 || h <= 0 {
-		return p.minX, p.minY, p.spanX, p.spanY
+// It is the projection's own bounds WIDENED to the box. Placer preserves
+// aspect and centres what is left over, so the box shows more ground than the
+// route's own extent on one axis -- and imagery fetched for the route's
+// extent would sit letterboxed inside the box with the line flush against its
+// edges. Asking what the box covers is what lets a basemap reach the panel's
+// edges with the route inset in the middle of it.
+//
+// Reports false on a box with no area, matching Placer: a caller that got a
+// placer gets a cover too, and one that did not has nothing to draw either
+// way. It used to fall back silently to the un-widened bounds, which was a
+// second answer to the same question that only differed when something had
+// already gone wrong.
+func (p Projection) CoverProjected(w, h float64) (minX, minY, spanX, spanY float64, ok bool) {
+	scale, ok := p.scaleFor(w, h)
+	if !ok {
+		return 0, 0, 0, 0, false
 	}
 	halfX, halfY := w/scale/2, h/scale/2
 	cx, cy := p.minX+p.spanX/2, p.minY+p.spanY/2
-	return cx - halfX, cy - halfY, 2 * halfX, 2 * halfY
+	return cx - halfX, cy - halfY, 2 * halfX, 2 * halfY, true
 }
 
 // IndexAt returns the last point recorded at or before at, or -1 when the

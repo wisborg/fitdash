@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -260,5 +261,98 @@ func TestRedact(t *testing.T) {
 	// An empty key must not turn every message into redactions.
 	if got := redact("nothing secret here", ""); got != "nothing secret here" {
 		t.Errorf("redact with no key changed the message: %s", got)
+	}
+}
+
+// TestRedact_HandlesTheEncodedFormsToo covers the leak the plain-hex fixture
+// used by every other test here cannot reach.
+//
+// The key goes into the URL through url.Values.Encode, which percent-encodes
+// it. A key containing a plus, a slash, an equals or a space therefore appears
+// in a *url.Error's message in its ENCODED form -- and a redactor matching
+// only the raw value sails straight past it and prints the secret.
+// Thunderforest's own keys are hexadecimal and encode to themselves, which is
+// exactly why this is easy to get wrong and impossible to notice: it would
+// leak only for a different key format, or a different service.
+func TestRedact_HandlesTheEncodedFormsToo(t *testing.T) {
+	awkward := Key("ab+cd/ef=gh ij")
+	raw := awkward.reveal()
+	encoded := url.QueryEscape(raw)
+	if encoded == raw {
+		t.Fatal("this fixture's key encodes to itself, so the test proves nothing")
+	}
+
+	msg := `Get "https://api.thunderforest.com/static/outdoors/1,2,3/4x5.png?apikey=` + encoded + `": dial tcp: refused`
+	got := redact(msg, awkward)
+	if strings.Contains(got, encoded) {
+		t.Errorf("redact left the percent-encoded key in: %s", got)
+	}
+	if strings.Contains(got, raw) {
+		t.Errorf("redact left the raw key in: %s", got)
+	}
+}
+
+// TestThunderforest_AwkwardKeyNeverLeaks is the same property end to end,
+// through the real request path where the encoding actually happens.
+func TestThunderforest_AwkwardKeyNeverLeaks(t *testing.T) {
+	tf, _ := fakeService(t, func(w http.ResponseWriter, r *http.Request) {})
+	tf.Key = Key("ab+cd/ef=gh ij")
+	thunderforestBase = "http://127.0.0.1:1" // unreachable, so the error carries a URL
+
+	_, err := tf.Image(context.Background(), aView())
+	if err == nil {
+		t.Fatal("no error")
+	}
+	raw := tf.Key.reveal()
+	if strings.Contains(err.Error(), raw) || strings.Contains(err.Error(), url.QueryEscape(raw)) {
+		t.Errorf("the error carries the API key: %v", err)
+	}
+}
+
+// TestThunderforest_RefusesAnImageLargerThanTheEndpointCanProduce closes a
+// decompression bomb.
+//
+// The response body is capped in BYTES, but compressed size and decoded size
+// are only loosely related: a PNG of one flat colour a few kilobytes long can
+// declare a width and height whose product is billions of pixels, and Go's
+// decoders enforce no maximum. Without a dimension check, image.Decode would
+// faithfully try to allocate it -- so anything able to answer this request
+// could exhaust the process.
+func TestThunderforest_RefusesAnImageLargerThanTheEndpointCanProduce(t *testing.T) {
+	// A huge, almost entirely empty PNG: tiny on the wire, enormous decoded.
+	//
+	// The size is a LITERAL rather than maxImageEdge+1, so that weakening the
+	// bound is a mutation this test can actually catch. Deriving the fixture
+	// from the constant under test moves the fixture with it -- and in this
+	// case moves it to a seventeen-gigabyte allocation, which is its own
+	// answer but not the one being asked for.
+	const oversized = 8000 // comfortably past 2 * thunderforestMaxPixels
+	huge := image.NewRGBA(image.Rect(0, 0, oversized, 4))
+	var body bytes.Buffer
+	if err := png.Encode(&body, huge); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("declared %dx%d in %d compressed bytes", huge.Bounds().Dx(), huge.Bounds().Dy(), body.Len())
+
+	tf, _ := fakeService(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(body.Bytes())
+	})
+
+	_, err := tf.Image(context.Background(), aView())
+	if err == nil {
+		t.Fatal("an oversized image was accepted")
+	}
+	if !strings.Contains(err.Error(), "past anything this endpoint can legitimately return") {
+		t.Errorf("error does not explain the refusal: %v", err)
+	}
+
+	// The ordinary case must still pass, or the bound is simply a ban.
+	ok, _ := fakeService(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes(t, 64, 64))
+	})
+	if _, err := ok.Image(context.Background(), aView()); err != nil {
+		t.Errorf("an ordinary image was refused: %v", err)
 	}
 }

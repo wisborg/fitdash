@@ -244,6 +244,18 @@ type Canvas struct {
 	// Theme is the palette. See Theme.
 	Theme Theme
 
+	// clip is the region Clipped has confined drawing to, or the zero
+	// rectangle when there is none.
+	//
+	// gg's own clip is a mask it applies to ITS operations, and Image does
+	// not go through gg -- it composites with golang.org/x/image/draw
+	// straight into the frame. So a clip set for the drawing context does
+	// not constrain imagery unless it is also honoured here, which is a
+	// distinction with no visible symptom until something is drawn larger
+	// than its box: a zoomed basemap is exactly that, and it painted over
+	// the panels beside it.
+	clip image.Rectangle
+
 	// img is the frame being drawn into, kept alongside the drawing context
 	// because scaled image compositing goes through golang.org/x/image/draw
 	// rather than through gg -- gg can only place an image at 1:1 or under a
@@ -317,11 +329,26 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 	if dst.Empty() {
 		return
 	}
+
+	// Confined to the clip by drawing into a SUB-IMAGE of the frame rather
+	// than by shrinking dst: dst is where the imagery lands, and a zoomed
+	// view deliberately puts most of it outside the box. Shrinking dst would
+	// squash the picture into the box instead of showing the part of it the
+	// box is looking at.
+	target := c.img
+	if !c.clip.Empty() {
+		visible := dst.Intersect(c.clip)
+		if visible.Empty() {
+			return
+		}
+		target = c.img.SubImage(visible).(*image.RGBA)
+	}
+
 	if opacity >= 1 {
-		xdraw.CatmullRom.Scale(c.img, dst, src, src.Bounds(), xdraw.Over, nil)
+		xdraw.CatmullRom.Scale(target, dst, src, src.Bounds(), xdraw.Over, nil)
 		return
 	}
-	xdraw.CatmullRom.Scale(c.img, dst, src, src.Bounds(), xdraw.Over, &xdraw.Options{
+	xdraw.CatmullRom.Scale(target, dst, src, src.Bounds(), xdraw.Over, &xdraw.Options{
 		SrcMask: image.NewUniform(color.Alpha{A: uint8(opacity*255 + 0.5)}),
 	})
 }
@@ -344,9 +371,14 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 // leave the outer one cleared on the way out, so do not add one without
 // fixing this first.
 func (c *Canvas) Clipped(b Box, draw func()) {
+	prev := c.clip
+	c.clip = image.Rect(int(b.X), int(b.Y), int(math.Ceil(b.X+b.W)), int(math.Ceil(b.Y+b.H)))
 	c.dc.DrawRectangle(b.X, b.Y, b.W, b.H)
 	c.dc.Clip()
-	defer c.dc.ResetClip()
+	defer func() {
+		c.dc.ResetClip()
+		c.clip = prev
+	}()
 	draw()
 }
 

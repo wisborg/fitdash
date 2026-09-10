@@ -244,7 +244,10 @@ func bindRenderFlags(c *cobra.Command) {
 	f.BoolVar(&renderOpts.dryRun, "dry-run", false,
 		"resolve everything and print the summary, but write no video and no frames -- the fast way to check "+
 			"a --label or --highlight lands where you meant before paying for an encode, and to read off where "+
-			"each file of a merged activity starts")
+			"each file of a merged activity starts. Resolving everything INCLUDES fetching --basemap imagery, so a "+
+			"dry run with a basemap does reach the network and does fill the image cache; that is deliberate -- a bad "+
+			"key or an unreachable service is worth learning in a second rather than after an encode -- and the "+
+			"summary reports it either way")
 	f.StringVar(&renderOpts.layout, "layout", panel.LayoutAuto,
 		"panel arrangement -- \"auto\" (default: a column for a portrait frame, a row-based one otherwise), "+
 			"\"landscape\", or \"portrait\". Naming one overrides the frame's shape, which is occasionally what you want "+
@@ -999,7 +1002,7 @@ func writeBasemapSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs
 	// entirely from cache sent nothing, and a privacy notice that fires
 	// anyway is one a user learns to skip past.
 	origin := "served from your cache; nothing was sent this run"
-	if f, ok := in.basemap.(interface{ Fetched() bool }); !ok || f.Fetched() {
+	if f, ok := in.basemap.(tilemap.Reporter); !ok || f.Fetched() {
 		origin = "the area of this activity was sent to thunderforest.com"
 	}
 	fmt.Fprintf(out, "basemap: %s %s, dimmed %.0f%% -- %s\n",

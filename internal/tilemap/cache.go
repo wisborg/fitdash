@@ -17,9 +17,14 @@ import (
 //
 // Thirty days, which is a cartographic timescale rather than a technical one:
 // a road that moved is worth picking up eventually, and no route is redrawn
-// wrongly because a hedge is a month out of date. It also sits inside the
-// caching allowance map services grant -- the strictest read for this
-// project's purposes is thirty days on the device that made the request.
+// wrongly because a hedge is a month out of date.
+//
+// It is this package's own choice rather than a limit read off anyone's
+// terms. Thunderforest's permit keeping tiles "beyond the HTTP Expiry date,
+// until fresh tiles are downloaded", which is more generous than this; other
+// services are stricter, and thirty days is inside every allowance surveyed
+// before this provider was chosen. A caller who needs to match a particular
+// service's rule sets Cached.TTL.
 const DefaultTTL = 30 * 24 * time.Hour
 
 // Cached wraps a Provider with an on-disk cache.
@@ -77,6 +82,21 @@ func (c *Cached) Image(ctx context.Context, v View) (image.Image, error) {
 // Fetched reports whether any image was actually requested from the service,
 // as opposed to served from disk.
 func (c *Cached) Fetched() bool { return c.fetched.Load() > 0 }
+
+// Reporter is implemented by a Provider that can say whether it actually went
+// to the network.
+//
+// It exists so a caller can tell a run that sent something from one that did
+// not, without knowing which Provider it is holding -- a plain provider does
+// not implement it and always sent. Named rather than written inline at the
+// call site because that is what the panel layer does for the same shape of
+// question, and an anonymous interface in one of two matching places is an
+// inconsistency a reader has to notice twice.
+type Reporter interface {
+	Fetched() bool
+}
+
+var _ Reporter = (*Cached)(nil)
 
 func (c *Cached) ttl() time.Duration {
 	if c.TTL > 0 {

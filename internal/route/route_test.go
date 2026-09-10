@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+
+	"github.com/wisborg/fitdash/internal/tilemap"
 )
 
 var epoch = time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -541,26 +543,72 @@ func TestProjection_NorthIsUp(t *testing.T) {
 	}
 }
 
-// TestProjection_BoundsRoundTrip pins the geographic rectangle a map service
-// will be asked for. North comes from the SMALLER y, because Mercator's y
-// axis runs south -- reading that backwards asks for a view mirrored about
-// its own centre.
-func TestProjection_BoundsRoundTrip(t *testing.T) {
+// TestCoverProjected_WidensTheBoundsToTheBox pins what a basemap is fetched
+// for, and the property that keeps the imagery under the route rather than
+// beside it.
+//
+// Placer preserves aspect and centres the leftover, so the box shows more
+// ground than the route's own extent on one axis. Imagery fetched for the
+// extent would sit letterboxed inside the box with the line flush against its
+// edges; imagery fetched for the COVER reaches the panel's edges with the
+// route inset in the middle of it.
+func TestCoverProjected_WidensTheBoundsToTheBox(t *testing.T) {
 	pts := zoomPts()
 	p, ok := Fit(pts)
 	if !ok {
 		t.Fatal("Fit: no projection")
 	}
-	north, west, south, east := p.Bounds()
-	if north <= south {
-		t.Errorf("Bounds gave north=%v south=%v; north must be the larger latitude", north, south)
+
+	// A box wider than the route's own aspect: the extra width is what the
+	// cover has to account for.
+	const w, h = 400.0, 200.0
+	minX, minY, spanX, spanY, ok := p.CoverProjected(w, h)
+	if !ok {
+		t.Fatal("CoverProjected refused an ordinary box")
 	}
-	if east <= west {
-		t.Errorf("Bounds gave east=%v west=%v; east must be the larger longitude", east, west)
+	if spanX < p.spanX-1e-12 || spanY < p.spanY-1e-12 {
+		t.Errorf("cover (%v x %v) is smaller than the route's own extent (%v x %v)", spanX, spanY, p.spanX, p.spanY)
 	}
-	for i, pt := range pts {
-		if pt.Lat < south-1e-9 || pt.Lat > north+1e-9 || pt.Lon < west-1e-9 || pt.Lon > east+1e-9 {
-			t.Errorf("point %d (%v, %v) lies outside the bounds fitted to it", i, pt.Lat, pt.Lon)
+	if minX > p.minX+1e-12 || minY > p.minY+1e-12 {
+		t.Errorf("cover starts at (%v, %v), inside the route's own bounds (%v, %v)", minX, minY, p.minX, p.minY)
+	}
+
+	// The cover's aspect must match the BOX's, or the imagery fetched for it
+	// is stretched when it is drawn.
+	if got, want := spanX/spanY, w/h; math.Abs(got-want) > 1e-9 {
+		t.Errorf("cover aspect %v does not match the box's %v", got, want)
+	}
+
+	// And it agrees with Placer, which is the whole reason they share one
+	// scale: the route's own bounds must land exactly where the placer puts
+	// them inside the covered rectangle.
+	at, ok := p.Placer(w, h)
+	if !ok {
+		t.Fatal("Placer: none")
+	}
+	x, _ := at(pts[0])
+	wantX := (mercX(pts[0]) - minX) / spanX * w
+	if math.Abs(x-wantX) > 1e-6 {
+		t.Errorf("Placer puts a point at x=%v but the cover implies %v; the two disagree and imagery will sit beside the route", x, wantX)
+	}
+}
+
+// mercX is the projected x of a point, for comparing a placer against a cover.
+func mercX(pt Point) float64 {
+	x, _ := tilemap.Project(pt.Lat, pt.Lon)
+	return x
+}
+
+// TestCoverProjected_RefusesABoxWithNoArea matches Placer: a caller that got
+// a placer gets a cover, and one that did not has nothing to draw either way.
+func TestCoverProjected_RefusesABoxWithNoArea(t *testing.T) {
+	p, ok := Fit(zoomPts())
+	if !ok {
+		t.Fatal("Fit: no projection")
+	}
+	for _, c := range []struct{ w, h float64 }{{0, 100}, {100, 0}, {-1, 100}, {100, -1}} {
+		if _, _, _, _, ok := p.CoverProjected(c.w, c.h); ok {
+			t.Errorf("CoverProjected(%v, %v) claimed a usable rectangle", c.w, c.h)
 		}
 	}
 }

@@ -94,9 +94,14 @@ fitdash morning-0*.fit --dry-run --label 'at=1h17m31s,name=Last climb'
 That makes it the quick way to check a `--highlight` or a `--label` lands where you meant:
 every refusal — an instant past the end of the activity, two labels at the same moment, a
 marker with no distance to sit at on the profile — happens while resolving, so you see it
-in a second instead of after an encode. It creates no files and no directories, reports the
-destination it *would* write rather than piping it to stdout, and under `--frames` lists
-the frames it would produce.
+in a second instead of after an encode. It creates no video, no frames and no output
+directory, reports the destination it *would* write rather than piping it to stdout, and
+under `--frames` lists the frames it would produce.
+
+The one deliberate exception is `--basemap`: a dry run does fetch imagery, so it reaches
+the network and fills the image cache. That is the point — a bad key or an unreachable
+service is worth learning in a second rather than after an encode — and the summary
+reports it either way.
 
 **A highlight can zoom the route map onto its own stretch of course** with `zoom=true`, off
 by default. On a workout merged from several files the whole-course view is useless for
@@ -137,6 +142,10 @@ key so one file can hold several. It is read once, never logged, never written
 into the video, and redacted out of every error — the key travels to the service
 as a query parameter, so it ends up inside URLs, and URLs end up inside error
 messages.
+
+Imagery is cached on disk, which is a second place — after the rendered video itself —
+where roughly where you were persists. It lives under your user cache directory unless
+`--basemap-cache` says otherwise, and `--basemap-cache off` keeps nothing.
 
 **Turning this on sends the area of your activity to a third party.** That is
 your call to make, but fitdash will not make it quietly: the summary names the

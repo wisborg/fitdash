@@ -49,10 +49,19 @@ func fetchBasemaps(ctx *Context, box Box, base route.Projection, marks []routeMa
 	defer cancel()
 
 	fetch := func(p route.Projection) *basemapView {
-		north, west, south, east, ok := p.Cover(box.W, box.H)
+		// ONE call, and the degrees derived from its result rather than
+		// asked for separately. The rectangle the service is asked about and
+		// the rectangle the returned image is drawn into have to be the same
+		// rectangle: if they are ever computed twice and drift apart, the
+		// imagery sits a few pixels beside the route it was fetched for, and
+		// nothing short of comparing pixels would notice.
+		minX, minY, spanX, spanY, ok := p.CoverProjected(box.W, box.H)
 		if !ok {
 			return nil
 		}
+		north, west := tilemap.Unproject(minX, minY)
+		south, east := tilemap.Unproject(minX+spanX, minY+spanY)
+
 		img, err := ctx.Basemap.Image(c, tilemap.View{
 			North: north, West: west, South: south, East: east,
 			Width: int(box.W), Height: int(box.H),
@@ -60,7 +69,6 @@ func fetchBasemaps(ctx *Context, box Box, base route.Projection, marks []routeMa
 		if err != nil || img == nil {
 			return nil
 		}
-		minX, minY, spanX, spanY := p.CoverProjected(box.W, box.H)
 		return &basemapView{img: img, minX: minX, minY: minY, spanX: spanX, spanY: spanY}
 	}
 

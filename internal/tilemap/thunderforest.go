@@ -1,6 +1,7 @@
 package tilemap
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"image"
@@ -123,15 +124,46 @@ func (t *Thunderforest) Image(ctx context.Context, v View) (image.Image, error) 
 		return nil, fmt.Errorf("thunderforest: fetching %s imagery: %s", style, describeStatus(res.StatusCode))
 	}
 
-	// Bounded: a service answering with something enormous must not be able
-	// to exhaust this process's memory. The ceiling is generous against the
-	// largest image the endpoint can legitimately return.
-	img, _, err := image.Decode(io.LimitReader(res.Body, maxImageBytes))
+	body, err := io.ReadAll(io.LimitReader(res.Body, maxImageBytes))
+	if err != nil {
+		return nil, fmt.Errorf("thunderforest: reading %s imagery: %s", style, redact(err.Error(), t.Key))
+	}
+
+	// The DIMENSIONS are checked before the pixels are allocated, and the
+	// byte ceiling above is not a substitute for it. Compressed size and
+	// decoded size are only loosely related: a PNG of one flat colour a few
+	// kilobytes long can declare a width and height whose product is
+	// billions of pixels, and the standard decoders enforce no maximum, so
+	// image.Decode would faithfully try to allocate it. That turns any party
+	// able to answer this request -- a spoofed response, a proxy in front of
+	// the service -- into one that can exhaust this process's memory.
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("thunderforest: decoding %s imagery: %w", style, err)
+	}
+	if cfg.Width > maxImageEdge || cfg.Height > maxImageEdge || cfg.Width*cfg.Height > maxImagePixels {
+		return nil, fmt.Errorf("thunderforest: %s imagery came back %dx%d, past anything this endpoint can legitimately return",
+			style, cfg.Width, cfg.Height)
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("thunderforest: decoding %s imagery: %w", style, err)
 	}
 	return img, nil
 }
+
+// maxImageEdge and maxImagePixels bound what will be decoded.
+//
+// The endpoint's own ceiling is 2560 on each axis, doubled by @2x, so
+// anything past that is not imagery this program asked for. The area bound is
+// the belt to that pair of braces: it is what stops a long thin image --
+// within both edge limits on one axis and enormous on the other -- from
+// allocating what the edges alone would allow.
+const (
+	maxImageEdge   = 2 * thunderforestMaxPixels
+	maxImagePixels = maxImageEdge * maxImageEdge
+)
 
 // maxImageBytes bounds a response. 2560x2560 RGBA compresses well below this
 // even as PNG; anything larger is not imagery this program asked for.
@@ -194,11 +226,27 @@ var UserAgent = "fitdash (+https://github.com/wisborg/fitdash)"
 // Substring replacement rather than URL parsing on purpose: the message may
 // not be a URL, may be a URL inside prose, or may be several. What matters is
 // that the key does not survive, whatever shape the text is.
+//
+// THE ESCAPED FORMS MATTER AS MUCH AS THE RAW ONE. The key goes into the URL
+// through url.Values.Encode, which percent-encodes it -- so a key containing
+// a plus, a slash, an equals or a space appears in a *url.Error's message in
+// its ENCODED form, and a literal match against the raw value would sail past
+// it and print the secret. Thunderforest's own keys are hexadecimal and would
+// never encode differently, which is exactly why this is easy to get wrong
+// and impossible to notice: it would leak only for a service, or a future
+// key format, that uses a character outside the unreserved set.
 func redact(s string, k Key) string {
 	if k.Empty() {
 		return s
 	}
-	return strings.ReplaceAll(s, k.reveal(), redacted)
+	raw := k.reveal()
+	s = strings.ReplaceAll(s, raw, redacted)
+	for _, escaped := range []string{url.QueryEscape(raw), url.PathEscape(raw)} {
+		if escaped != raw {
+			s = strings.ReplaceAll(s, escaped, redacted)
+		}
+	}
+	return s
 }
 
 // describeStatus turns an HTTP status into something a user can act on. The
