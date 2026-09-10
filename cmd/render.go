@@ -788,7 +788,10 @@ func newProgress(cmd *cobra.Command, total int) (*progress.Display, *progress.Ba
 	if renderOpts.quiet {
 		return nil, nil
 	}
-	d := progress.New(cmd.ErrOrStderr(), progress.Options{})
+	// A gradient, which is safe to ask for unconditionally: the display
+	// emits colour only on a terminal that will take it, and never when
+	// NO_COLOR or TERM=dumb says otherwise.
+	d := progress.New(cmd.ErrOrStderr(), progress.Options{Palette: progress.DefaultGradient()})
 	return d, d.Bar(progress.BarSpec{Label: "rendering", Total: int64(total), Unit: "frames"})
 }
 
