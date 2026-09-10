@@ -22,6 +22,7 @@ import (
 	"github.com/wisborg/fitdash/internal/panel"
 	"github.com/wisborg/fitdash/internal/render"
 	"github.com/wisborg/fitdash/internal/route"
+	"github.com/wisborg/fitdash/internal/tilemap"
 )
 
 type renderOptions struct {
@@ -35,6 +36,10 @@ type renderOptions struct {
 	frameAtVideo        []time.Duration
 	quiet               bool
 	dryRun              bool
+	basemap             string
+	basemapKeyFile      string
+	basemapDim          float64
+	basemapCache        string
 	power               string
 	layout              string
 	bottomBand          string
@@ -75,6 +80,9 @@ func validateRenderOptions() error {
 	// same class of contradiction the -o/--frames check above refuses.
 	if renderOpts.dryRun && renderOpts.quiet {
 		return fmt.Errorf("render: --dry-run prints the summary and --quiet suppresses it; pass one")
+	}
+	if renderOpts.basemapDim < 0 || renderOpts.basemapDim > 1 {
+		return fmt.Errorf("render: --basemap-dim %v is outside 0 to 1", renderOpts.basemapDim)
 	}
 	// 0 is x264's spelling of lossless and this program's spelling of "unset",
 	// and it cannot be both. Passing it through silently produced the default
@@ -212,6 +220,27 @@ func bindRenderFlags(c *cobra.Command) {
 	f.DurationSliceVar(&renderOpts.frameAtVideo, "frame-at-video", nil, "with --frames, also write the frame at this offset into the rendered VIDEO's own clock, rather than the activity's (repeatable, e.g. 9.8s) -- "+
 		"what checking a highlight's entrance or exit transition needs, since --frame-at cannot land a frame a fixed distance from a boundary once the render runs at more than one rate")
 	f.BoolVar(&renderOpts.quiet, "quiet", false, "suppress the progress line and the summary")
+	f.StringVar(&renderOpts.basemap, "basemap", "none",
+		"draw the route over map imagery from Thunderforest instead of on clean background: \"none\" (default) or a style "+
+			"("+strings.Join(tilemap.ThunderforestStyles, ", ")+"). Requires --basemap-key-file. \"outdoors\" and "+
+			"\"landscape\" draw contours, paths and trail furniture, which is what a run or a ride actually happened on; "+
+			"the others are general-purpose. NOTE that this sends the area of your activity to a third party -- see "+
+			"--basemap-key-file -- and that a fetch failure is never fatal: the render continues with the plain outline "+
+			"and the summary says so")
+	f.StringVar(&renderOpts.basemapKeyFile, "basemap-key-file", "",
+		"path to a file holding your own Thunderforest API key, required by --basemap. fitdash ships no key and has no "+
+			"account of its own; get one at thunderforest.com. The file may be the bare key, or a JSON or YAML mapping "+
+			"of provider name to key (\"thunderforest: ...\", or \"key: ...\" for a file holding only one). The key is "+
+			"read once, never logged, never written into the video, and redacted out of every error")
+	f.Float64Var(&renderOpts.basemapDim, "basemap-dim", 0.65,
+		"how far --basemap imagery is washed toward the background, 0 (full strength) to 1 (invisible). Map imagery is "+
+			"busy and mid-toned, and the route line, the covered prefix and the position dot all have to read against "+
+			"it; the default pushes the map back to being context rather than content")
+	f.StringVar(&renderOpts.basemapCache, "basemap-cache", "",
+		"directory to keep fetched --basemap imagery in (default: a fitdash folder under your user cache directory). "+
+			"Tuning a --highlight means rendering the same activity repeatedly, and without a cache every run re-fetches "+
+			"identical imagery -- slower, and spending your own quota to be told the same thing. A cached activity also "+
+			"renders offline. Pass \"off\" to keep nothing")
 	f.BoolVar(&renderOpts.dryRun, "dry-run", false,
 		"resolve everything and print the summary, but write no video and no frames -- the fast way to check "+
 			"a --label or --highlight lands where you meant before paying for an encode, and to read off where "+
@@ -431,8 +460,15 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// model already built rather than each building their own copy of it --
 	// see panel.Context.Elevation's own doc comment.
 	elevTuning, elevSource := resolveElevationTuning(track)
+	basemap, err := resolveBasemap(cmd)
+	if err != nil {
+		return err
+	}
+
 	rctx := &panel.Context{
 		Track:               track,
+		Basemap:             basemap,
+		BasemapDim:          renderOpts.basemapDim,
 		Report:              inspect.Build(track),
 		Elevation:           panel.BuildElevation(track, elevTuning),
 		Timer:               timer,
@@ -459,7 +495,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 
 	in := renderInputs{
-		track: track, sources: sources, tl: timeline, w: w, h: h,
+		track: track, sources: sources, basemap: basemap, tl: timeline, w: w, h: h,
 		layoutName: layout.Name, theme: theme, smoothing: smoothing,
 		highlights: highlights, labels: labels,
 		elevation: rctx.Elevation, elevationSource: elevSource,
@@ -499,6 +535,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 type renderInputs struct {
 	track      *fitactivity.Track
 	sources    []activitySource
+	basemap    tilemap.Provider
 	tl         panel.Timeline
 	w, h       int
 	layoutName string
@@ -772,6 +809,63 @@ func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses st
 	}
 }
 
+// resolveBasemap turns --basemap and --basemap-key-file into a provider, or
+// nil when no basemap was asked for.
+//
+// The key is read HERE, once, from a path the user named -- fitdash ships no
+// key, has no account, and never looks anywhere it was not pointed. What comes
+// back is a tilemap.Key, which redacts itself in every printing verb and in
+// every serialisation, so the value cannot reach a log, an error or the
+// --format json output by accident.
+func resolveBasemap(cmd *cobra.Command) (tilemap.Provider, error) {
+	style := renderOpts.basemap
+	if style == "" || style == basemapOff {
+		if renderOpts.basemapKeyFile != "" {
+			// Said rather than ignored: a key file passed with no style is a
+			// user who expected a map and will otherwise wonder why there
+			// is not one.
+			fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-key-file given without --basemap; no map imagery was fetched\n")
+		}
+		return nil, nil
+	}
+	if !slices.Contains(tilemap.ThunderforestStyles, style) {
+		return nil, fmt.Errorf("render: --basemap %q is invalid; use %s or %s",
+			style, basemapOff, strings.Join(tilemap.ThunderforestStyles, ", "))
+	}
+	if renderOpts.basemapKeyFile == "" {
+		return nil, fmt.Errorf("render: --basemap %s needs --basemap-key-file: fitdash ships no map service key, so you supply your own", style)
+	}
+	if err := tilemap.CheckKeyFilePermissions(renderOpts.basemapKeyFile); err != nil {
+		// A warning, not a refusal: the file is the user's and the
+		// permissions may be deliberate.
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+	}
+	key, err := tilemap.LoadKey(renderOpts.basemapKeyFile, tilemap.ThunderforestProvider)
+	if err != nil {
+		return nil, fmt.Errorf("render: %w", err)
+	}
+	var provider tilemap.Provider = &tilemap.Thunderforest{Key: key, Style: style}
+	if dir := basemapCacheDir(); dir != "" {
+		provider = &tilemap.Cached{Provider: provider, Dir: dir}
+	}
+	return provider, nil
+}
+
+// basemapCacheDir resolves --basemap-cache, or "" for no caching.
+func basemapCacheDir() string {
+	switch renderOpts.basemapCache {
+	case "off":
+		return ""
+	case "":
+		return tilemap.DefaultCacheDir()
+	default:
+		return renderOpts.basemapCache
+	}
+}
+
+// basemapOff is the --basemap value that draws no imagery, and the default.
+const basemapOff = "none"
+
 // newProgress builds the live progress display and its bar, or nils under
 // --quiet.
 //
@@ -849,6 +943,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	}
 	out := cmd.ErrOrStderr()
 	writeMergeSummary(cmd, in.track, in.sources)
+	writeBasemapSummary(cmd, r, in)
 	// Both durations, always. A user who asked for a three-minute video wants
 	// to see that they got three minutes AND that it still covers the whole
 	// activity; printing one of them leaves the other to be guessed at.
@@ -872,6 +967,46 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	markersOnProfile := markersAbsorbedIntoProfile(r)
 	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
 	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
+}
+
+// writeBasemapSummary says that map imagery was fetched, from whom, and what
+// it cost in privacy.
+//
+// This is not a courtesy line. Rendering a basemap sends the area of the
+// user's activity to a third party, and this project's own rules say that is
+// the user's call to make but must never be made silently. So it is stated
+// every time it happens, naming the service -- the same reasoning that makes
+// a merged activity name every file it came from.
+//
+// A fetch that failed is reported too, and matters more than the success
+// case: a missing basemap looks EXACTLY like a render that never asked for
+// one, so without a line here the user would compare the video against what
+// they expected and find nothing visibly wrong with it.
+func writeBasemapSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs) {
+	if renderOpts.quiet || renderOpts.basemap == "" || renderOpts.basemap == basemapOff {
+		return
+	}
+	out := cmd.ErrOrStderr()
+	drew, note := r.Basemap()
+	if !drew {
+		fmt.Fprintf(out, "basemap: %s imagery could not be fetched; the route is drawn on plain background\n", renderOpts.basemap)
+		if note != "" {
+			fmt.Fprintf(out, "  %s\n", note)
+		}
+		return
+	}
+	// Only claim the route was sent when it actually was. A run served
+	// entirely from cache sent nothing, and a privacy notice that fires
+	// anyway is one a user learns to skip past.
+	origin := "served from your cache; nothing was sent this run"
+	if f, ok := in.basemap.(interface{ Fetched() bool }); !ok || f.Fetched() {
+		origin = "the area of this activity was sent to thunderforest.com"
+	}
+	fmt.Fprintf(out, "basemap: %s %s, dimmed %.0f%% -- %s\n",
+		tilemap.ThunderforestProvider, renderOpts.basemap, renderOpts.basemapDim*100, origin)
+	if note != "" {
+		fmt.Fprintf(out, "  %s\n", note)
+	}
 }
 
 // writeGaugeSummary reports, for a render styled GaugeStyleTrack or
@@ -1631,6 +1766,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
 	writeMergeSummary(cmd, in.track, in.sources)
+	writeBasemapSummary(cmd, r, in)
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)

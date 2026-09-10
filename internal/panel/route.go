@@ -118,10 +118,35 @@ func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 			// there is no stretch of course to frame, and framing the
 			// nearest one would claim the highlight happened there.
 			if h.Zoom && ok {
-				m.zoom, m.zoomOK = proj.Sub(pts[i0 : i1+1])
+				// Fit over the marked vertices, not a constructor of its
+				// own: Mercator has no per-view parameter, so a sub-view is
+				// simply this projection re-fitted to fewer points. The
+				// previous projection needed a Sub that shared its mean
+				// latitude, or the two views sheared against each other as
+				// the zoom scaled between them.
+				m.zoom, m.zoomOK = route.Fit(pts[i0 : i1+1])
 				p.anyZoom = p.anyZoom || m.zoomOK
 			}
 			p.marks[i] = m
+		}
+	}
+
+	// The viewport starts at the whole-course view. Static composites against
+	// it and runs BEFORE Dynamic ever writes it, so a render that never zooms
+	// would otherwise composite against a zero rectangle and draw no map at
+	// all -- on exactly the renders where the basemap is simplest.
+	vx, vy, vw, vh := proj.CoverProjected(box.W, box.H)
+	p.viewport = [4]float64{vx, vy, vw, vh}
+
+	// Fetched here, after the marks exist, because the zoomed views are
+	// defined by them -- and in Prepare at all because this is the phase that
+	// runs once. Everything below this line runs per frame.
+	if ctx.Basemap != nil {
+		p.baseMap, p.zoomMaps, p.mapNote = fetchBasemaps(ctx, box, proj, p.marks)
+		if p.baseMap != nil {
+			p.mapCredit = ctx.Basemap.Attribution()
+			p.mapDim = clampWeight(ctx.BasemapDim)
+			p.creditPx = maxf(9, unit*0.05)
 		}
 	}
 	return p
@@ -217,6 +242,25 @@ type routePainter struct {
 	base  route.Projection
 	inset float64
 
+	// base and zooms are the fetched imagery, parallel to marks. A render
+	// with no --basemap leaves them nil and every basemap branch below falls
+	// away.
+	baseMap   *basemapView
+	zoomMaps  []*basemapView
+	mapDim    float64
+	mapCredit string
+	mapNote   string
+	creditPx  float64
+	// creditFitted is creditPx shrunk to fit the box, resolved on the first
+	// draw because it needs the canvas's font metrics, which Prepare cannot
+	// reach.
+	creditFitted float64
+
+	// viewport is the projected rectangle the current frame is looking at:
+	// minX, minY, spanX, spanY. Written by Dynamic before anything composites
+	// against it, and left at the base view for a render that never zooms.
+	viewport [4]float64
+
 	// anyZoom is true when at least one highlight resolved a zoom view, and
 	// it is what moves the outline out of Static and into Dynamic -- see
 	// Static. It is deliberately "any highlight actually got one" rather
@@ -301,7 +345,91 @@ func (p *routePainter) Static(c *Canvas) {
 	if len(p.xs) < 2 || p.anyZoom {
 		return
 	}
+	p.drawBasemap(c, p.baseMap, nil, 0)
 	c.Polyline(p.xs, p.ys, p.outlineW, c.Theme.Dim)
+	p.drawCredit(c)
+}
+
+// drawBasemap composites the imagery for a viewport, washes it toward the
+// background, and is a no-op when there is none.
+//
+// The wash is not decoration. Map imagery is busy, mid-toned and full of its
+// own colour, and the route line, the covered prefix and the position dot all
+// have to read against it -- so the map is pushed back toward the theme's
+// background until it is context rather than content. Without it the panel
+// becomes a map with a hard-to-find line on it, which inverts what the panel
+// is for.
+//
+// front, when non-nil, is cross-faded over back at weight: the two images are
+// the same ground at different scales, and a zoom moves the viewport between
+// them. Drawing back first and front over it means a missing zoomed image
+// simply leaves the whole-course one showing, magnified, rather than leaving
+// a hole.
+func (p *routePainter) drawBasemap(c *Canvas, back, front *basemapView, weight float64) {
+	if back == nil && front == nil {
+		return
+	}
+	minX, minY, spanX, spanY := p.viewport[0], p.viewport[1], p.viewport[2], p.viewport[3]
+	back.drawInto(c, p.box, minX, minY, spanX, spanY, 1)
+	if front != nil && weight > 0 {
+		front.drawInto(c, p.box, minX, minY, spanX, spanY, weight)
+	}
+	if p.mapDim > 0 {
+		c.Rect(p.box, Fade(c.Theme.Background, p.mapDim))
+	}
+}
+
+// drawCredit puts the provider's required attribution in the frame.
+//
+// It is drawn by the panel, every frame the imagery appears in, because a
+// video has nowhere else to put it: there is no map widget, no corner
+// control, no link to follow, and the file is distributed on its own. Every
+// service whose terms were read for this requires visible credit, and one of
+// them forbids moving it to end credits -- so it goes where the map is.
+//
+// Never conditional on space. A panel too small for the credit is a panel too
+// small for the imagery, and the honest response is to keep the obligation
+// and let the map be small.
+func (p *routePainter) drawCredit(c *Canvas) {
+	if p.baseMap == nil || p.mapCredit == "" {
+		return
+	}
+	const pad = 3.0
+
+	// Shrunk to fit the panel, once. The credit is a fixed sentence and the
+	// box is whatever the layout gave this panel, so at a small size or a
+	// square shape the string is simply wider than the box -- measured at
+	// 1100 pixels in a 720-pixel box. Letting it overflow would push most of
+	// the obligation off the panel and draw the rest across its neighbour.
+	if p.creditFitted == 0 {
+		px, err := c.FitTextSize(p.mapCredit, p.box.W-2*pad, p.creditPx)
+		if err != nil || px <= 0 {
+			px = p.creditPx
+		}
+		p.creditFitted = px
+	}
+	w, h, err := c.MeasureText(p.mapCredit, p.creditFitted)
+	if err != nil {
+		return
+	}
+	// ay of 0.5 with y as the text's CENTRE line, which is the convention
+	// every other panel here uses -- gg's anchor moves the baseline DOWN by
+	// ay*height, so anchoring at 1 puts the text below the box entirely.
+	x := p.box.X + p.box.W - pad
+	y := p.box.Y + p.box.H - pad - h/2
+
+	// A plate behind the text, and Foreground on top of it.
+	//
+	// Attribution has to be legible over imagery this program has never
+	// seen: a style may be pale, dark, or a photograph, and a credit drawn
+	// in a chrome colour straight onto it is a credit that vanishes on some
+	// maps and not others. Since it is an obligation rather than decoration
+	// it gets guaranteed contrast instead of a colour that usually works --
+	// a nearly-opaque wash of the theme's own background, which reads on any
+	// imagery because it is not the imagery.
+	c.Rect(Box{X: x - w - pad, Y: y - h/2 - pad, W: w + 2*pad, H: h + 2*pad},
+		Fade(c.Theme.Background, 0.72))
+	_ = c.Text(p.mapCredit, x, y, 1, 0.5, p.creditFitted, c.Theme.Foreground)
 }
 
 // Dynamic draws the covered portion, then every configured highlight's route
@@ -347,6 +475,11 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	// resolved and the placements it already computed.
 	place, xs, ys := p.place, p.xs, p.ys
 	proj, zoomed := p.frameProjection(f)
+	// The viewport in projected units, which is what the basemap is
+	// composited against. Recorded even when nothing zoomed, so Static and
+	// Dynamic composite against the same rectangle.
+	vpX, vpY, vpW, vpH := proj.CoverProjected(p.box.W, p.box.H)
+	p.viewport = [4]float64{vpX, vpY, vpW, vpH}
 	if zoomed {
 		zoomPlace, ok := p.placer(proj)
 		if !ok {
@@ -381,6 +514,12 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 	// first, exactly as Static would have laid it down -- everything below
 	// is drawn over it in the same order either way.
 	if p.anyZoom {
+		var front *basemapView
+		weight := 0.0
+		if f.Interval >= 0 && f.Interval < len(p.zoomMaps) {
+			front, weight = p.zoomMaps[f.Interval], f.IntervalWeight
+		}
+		p.drawBasemap(c, p.baseMap, front, weight)
 		c.Polyline(xs, ys, p.outlineW, c.Theme.Dim)
 	}
 
@@ -424,8 +563,25 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 	// which is a claim about position this program does not invent.
 	cur := route.IndexAt(p.all, f.At)
 	if cur < 0 {
+		// No position yet -- but the imagery is already on screen, so the
+		// credit it owes is due whether or not a dot can be placed.
+		p.creditOnTop(c)
 		return
 	}
 	x, y := place(p.all[cur])
 	c.Circle(x, y, p.dotR, c.Theme.Accent)
+	p.creditOnTop(c)
+}
+
+// creditOnTop draws the attribution over everything else this method drew.
+//
+// Only on the zoom path, because Static owns it otherwise -- but it MUST be
+// here, and its absence was a real bug rather than a cosmetic one: a zooming
+// render takes the Static early return, so the credit was drawn on no frame
+// at all. The obligation vanished on exactly the renders that use the
+// feature it exists for, and nothing on screen said so.
+func (p *routePainter) creditOnTop(c *Canvas) {
+	if p.anyZoom {
+		p.drawCredit(c)
+	}
 }

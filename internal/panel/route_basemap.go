@@ -1,0 +1,136 @@
+package panel
+
+import (
+	"context"
+	"image"
+	"time"
+
+	"github.com/wisborg/fitdash/internal/route"
+	"github.com/wisborg/fitdash/internal/tilemap"
+)
+
+// basemapTimeout bounds how long a whole render will wait for imagery.
+//
+// A basemap is decoration and the render is the product, so a map service
+// that has stopped answering must cost a render some seconds and not its
+// existence. It covers every view together rather than each one separately:
+// what a user is willing to wait for is "before my render starts", not "per
+// image", and a course with three zooming highlights should not be able to
+// wait three times as long as one without.
+const basemapTimeout = 30 * time.Second
+
+// basemapView is one fetched image and the ground it covers.
+//
+// The bounds are kept in PROJECTED units rather than degrees because that is
+// what the per-frame cross-fade needs: deciding which part of this image the
+// current viewport is looking at is a rectangle intersection, and doing it in
+// degrees would mean projecting twice per frame to answer a question that is
+// already linear here.
+type basemapView struct {
+	img                      image.Image
+	minX, minY, spanX, spanY float64
+}
+
+// fetchBasemaps resolves imagery for every view this render will draw: the
+// whole course, and one per highlight that zooms.
+//
+// Failure is not an error the caller must handle. Every outcome that is not
+// an image -- no provider, no network, a refused key, a service that is
+// down -- returns no view and a note, and the panel draws the outline on
+// clean background exactly as it always has. That is what makes "offline
+// must keep working" a property of the code rather than a hope: there is no
+// path through here that can fail a render.
+func fetchBasemaps(ctx *Context, box Box, base route.Projection, marks []routeMark) (*basemapView, []*basemapView, string) {
+	if ctx.Basemap == nil {
+		return nil, nil, ""
+	}
+
+	c, cancel := context.WithTimeout(context.Background(), basemapTimeout)
+	defer cancel()
+
+	fetch := func(p route.Projection) *basemapView {
+		north, west, south, east, ok := p.Cover(box.W, box.H)
+		if !ok {
+			return nil
+		}
+		img, err := ctx.Basemap.Image(c, tilemap.View{
+			North: north, West: west, South: south, East: east,
+			Width: int(box.W), Height: int(box.H),
+		})
+		if err != nil || img == nil {
+			return nil
+		}
+		minX, minY, spanX, spanY := p.CoverProjected(box.W, box.H)
+		return &basemapView{img: img, minX: minX, minY: minY, spanX: spanX, spanY: spanY}
+	}
+
+	baseView := fetch(base)
+	if baseView == nil {
+		// The whole-course view is the one every render needs. Without it
+		// there is no basemap worth having, and fetching the zoomed ones
+		// would be several more requests to a service that has just proved
+		// it cannot answer.
+		return nil, nil, "the map service returned no imagery; the route is drawn without a basemap"
+	}
+
+	zooms := make([]*basemapView, len(marks))
+	missing := 0
+	for i, m := range marks {
+		if !m.zoomOK {
+			continue
+		}
+		if zooms[i] = fetch(m.zoom); zooms[i] == nil {
+			missing++
+		}
+	}
+	note := ""
+	if missing > 0 {
+		note = "some zoomed views have no imagery; they fall back to the whole-course map"
+	}
+	return baseView, zooms, note
+}
+
+// drawInto composites this view into the box for a viewport, at an opacity.
+//
+// The image covers a fixed rectangle of the projected plane. The viewport is
+// another rectangle of the same plane, and drawing one for the other is the
+// linear map between them -- so the destination is the box scaled by the
+// ratio of the two spans and offset by their difference. Everything outside
+// the box is clipped by the caller, which is what lets a zoomed viewport
+// magnify a corner of the image without the rest of it landing on the panels
+// alongside.
+func (v *basemapView) drawInto(c *Canvas, box Box, minX, minY, spanX, spanY float64, opacity float64) {
+	if v == nil || v.img == nil || spanX <= 0 || spanY <= 0 || v.spanX <= 0 || v.spanY <= 0 {
+		return
+	}
+	scaleX, scaleY := box.W/spanX, box.H/spanY
+	dst := Box{
+		X: box.X + (v.minX-minX)*scaleX,
+		Y: box.Y + (v.minY-minY)*scaleY,
+		W: v.spanX * scaleX,
+		H: v.spanY * scaleY,
+	}
+	c.Image(v.img, dst, opacity)
+}
+
+// BasemapReporter is implemented by a Painter that fetched map imagery and
+// has something to say about how it went.
+//
+// It exists so the render summary can report a basemap that did not arrive
+// without internal/render or cmd knowing what a basemap is. A fetch that
+// failed is invisible in the frames -- the route is simply drawn on
+// background, exactly as it would be with no --basemap at all -- so if it is
+// not said in words the user is left comparing a render against what they
+// expected and finding nothing wrong with it.
+type BasemapReporter interface {
+	// BasemapNote is empty when there is nothing to report.
+	BasemapNote() string
+	// BasemapDrew reports whether any imagery actually reached the frame.
+	BasemapDrew() bool
+}
+
+// BasemapNote reports how the imagery fetch went.
+func (p *routePainter) BasemapNote() string { return p.mapNote }
+
+// BasemapDrew reports whether imagery reached the frame.
+func (p *routePainter) BasemapDrew() bool { return p.baseMap != nil }

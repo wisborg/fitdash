@@ -358,6 +358,30 @@ func (r *Renderer) Absorbed() []string { return r.absorbed }
 // collided badly enough to matter.
 func (r *Renderer) OverlappingLabels() []int { return r.overlappingLabels }
 
+// Basemap reports whether any panel drew map imagery, and anything it has to
+// say about the attempt.
+//
+// Asked of the painters rather than tracked here, because this package does
+// not know what a basemap is and should not learn: it composites whatever
+// panels draw. The interface is panel's (see panel.BasemapReporter), so a
+// second panel that ever grew imagery would be reported the same way with no
+// change here.
+func (r *Renderer) Basemap() (drew bool, note string) {
+	for _, p := range r.painters {
+		rep, ok := p.(panel.BasemapReporter)
+		if !ok {
+			continue
+		}
+		if rep.BasemapDrew() {
+			drew = true
+		}
+		if n := rep.BasemapNote(); n != "" && note == "" {
+			note = n
+		}
+	}
+	return drew, note
+}
+
 // Frame builds the per-frame state for frame i.
 //
 // It is the single place the invariant on panel.Frame.Sample is established:

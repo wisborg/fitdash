@@ -1240,6 +1240,92 @@ decline: a pace panel just drew from this activity, so the activity demonstrably
 A name that also drew is now filtered out of that heading. The rule is deliberately about the
 two lists rather than about pace, so it keeps holding for the next panel seated twice.
 
+## The basemap: imagery under the route
+
+`--basemap <style>` draws the route over map imagery from Thunderforest, using a key
+the user supplies. Off by default. The provider work lives in `internal/tilemap`, which
+is written as a library that happens to live here — degrees and pixels in, an
+`image.Image` out, no fitdash type anywhere in its API. It is not its own module because
+this project's rule is that a package earns a repository when a *second* program needs
+it, the way `fitactivity` and `output` did.
+
+### The projection changed, and it got simpler
+
+`internal/route.Projection` was equirectangular with longitude scaled by the cosine of
+the route's mean latitude — a linear approximation of Mercator about that latitude,
+excellent over a few kilometres and several pixels out at the ends of a twenty-kilometre
+route. That is the difference between a line on the road and a line beside it, so it is
+now Web Mercator, read from `tilemap`, which owns it because the projection belongs to
+the tile world.
+
+It **removed** a concept. Mercator has no per-view parameter, so there is no mean latitude
+two views can disagree about — and `Projection.Sub`, which existed only to share the
+parent's `cosLat` so a zoom would not shear, is gone. Fitting a sub-range is now `Fit`
+over the subset. `Lerp` is unchanged and needs no compatibility check.
+
+`tilemap`'s y axis runs **south**, matching tile numbering and screen pixels, so the
+north-up flip the old projection carried is gone too. Reversing it yields a view mirrored
+about its own centre, which on a real route looks like a plausible map of somewhere else
+— hence a test for it.
+
+### One request per view, resolved in Prepare
+
+The static endpoint takes a centre and an integer zoom, so a view is resolved the other
+way round: pick the deepest integer zoom whose rendering fits the endpoint's pixel
+ceiling, request a canvas that covers the view, crop. Rounding the zoom **down** is
+deliberate — one too deep needs four times the pixels and can be refused, one too shallow
+is merely softer.
+
+Views are fetched **once, in `Prepare`**: the whole course, plus one per zooming
+highlight. That is exactly the set this document already said was knowable there. A frame
+loop that fetched imagery would turn one render into thousands of requests against
+somebody's own quota and make an offline run impossible — and would look identical on
+screen, which is why the tests count requests rather than inspect frames.
+
+`Projection.Cover` is what makes the imagery reach the panel's edges: `Placer` preserves
+aspect and centres the leftover, so a basemap fetched for `Bounds` would sit letterboxed
+inside the box with the route flush against its edges. `Cover` asks what the *box*
+covers instead.
+
+### The zoom cross-fade
+
+Intermediate viewports have no image of their own. Both known images are composited
+against the current viewport and blended on `IntervalWeight` — the same ramp the
+highlight's fade and the trough already ride. Drawing the whole-course image first and
+the zoomed one over it means a zoomed view whose fetch failed simply shows the
+whole-course map magnified rather than a hole.
+
+### What the imagery costs, and what is owed for it
+
+**The wash is not decoration.** Map imagery is busy and mid-toned, and the route line, the
+covered prefix and the position dot all have to read against it. `--basemap-dim` pushes it
+back toward the theme's background until it is context; without it the panel becomes a map
+with a hard-to-find line on it, which inverts what the panel is for.
+
+**The credit is drawn into the frame, on every frame that shows imagery.** A video has no
+map widget, no corner control and no link to follow, and it is distributed on its own.
+Both halves of this bit each other once already: the credit was drawn only by `Static`,
+and a zooming render takes `Static`'s early return — so on exactly the renders that use
+the zoom, the attribution appeared on no frame at all, with no symptom but its absence.
+It is drawn by both phases now and tested on both. It is also shrunk to fit the box, since
+the string is fixed and the box is whatever the layout gave it.
+
+**Nothing here is load-bearing.** Every way imagery can fail to arrive — no key, no
+network, a refused key, a rate limit, an unwritable cache — leaves exactly the render that
+would have happened without `--basemap`, and is reported in words. A missing basemap looks
+identical to a render that never asked for one, so if it is not said it cannot be noticed.
+
+### The key never becomes a string
+
+`tilemap.Key` overrides `String`, `GoString` and `MarshalText` to redact, and the real
+value is reachable only through an unexported method in the package that builds the URL.
+That is not belt-and-braces: the key travels as a **query parameter**, so it is inside the
+URL, and `net/http` wraps transport failures in a `*url.Error` carrying the whole URL —
+so `%w` on an unreachable service would print the secret into the render summary. The
+provider never wraps a transport error; it writes its own message and runs it through
+`redact`. Nothing read from the key file appears in any error either, since the file's
+contents *are* the secret.
+
 ## The route zoom: the one projection that moves
 
 `--highlight ... ,zoom=true` reframes the route panel's map onto that highlight's own

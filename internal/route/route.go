@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+
+	"github.com/wisborg/fitdash/internal/tilemap"
 )
 
 // Point is one position on a route, with the instant it was recorded.
@@ -89,14 +91,22 @@ func FromTrack(track *fitactivity.Track, maxPoints int) []Point {
 
 // Projection maps a route's coordinates into a plane, north up.
 //
-// Equirectangular, with longitude scaled by the cosine of the route's mean
-// latitude. That scaling is what keeps a route the right SHAPE: a degree of
-// longitude is a degree of latitude only at the equator, and at 56 degrees
-// north it is barely half as wide, so plotting raw lat/lon stretches a route
-// sideways by a factor of two. The approximation is excellent over the few
-// kilometres a single activity covers.
+// Web Mercator, read from internal/tilemap, which owns it. This used to be an
+// equirectangular projection with longitude scaled by the cosine of the
+// route's mean latitude -- a linear approximation of Mercator about that
+// latitude, and an excellent one over the few kilometres an activity covers.
+// It was replaced because a route is going to be drawn over map imagery, and
+// every tile service on earth is defined in Mercator: an approximation that
+// is excellent in the middle of a twenty-kilometre route is several pixels
+// out at its ends, which is the difference between a line on the road and a
+// line beside it.
+//
+// The change SIMPLIFIED this type rather than complicating it. Mercator has
+// no per-view parameter, so there is no longer a mean latitude two views
+// could disagree about -- which is why fitting a sub-range is now just Fit
+// over the subset, and the separate constructor that existed to share the
+// old scaling is gone.
 type Projection struct {
-	cosLat                   float64
 	minX, minY, spanX, spanY float64
 }
 
@@ -108,17 +118,10 @@ func Fit(pts []Point) (Projection, bool) {
 		return Projection{}, false
 	}
 
-	var meanLat float64
-	for _, p := range pts {
-		meanLat += p.Lat
-	}
-	meanLat /= float64(len(pts))
-	cosLat := math.Cos(meanLat * math.Pi / 180)
-
 	minX, maxX := math.Inf(1), math.Inf(-1)
 	minY, maxY := math.Inf(1), math.Inf(-1)
 	for _, p := range pts {
-		x, y := p.Lon*cosLat, p.Lat
+		x, y := tilemap.Project(p.Lat, p.Lon)
 		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
 		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
 	}
@@ -126,7 +129,20 @@ func Fit(pts []Point) (Projection, bool) {
 	if spanX <= 0 && spanY <= 0 {
 		return Projection{}, false
 	}
-	return Projection{cosLat: cosLat, minX: minX, minY: minY, spanX: spanX, spanY: spanY}, true
+	return Projection{minX: minX, minY: minY, spanX: spanX, spanY: spanY}, true
+}
+
+// Bounds returns the geographic rectangle this projection covers, which is
+// what a map service is asked for.
+//
+// North and south come back from the Mercator y axis, which runs SOUTH -- so
+// minY is the NORTH edge. Getting that backwards yields a view mirrored about
+// its own centre, which on a real route looks like a plausible map of
+// somewhere else.
+func (p Projection) Bounds() (north, west, south, east float64) {
+	north, west = tilemap.Unproject(p.minX, p.minY)
+	south, east = tilemap.Unproject(p.minX+p.spanX, p.minY+p.spanY)
+	return north, west, south, east
 }
 
 // Place returns pixel coordinates for pts, fitted into a w by h box and
@@ -135,10 +151,11 @@ func Fit(pts []Point) (Projection, bool) {
 // Aspect is PRESERVED -- one scale for both axes, the smaller of the two that
 // would fit -- because a route stretched to fill its box is a different shape
 // from the one that was run. An out-and-back becomes a loop, and a lap of a
-// track becomes an oval of the wrong proportions.
+// track becomes an oval of the wrong proportions. Mercator is conformal, so
+// one scale for both axes is also what keeps angles right.
 //
-// The y axis is flipped so north is up, which is the only orientation anyone
-// reads a map in.
+// North is up with no flip anywhere, because the projection's y axis already
+// runs south -- see tilemap's note on why it is defined that way.
 func (p Projection) Place(pts []Point, w, h float64) (xs, ys []float64) {
 	at, ok := p.Placer(w, h)
 	if !ok || len(pts) == 0 {
@@ -181,9 +198,69 @@ func (p Projection) Placer(w, h float64) (func(Point) (x, y float64), bool) {
 	offY := (h - p.spanY*scale) / 2
 
 	return func(pt Point) (float64, float64) {
-		return offX + (pt.Lon*p.cosLat-p.minX)*scale,
-			offY + (p.minY+p.spanY-pt.Lat)*scale // flipped: north up
+		x, y := tilemap.Project(pt.Lat, pt.Lon)
+		return offX + (x-p.minX)*scale, offY + (y-p.minY)*scale
 	}, true
+}
+
+// Cover returns the geographic rectangle that fills a w by h box this
+// projection has been fitted into.
+//
+// It is Bounds widened to the box: Placer preserves aspect and centres what
+// is left over, so the box shows MORE ground than the route's own bounds on
+// one axis, and a basemap fetched for Bounds would sit letterboxed inside the
+// box with the route flush against its edges. Asking for what the box
+// actually covers is what lets imagery reach the panel's edges with the route
+// inset in the middle of it, which is what a map under a route should look
+// like.
+//
+// Returns false on a box with no area, matching Placer -- a caller that got a
+// placer got a cover too.
+func (p Projection) Cover(w, h float64) (north, west, south, east float64, ok bool) {
+	if w <= 0 || h <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	scale := math.Inf(1)
+	if p.spanX > 0 {
+		scale = math.Min(scale, w/p.spanX)
+	}
+	if p.spanY > 0 {
+		scale = math.Min(scale, h/p.spanY)
+	}
+	if math.IsInf(scale, 1) || scale <= 0 {
+		return 0, 0, 0, 0, false
+	}
+
+	// The box, measured in projected units, centred on the projection's own
+	// centre.
+	halfX, halfY := w/scale/2, h/scale/2
+	cx, cy := p.minX+p.spanX/2, p.minY+p.spanY/2
+
+	north, west = tilemap.Unproject(cx-halfX, cy-halfY)
+	south, east = tilemap.Unproject(cx+halfX, cy+halfY)
+	return north, west, south, east, true
+}
+
+// CoverProjected is Cover in projected units: the rectangle of the plane a
+// w by h box covers when this projection is fitted into it.
+//
+// The same arithmetic as Cover without the trip through degrees and back,
+// for the caller that is going to compare it against another rectangle of
+// the same plane rather than ask a map service about it.
+func (p Projection) CoverProjected(w, h float64) (minX, minY, spanX, spanY float64) {
+	scale := math.Inf(1)
+	if p.spanX > 0 {
+		scale = math.Min(scale, w/p.spanX)
+	}
+	if p.spanY > 0 {
+		scale = math.Min(scale, h/p.spanY)
+	}
+	if math.IsInf(scale, 1) || scale <= 0 || w <= 0 || h <= 0 {
+		return p.minX, p.minY, p.spanX, p.spanY
+	}
+	halfX, halfY := w/scale/2, h/scale/2
+	cx, cy := p.minX+p.spanX/2, p.minY+p.spanY/2
+	return cx - halfX, cy - halfY, 2 * halfX, 2 * halfY
 }
 
 // IndexAt returns the last point recorded at or before at, or -1 when the
@@ -277,50 +354,14 @@ func SpanIndices(pts []Point, from, to time.Time) (i0, i1 int, ok bool) {
 	}
 }
 
-// Sub returns a projection covering only pts, keeping p's own longitude
-// scaling rather than recomputing it.
-//
-// Sharing cosLat is the whole point. A projection fitted independently to a
-// short stretch of a route would use that stretch's own mean latitude, which
-// differs from the whole route's by a fraction of a degree -- enough that the
-// two views draw the SAME piece of course at very slightly different
-// proportions. Zooming from one to the other would then subtly shear the
-// shape as it scaled, which is the one thing Place's aspect-preserving rule
-// exists to prevent. With cosLat shared, the two projections differ only in
-// which rectangle of the plane they show, so moving between them is a pure
-// pan and scale.
-//
-// That shared scaling is also what makes Lerp meaningful: two projections
-// with different cosLat values are not two views of one plane, and
-// interpolating their bounds would mix two coordinate systems.
-//
-// Reports false on the same terms as Fit -- fewer than two points, or every
-// point at the same place -- so a caller can treat "no sub-view" exactly as
-// it treats "no route".
-func (p Projection) Sub(pts []Point) (Projection, bool) {
-	if len(pts) < 2 {
-		return Projection{}, false
-	}
-	minX, maxX := math.Inf(1), math.Inf(-1)
-	minY, maxY := math.Inf(1), math.Inf(-1)
-	for _, pt := range pts {
-		x, y := pt.Lon*p.cosLat, pt.Lat
-		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
-		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
-	}
-	spanX, spanY := maxX-minX, maxY-minY
-	if spanX <= 0 && spanY <= 0 {
-		return Projection{}, false
-	}
-	return Projection{cosLat: p.cosLat, minX: minX, minY: minY, spanX: spanX, spanY: spanY}, true
-}
-
 // Lerp blends two projections of the same plane, for animating a view from
 // one to the other. t <= 0 returns a, t >= 1 returns b.
 //
-// Both must share a cosLat -- which is what Sub guarantees, and is the only
-// way this function is meant to be called. a's is kept; blending two
-// different longitude scalings would produce a plane that is neither view's.
+// Both are in the same coordinate system by construction -- Mercator has no
+// per-view parameter -- so blending their bounds is meaningful with nothing to
+// check first. That was not true of the projection this replaced, where two
+// views fitted independently had different longitude scalings and blending
+// them sheared the shape as it scaled.
 //
 // The CENTRE moves linearly and the SPAN scales geometrically, which is not
 // an affectation: a viewport whose width shrinks linearly from 4km to 200m
@@ -346,11 +387,10 @@ func Lerp(a, b Projection, t float64) Projection {
 	spanX := scaleLerp(a.spanX, b.spanX, t)
 	spanY := scaleLerp(a.spanY, b.spanY, t)
 	return Projection{
-		cosLat: a.cosLat,
-		minX:   cx - spanX/2,
-		minY:   cy - spanY/2,
-		spanX:  spanX,
-		spanY:  spanY,
+		minX:  cx - spanX/2,
+		minY:  cy - spanY/2,
+		spanX: spanX,
+		spanY: spanY,
 	}
 }
 

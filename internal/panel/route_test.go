@@ -2,8 +2,11 @@ package panel
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"image"
 	"image/color"
+	"image/draw"
 	"strconv"
 	"testing"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/wisborg/fitactivity"
 
 	"github.com/wisborg/fitdash/internal/inspect"
+	"github.com/wisborg/fitdash/internal/tilemap"
 )
 
 // squareTrack builds a track tracing a square loop at one fix per second,
@@ -998,5 +1002,234 @@ func TestRoutePanel_ZoomDeclinesWithNoGPSInTheSpan(t *testing.T) {
 	p.Dynamic(c, Frame{At: base.Add(30 * time.Second), Interval: 0, IntervalWeight: 1})
 	if whole, in := inkCount(img, Box{W: w, H: h}, c.Theme), inkCount(img, box, c.Theme); whole != in {
 		t.Errorf("%d pixels escaped the box", whole-in)
+	}
+}
+
+// fakeBasemap is a provider that hands back a solid image, so a test can ask
+// "did map imagery reach the frame" by counting pixels of a colour nothing
+// else in the panel draws.
+type fakeBasemap struct {
+	fill  color.RGBA
+	err   error
+	calls int
+	views []tilemap.View
+}
+
+func (f *fakeBasemap) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	f.calls++
+	f.views = append(f.views, v)
+	if f.err != nil {
+		return nil, f.err
+	}
+	img := image.NewRGBA(image.Rect(0, 0, v.Width, v.Height))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: f.fill}, image.Point{}, draw.Src)
+	return img, nil
+}
+func (f *fakeBasemap) Attribution() string {
+	return "Maps © Somebody, Data © OpenStreetMap contributors"
+}
+func (f *fakeBasemap) Name() string { return "fake/style" }
+
+// basemapGreen is a colour no theme and no panel draws, so finding it in a
+// frame means imagery got there.
+var basemapGreen = color.RGBA{R: 0, G: 200, B: 80, A: 255}
+
+func basemapContext(t *testing.T, bm tilemap.Provider, dim float64, highlights []Highlight, w, h int) (*Context, Box) {
+	t.Helper()
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	const fixes = 600
+	ctx := routeHighlightContext(t, squareTrack(base, fixes), fixes, highlights, w, h)
+	ctx.Basemap = bm
+	ctx.BasemapDim = dim
+	return ctx, Box{X: 40, Y: 40, W: float64(w) - 80, H: float64(h) - 80}
+}
+
+// TestRoutePanel_BasemapIsFetchedOncePerViewAndDrawn is the feature working:
+// imagery reaches the frame, and it is requested exactly once per view the
+// render will actually use rather than per frame.
+//
+// The request count is the load-bearing half. A frame loop that fetched
+// imagery would turn one render into thousands of requests against somebody's
+// own quota and make an offline run impossible -- and it would look identical
+// on screen, which is why it is counted rather than looked at.
+func TestRoutePanel_BasemapIsFetchedOncePerViewAndDrawn(t *testing.T) {
+	const w, h = 800, 800
+	bm := &fakeBasemap{fill: basemapGreen}
+	ctx, box := basemapContext(t, bm, 0, nil, w, h)
+
+	img, c := zoomCanvas(t, w, h)
+	p := RoutePanel{}.Prepare(ctx, box)
+
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	for i := 0; i < 40; i++ {
+		p.Dynamic(c, Frame{At: ctx.Timeline.Start().Add(time.Duration(i) * time.Second), Interval: NoHighlight})
+	}
+
+	if bm.calls != 1 {
+		t.Errorf("fetched %d times for one view over 40 frames, want exactly 1", bm.calls)
+	}
+	if got := countNearInBox(img, box, basemapGreen, 30); got == 0 {
+		t.Error("no basemap pixels in the box: the imagery never reached the frame")
+	}
+	if got := countNearInBox(img, Box{W: w, H: h}, basemapGreen, 30); got != countNearInBox(img, box, basemapGreen, 30) {
+		t.Error("basemap pixels escaped the panel's box")
+	}
+}
+
+// TestRoutePanel_BasemapFailureLeavesTheOutlineAlone is the offline promise.
+//
+// A basemap is decoration and the render is the product, so every way the
+// imagery can fail to arrive must leave exactly the render that would have
+// happened without --basemap. That failure is invisible in the frame -- a
+// missing map looks like a render that never asked for one -- which is why
+// the panel also has to be able to SAY it did not arrive.
+func TestRoutePanel_BasemapFailureLeavesTheOutlineAlone(t *testing.T) {
+	const w, h = 800, 800
+
+	reference := func(bm tilemap.Provider) *image.RGBA {
+		ctx, box := basemapContext(t, bm, 0, nil, w, h)
+		img, c := zoomCanvas(t, w, h)
+		p := RoutePanel{}.Prepare(ctx, box)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		p.Dynamic(c, Frame{At: ctx.Timeline.Start().Add(100 * time.Second), Interval: NoHighlight})
+		return img
+	}
+
+	none := reference(nil)
+	failed := reference(&fakeBasemap{err: errors.New("service down")})
+
+	if !bytes.Equal(none.Pix, failed.Pix) {
+		t.Error("a failed basemap fetch did not render identically to no basemap at all")
+	}
+}
+
+// TestRoutePanel_BasemapCreditIsAlwaysDrawn pins the obligation.
+//
+// Every service whose terms were read for this requires visible credit, and a
+// video has nowhere else to put it: no map widget, no corner control, no link
+// to follow. So the panel draws it, and it is NOT conditional on space -- a
+// panel too small for the credit is a panel too small for the imagery.
+func TestRoutePanel_BasemapCreditIsAlwaysDrawn(t *testing.T) {
+	for _, size := range []int{400, 800, 1600} {
+		bm := &fakeBasemap{fill: basemapGreen}
+		ctx, box := basemapContext(t, bm, 0, nil, size, size)
+		img, c := zoomCanvas(t, size, size)
+		p := RoutePanel{}.Prepare(ctx, box)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+
+		// Static draws the outline in Dim and the credit in Foreground, and
+		// the covered prefix -- the panel's other Foreground ink -- belongs
+		// to Dynamic, which has not run. So Foreground in the box after
+		// Static is the credit and nothing else.
+		corner := Box{X: box.X + box.W/2, Y: box.Y + box.H*3/4, W: box.W / 2, H: box.H / 4}
+		if got := countNearInBox(img, corner, c.Theme.Foreground, 40); got == 0 {
+			t.Errorf("%dx%d: no attribution text in the corner of a panel showing imagery", size, size)
+		}
+	}
+
+	t.Run("and never when there is no imagery to credit", func(t *testing.T) {
+		ctx, box := basemapContext(t, nil, 0, nil, 800, 800)
+		img, c := zoomCanvas(t, 800, 800)
+		p := RoutePanel{}.Prepare(ctx, box)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+
+		corner := Box{X: box.X + box.W/2, Y: box.Y + box.H*3/4, W: box.W / 2, H: box.H / 4}
+		if got := countNearInBox(img, corner, c.Theme.Foreground, 40); got != 0 {
+			t.Errorf("%d attribution-coloured pixels with no basemap drawn", got)
+		}
+	})
+}
+
+// TestRoutePanel_BasemapDimWashesTheImagery pins the wash, which is what
+// keeps the route readable. Map imagery is busy and mid-toned; without this
+// the panel becomes a map with a hard-to-find line on it.
+func TestRoutePanel_BasemapDimWashesTheImagery(t *testing.T) {
+	const w, h = 800, 800
+	count := func(dim float64) int {
+		bm := &fakeBasemap{fill: basemapGreen}
+		ctx, box := basemapContext(t, bm, dim, nil, w, h)
+		img, c := zoomCanvas(t, w, h)
+		p := RoutePanel{}.Prepare(ctx, box)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		return countNearInBox(img, box, basemapGreen, 30)
+	}
+
+	full, washed := count(0), count(0.6)
+	if full == 0 {
+		t.Fatal("no imagery drawn at all at dim 0")
+	}
+	if washed >= full {
+		t.Errorf("dim 0.6 left %d imagery-coloured pixels against %d undimmed; the wash is not being applied", washed, full)
+	}
+}
+
+// TestRoutePanel_ZoomedBasemapIsFetchedForItsOwnView covers the interaction
+// with the route zoom: each zooming highlight is its own view, resolved in
+// Prepare alongside the whole course, and never during the frame loop.
+func TestRoutePanel_ZoomedBasemapIsFetchedForItsOwnView(t *testing.T) {
+	const w, h = 800, 800
+	const fixes = 600
+	highlight := Highlight{Name: "Leg", From: 0, To: (fixes / 4) * time.Second, Zoom: true}
+	bm := &fakeBasemap{fill: basemapGreen}
+	ctx, box := basemapContext(t, bm, 0, []Highlight{highlight}, w, h)
+
+	_, c := zoomCanvas(t, w, h)
+	p := RoutePanel{}.Prepare(ctx, box)
+	c.Fill(c.Theme.Background)
+	p.Static(c)
+	for i := 0; i < 30; i++ {
+		p.Dynamic(c, Frame{At: ctx.Timeline.Start().Add(time.Duration(i) * time.Second), Interval: 0, IntervalWeight: float64(i) / 30})
+	}
+
+	if bm.calls != 2 {
+		t.Fatalf("fetched %d times, want 2 (the whole course and one zoomed highlight)", bm.calls)
+	}
+	// The zoomed view must cover less ground than the whole course, or it is
+	// not a zoom.
+	whole, zoomed := bm.views[0], bm.views[1]
+	wholeSpan := (whole.East - whole.West) * (whole.North - whole.South)
+	zoomSpan := (zoomed.East - zoomed.West) * (zoomed.North - zoomed.South)
+	if !(zoomSpan < wholeSpan) {
+		t.Errorf("the zoomed view covers %v square degrees against the whole course's %v; it is not zoomed in", zoomSpan, wholeSpan)
+	}
+}
+
+// TestRoutePanel_BasemapCreditSurvivesTheZoom is a regression test for a bug
+// that shipped nothing visible.
+//
+// A zooming render takes Static's early return -- the outline moves into
+// Dynamic because the projection changes per frame -- so a credit drawn only
+// by Static appeared on no frame at all. The attribution obligation
+// disappeared on exactly the renders using the feature it exists for, and the
+// only symptom was its absence.
+func TestRoutePanel_BasemapCreditSurvivesTheZoom(t *testing.T) {
+	const w, h = 800, 800
+	const fixes = 600
+	highlight := Highlight{Name: "Leg", From: 0, To: (fixes / 4) * time.Second, Zoom: true}
+	ctx, box := basemapContext(t, &fakeBasemap{fill: basemapGreen}, 0, []Highlight{highlight}, w, h)
+
+	img, c := zoomCanvas(t, w, h)
+	p := RoutePanel{}.Prepare(ctx, box)
+
+	// Every stage of the zoom, including before the first fix and at rest.
+	for _, f := range []Frame{
+		{At: ctx.Timeline.Start().Add(-time.Hour), Interval: NoHighlight},
+		{At: ctx.Timeline.Start().Add(10 * time.Second), Interval: 0, IntervalWeight: 0},
+		{At: ctx.Timeline.Start().Add(60 * time.Second), Interval: 0, IntervalWeight: 0.5},
+		{At: ctx.Timeline.Start().Add(100 * time.Second), Interval: 0, IntervalWeight: 1},
+	} {
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		p.Dynamic(c, f)
+
+		corner := Box{X: box.X + box.W/2, Y: box.Y + box.H*3/4, W: box.W / 2, H: box.H / 4}
+		if got := countNearInBox(img, corner, c.Theme.Foreground, 40); got == 0 {
+			t.Errorf("weight %v: no attribution on a zooming frame showing imagery", f.IntervalWeight)
+		}
 	}
 }

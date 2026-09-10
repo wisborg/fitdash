@@ -116,6 +116,40 @@ The map pans and scales over `--highlight-transition`, the same ramp the highlig
 rides, so the two arrive together. A highlight whose span carries no GPS keeps the
 whole-course view, and the summary says so rather than leaving you to wonder.
 
+**The route can be drawn on a real map**, with `--basemap` and your own API key.
+Off by default, and it needs a key because fitdash ships none and has no account
+of its own:
+
+```
+fitdash morning-0*.fit \
+  --basemap outdoors \
+  --basemap-key-file ~/.config/thunderforest.key
+```
+
+`outdoors` and `landscape` draw contours, paths and trail furniture — what a run
+or a ride actually happened on; a general-purpose city map renders a forest trail
+as blank green. `--basemap-dim` controls how far the imagery is washed back
+(default `0.65`): a map at full strength competes with the route line and the
+readouts beside it, and the map is context while the activity is the subject.
+
+The key file may be the bare key, or a JSON or YAML mapping of provider name to
+key so one file can hold several. It is read once, never logged, never written
+into the video, and redacted out of every error — the key travels to the service
+as a query parameter, so it ends up inside URLs, and URLs end up inside error
+messages.
+
+**Turning this on sends the area of your activity to a third party.** That is
+your call to make, but fitdash will not make it quietly: the summary names the
+service every time imagery is fetched, and says so only when something actually
+was — a run served from cache says that instead. Imagery is cached on disk, so
+tuning a `--highlight` does not re-fetch the same pictures, and a second render
+of an activity works offline. If a fetch fails for any reason the render
+continues with the plain outline and the summary says what happened.
+
+The required credit — `Maps © Thunderforest, Data © OpenStreetMap contributors`
+— is drawn into every frame that shows imagery. A video carries no interface to
+put attribution in and is distributed on its own, so it goes in the picture.
+
 ## What it is
 
 There is no input video. fitdash generates every pixel of every frame from the

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/fogleman/gg"
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/opentype"
@@ -243,6 +244,13 @@ type Canvas struct {
 	// Theme is the palette. See Theme.
 	Theme Theme
 
+	// img is the frame being drawn into, kept alongside the drawing context
+	// because scaled image compositing goes through golang.org/x/image/draw
+	// rather than through gg -- gg can only place an image at 1:1 or under a
+	// whole-context transform, and a basemap has to land in one panel's box
+	// at its own scale without moving anything else.
+	img *image.RGBA
+
 	dc    *gg.Context
 	faces *FaceCache
 }
@@ -268,6 +276,7 @@ func NewCanvas(img *image.RGBA, basePx float64, theme Theme, faces *FaceCache) (
 		W: b.Dx(), H: b.Dy(),
 		BasePx: basePx,
 		Theme:  theme,
+		img:    img,
 		dc:     gg.NewContextForRGBA(img),
 		faces:  faces,
 	}, nil
@@ -288,6 +297,33 @@ func (c *Canvas) Rect(b Box, col color.Color) {
 	c.dc.SetColor(col)
 	c.dc.DrawRectangle(b.X, b.Y, b.W, b.H)
 	c.dc.Fill()
+}
+
+// Image draws src scaled to fill b, at the given opacity.
+//
+// Scaled with CatmullRom rather than a nearest or bilinear sampler: this runs
+// once per view in the ordinary case, the source is map imagery with fine
+// detail and text in it, and a soft basemap is the one thing that would make
+// the route panel look worse for having a map under it.
+//
+// opacity exists for the cross-fade a zooming route needs -- two images of
+// the same ground at different scales, blended as the view moves between
+// them. At 1 the image is drawn opaque; at 0 nothing is drawn at all.
+func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
+	if src == nil || b.W <= 0 || b.H <= 0 || opacity <= 0 {
+		return
+	}
+	dst := image.Rect(int(b.X), int(b.Y), int(b.X+b.W), int(b.Y+b.H))
+	if dst.Empty() {
+		return
+	}
+	if opacity >= 1 {
+		xdraw.CatmullRom.Scale(c.img, dst, src, src.Bounds(), xdraw.Over, nil)
+		return
+	}
+	xdraw.CatmullRom.Scale(c.img, dst, src, src.Bounds(), xdraw.Over, &xdraw.Options{
+		SrcMask: image.NewUniform(color.Alpha{A: uint8(opacity*255 + 0.5)}),
+	})
 }
 
 // Clipped runs draw with every drawing operation confined to b.

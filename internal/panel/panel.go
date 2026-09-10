@@ -6,6 +6,7 @@ import (
 	"github.com/wisborg/fitactivity"
 
 	"github.com/wisborg/fitdash/internal/inspect"
+	"github.com/wisborg/fitdash/internal/tilemap"
 )
 
 // Panel is one dashboard element, in three phases.
@@ -185,6 +186,22 @@ type Context struct {
 	// show. See render's smoothSample for which readings are averaged and
 	// which are deliberately left alone.
 	Smoothing Smoothing
+
+	// Basemap, when non-nil, is where the route panel fetches map imagery to
+	// draw its outline over. Nil -- the default -- draws the route on clean
+	// background, which is what every render did before this existed and what
+	// every render still does unless a key and a style were both given.
+	//
+	// It is consulted ONCE, in RoutePanel.Prepare, for the views that render
+	// will actually use: the whole course, plus one per zooming highlight.
+	// Never per frame. A frame loop that fetched imagery would turn a render
+	// into thousands of requests and make an offline run impossible.
+	Basemap tilemap.Provider
+
+	// BasemapDim is how far the imagery is washed toward the background, in
+	// [0, 1]. A full-strength map competes with the route line and the
+	// readouts beside it; the map is context and the activity is the subject.
+	BasemapDim float64
 
 	// Highlights is the resolved, sorted, clipped set of --highlight ranges,
 	// or nil when none were given. Panels read it in Accepts (a highlight

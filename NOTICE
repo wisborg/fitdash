@@ -39,6 +39,15 @@ repository.
                              Cobra contributors
   mousetrap (github.com/inconshreveable/mousetrap)
                              Copyright 2022 Alan Shreve (@inconshreveable)
+  go.yaml.in/yaml/v3         Copyright (c) 2011-2019 Canonical Ltd;
+                             Copyright (c) 2006-2010 Kirill Simonov.
+                             DUAL-LICENSED, MIT and Apache 2.0, and it must be
+                             described as both rather than as either: the eight
+                             files ported from libyaml (apic.go, emitterc.go,
+                             parserc.go, readerc.go, scannerc.go, writerc.go,
+                             yamlh.go, yamlprivateh.go) are MIT and the rest is
+                             Apache 2.0.  Used to read a map service API key
+                             from a YAML key file; also reached through output.
 
 
 -------------------------------------------------------------------------------
@@ -116,3 +125,36 @@ not cover -- OpenStreetMap data is under the Open Database License and requires
 "(c) OpenStreetMap contributors" to be displayed, and commercial tile APIs
 generally forbid caching or redistributing rendered tiles.  Those obligations
 attach to the rendered VIDEO this program produces, not just to its source.
+
+
+-------------------------------------------------------------------------------
+Map imagery (--basemap)
+-------------------------------------------------------------------------------
+
+fitdash ships no map service key, has no account with any map service, and
+fetches no imagery unless --basemap and --basemap-key-file are both given.  A
+user who turns it on is using their OWN key under their own agreement with
+that service, and the obligations below are theirs rather than this project's.
+They are recorded here because this program is what puts the imagery on screen
+and therefore what has to satisfy them.
+
+  Thunderforest (thunderforest.com)
+                             Map imagery is rendered by Thunderforest from
+                             OpenStreetMap data.  Both must be credited
+                             wherever the imagery appears:
+
+                                 Maps (c) Thunderforest,
+                                 Data (c) OpenStreetMap contributors
+
+                             fitdash draws this string into every frame that
+                             shows imagery (see internal/panel's route panel),
+                             because a rendered video carries no interface to
+                             put it in and is distributed on its own.
+
+  OpenStreetMap data         (c) OpenStreetMap contributors, licensed under the
+                             Open Database License (ODbL) 1.0.  The credit
+                             above satisfies its attribution requirement.
+
+The tile servers operated by the OpenStreetMap Foundation are NOT used and
+must not be: their usage policy forbids fetching tiles other than those a
+user is actively viewing, which is what rendering a video does.

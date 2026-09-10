@@ -10,14 +10,21 @@ import (
 
 var epoch = time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 
-// TestFit_ScalesLongitudeByLatitude is the projection's one real piece of
-// geometry, and the reason it is not simply lat/lon plotted directly.
+// TestFit_MercatorStretchesLatitudeAwayFromTheEquator pins the projection's
+// characteristic property, and it is the exact inverse of what this test
+// asserted before.
 //
-// A degree of longitude equals a degree of latitude only at the equator. At 60
-// degrees north it is half as wide, so a square kilometre plotted raw comes
-// out twice as wide as it is tall. The expected ratio here is derived from
-// cos(60) = 0.5, not read off a run.
-func TestFit_ScalesLongitudeByLatitude(t *testing.T) {
+// The equirectangular projection this replaced squeezed LONGITUDE by the
+// cosine of the latitude, so a one-degree square at 60 degrees came out twice
+// as wide as tall. Mercator instead stretches LATITUDE by 1/cos, so the same
+// square comes out twice as TALL as wide. Both keep the shape of a small
+// route; they disagree about which axis is the one being adjusted, and a
+// projection that had quietly kept the old rule would draw a route at 60
+// degrees with its aspect inverted -- a change no route's own shape would
+// make obvious.
+//
+// The expected ratio is derived from 1/cos(60) = 2, not read off a run.
+func TestFit_MercatorStretchesLatitudeAwayFromTheEquator(t *testing.T) {
 	// A patch one degree across in both directions, centred at 60 degrees.
 	pts := []Point{
 		{Lat: 59.5, Lon: 10.0}, {Lat: 60.5, Lon: 11.0},
@@ -27,23 +34,22 @@ func TestFit_ScalesLongitudeByLatitude(t *testing.T) {
 		t.Fatal("Fit refused a two-point route with extent")
 	}
 
-	// One degree of latitude spans 1.0; one degree of longitude spans
-	// cos(60 degrees) = 0.5.
-	if diff := p.spanY - 1.0; math.Abs(diff) > 1e-9 {
-		t.Errorf("latitude span = %v, want 1.0", p.spanY)
+	// One degree of longitude is exactly 1/360 of the normalised world.
+	if diff := p.spanX - 1.0/360.0; math.Abs(diff) > 1e-12 {
+		t.Errorf("longitude span = %v, want %v (1/360 of the world)", p.spanX, 1.0/360.0)
 	}
-	if diff := p.spanX - 0.5; math.Abs(diff) > 1e-3 {
-		t.Errorf("longitude span = %v, want about 0.5 (cos 60)", p.spanX)
+	if ratio := p.spanY / p.spanX; math.Abs(ratio-2) > 1e-3 {
+		t.Errorf("latitude:longitude span ratio = %v, want about 2 (1/cos 60)", ratio)
 	}
 
 	// At the equator the two are equal, which is the case that would hide a
-	// missing cosine entirely -- and is why the test above is at 60 degrees.
+	// missing stretch entirely -- and is why the test above is at 60 degrees.
 	equator, ok := Fit([]Point{{Lat: -0.5, Lon: 10}, {Lat: 0.5, Lon: 11}})
 	if !ok {
 		t.Fatal("Fit refused an equatorial route")
 	}
-	if diff := equator.spanX - equator.spanY; math.Abs(diff) > 1e-3 {
-		t.Errorf("at the equator the spans should match: %v vs %v", equator.spanX, equator.spanY)
+	if ratio := equator.spanY / equator.spanX; math.Abs(ratio-1) > 1e-3 {
+		t.Errorf("at the equator the span ratio = %v, want about 1", ratio)
 	}
 }
 
@@ -58,11 +64,12 @@ func TestPlace_PreservesAspectAndPutsNorthUp(t *testing.T) {
 	// latitude is exactly 0 and its cosine exactly 1, letting the arithmetic
 	// below be done by hand.
 	//
-	// Symmetric about the equator, not merely touching it: latitudes of 0 and
-	// 2 have a MEAN of 1, whose cosine is 0.99985, and the resulting 199.97
-	// pixel width is correct behaviour that fails an assertion of 200. The
-	// projection scales longitude by the cosine of the route's mean latitude,
-	// so a test that wants that factor to be 1 has to put the mean at 0.
+	// Asserted as a RATIO rather than against a pixel count, because Mercator
+	// gives no round number to assert against: a one-by-two degree box is not
+	// a one-by-two box in projected units at any latitude, since latitude is
+	// stretched by 1/cos and the stretch varies across the box itself. The
+	// invariant survives that and a golden number would not -- the drawn
+	// aspect must equal the projected aspect, whatever either happens to be.
 	pts := []Point{
 		{Lat: -1, Lon: 0}, {Lat: 1, Lon: 1}, {Lat: -1, Lon: 1}, {Lat: 1, Lon: 0},
 	}
@@ -71,8 +78,8 @@ func TestPlace_PreservesAspectAndPutsNorthUp(t *testing.T) {
 		t.Fatal("Fit refused")
 	}
 
-	// Into a 400x400 box: the taller axis binds, so the scale is 400/2 = 200
-	// and the route is 200 wide, centred, leaving 100 either side.
+	// Into a 400x400 box: the taller axis binds, so the route fills the
+	// height and is centred in the width.
 	xs, ys := p.Place(pts, 400, 400)
 	if len(xs) != 4 || len(ys) != 4 {
 		t.Fatalf("Place returned %d,%d coordinates for 4 points", len(xs), len(ys))
@@ -84,14 +91,17 @@ func TestPlace_PreservesAspectAndPutsNorthUp(t *testing.T) {
 		minX, maxX = math.Min(minX, xs[i]), math.Max(maxX, xs[i])
 		minY, maxY = math.Min(minY, ys[i]), math.Max(maxY, ys[i])
 	}
-	if w := maxX - minX; math.Abs(w-200) > 1e-6 {
-		t.Errorf("route is %v wide, want 200 (aspect preserved, not stretched to 400)", w)
+	w, h := maxX-minX, maxY-minY
+	if math.Abs(h-400) > 1e-6 {
+		t.Errorf("route is %v tall, want 400 -- the taller axis should bind", h)
 	}
-	if h := maxY - minY; math.Abs(h-400) > 1e-6 {
-		t.Errorf("route is %v tall, want 400", h)
+	// Aspect preserved: the drawn ratio equals the projected ratio. Stretched
+	// to fill the box, w would be 400 and this ratio 2.
+	if want := p.spanX / p.spanY; math.Abs(w/h-want) > 1e-9 {
+		t.Errorf("drawn aspect %v does not match projected aspect %v; the route is being stretched to fill its box", w/h, want)
 	}
-	if math.Abs(minX-100) > 1e-6 {
-		t.Errorf("route starts at x=%v, want 100 -- the spare width should be split, not left on one side", minX)
+	if spare := (400 - w) / 2; math.Abs(minX-spare) > 1e-6 {
+		t.Errorf("route starts at x=%v, want %v -- the spare width should be split, not left on one side", minX, spare)
 	}
 
 	// North up: the northernmost point must have the SMALLEST y, because
@@ -432,51 +442,63 @@ func zoomPts() []Point {
 	return pts
 }
 
-// TestProjectionSub_KeepsTheParentsLongitudeScaling is the property the whole
-// zoom rests on, and the one a naive implementation (calling Fit on the
-// subset) silently gets wrong.
+// TestFit_TwoViewsShareOneCoordinateSystem is the property the zoom rests on,
+// and the reason a separate sub-view constructor no longer exists.
 //
-// Fit derives cosLat from the points it is given, so a sub-range's own mean
-// latitude -- a fraction of a degree from the whole route's -- would give a
-// slightly different longitude scaling. The two views would then draw the SAME
-// piece of course at subtly different proportions, and animating between them
-// would shear the shape as it scaled. Nothing about that is visible in a
-// single frame, which is why it is asserted here rather than looked at.
-func TestProjectionSub_KeepsTheParentsLongitudeScaling(t *testing.T) {
+// Under the equirectangular projection this replaced, Fit derived a longitude
+// scaling from the mean latitude of the points it was given -- so a sub-range
+// fitted on its own got a slightly different scaling from the whole route's,
+// the two views drew the SAME piece of course at subtly different proportions,
+// and animating between them sheared the shape as it scaled. A Sub
+// constructor existed purely to share the parent's scaling.
+//
+// Mercator has no such parameter, so two projections differ only in which
+// rectangle of one fixed plane they show. This asserts that directly: the
+// separation between two points, measured in projected units, is the same
+// whichever set of points the projection was fitted to.
+func TestFit_TwoViewsShareOneCoordinateSystem(t *testing.T) {
 	pts := zoomPts()
 	whole, ok := Fit(pts)
 	if !ok {
-		t.Fatal("Fit: no projection")
+		t.Fatal("Fit(whole): no projection")
 	}
-
-	sub, ok := whole.Sub(pts[6:])
-	if !ok {
-		t.Fatal("Sub: no projection")
-	}
-	if sub.cosLat != whole.cosLat {
-		t.Errorf("Sub cosLat = %v, want %v (the parent's) -- a sub-view fitted independently shears as it scales",
-			sub.cosLat, whole.cosLat)
-	}
-
-	// Independently fitting the same subset is what must NOT happen; if it
-	// ever produced the same scaling this test would be proving nothing.
-	own, ok := Fit(pts[6:])
+	sub, ok := Fit(pts[6:])
 	if !ok {
 		t.Fatal("Fit(subset): no projection")
 	}
-	if own.cosLat == whole.cosLat {
-		t.Skip("this fixture's subset happens to share the whole route's mean latitude; the test cannot distinguish the two rules")
+
+	// The two views are drawn at different scales -- that is what a zoom IS
+	// -- so the separations cannot be compared directly. What must hold is
+	// that they differ by ONE factor: if x and y scale differently between
+	// the views, the shape shears as the zoom crosses between them.
+	sep := func(p Projection) (float64, float64) {
+		at, ok := p.Placer(1000, 1000)
+		if !ok {
+			t.Fatal("Placer: none")
+		}
+		x0, y0 := at(pts[7])
+		x1, y1 := at(pts[9])
+		return x1 - x0, y1 - y0
+	}
+	wx, wy := sep(whole)
+	sx, sy := sep(sub)
+	if wx == 0 || wy == 0 {
+		t.Fatalf("the fixture's two points do not separate on both axes (%v, %v)", wx, wy)
+	}
+	if ratio := (sx / wx) / (sy / wy); math.Abs(ratio-1) > 1e-9 {
+		t.Errorf("between the whole-route view and the sub-view, x scales by %v and y by %v; "+
+			"the two projections are not on one plane and a zoom between them will shear", sx/wx, sy/wy)
 	}
 }
 
-// TestProjectionSub_FramesOnlyTheSubset checks the actual point of Sub: a
-// smaller rectangle, tight around the points given.
-func TestProjectionSub_FramesOnlyTheSubset(t *testing.T) {
+// TestFit_FramesOnlyThePointsGiven checks what fitting a subset is for: a
+// smaller rectangle, tight around those points.
+func TestFit_FramesOnlyThePointsGiven(t *testing.T) {
 	pts := zoomPts()
 	whole, _ := Fit(pts)
-	sub, ok := whole.Sub(pts[6:])
+	sub, ok := Fit(pts[6:])
 	if !ok {
-		t.Fatal("Sub: no projection")
+		t.Fatal("Fit(subset): no projection")
 	}
 
 	if sub.spanX >= whole.spanX || sub.spanY >= whole.spanY {
@@ -497,21 +519,49 @@ func TestProjectionSub_FramesOnlyTheSubset(t *testing.T) {
 	}
 }
 
-// TestProjectionSub_RefusesWhatFitRefuses keeps the two entry points agreeing,
-// so a caller can treat "no sub-view" exactly as it treats "no route".
-func TestProjectionSub_RefusesWhatFitRefuses(t *testing.T) {
-	pts := zoomPts()
-	whole, _ := Fit(pts)
+// TestProjection_NorthIsUp pins the orientation, which is the one thing the
+// move to Mercator could have silently inverted: its y axis runs SOUTH, so
+// the flip the old projection needed had to be removed at the same time.
+// Getting this wrong yields a view mirrored about its own centre, which on a
+// real route looks like a plausible map of somewhere else.
+func TestProjection_NorthIsUp(t *testing.T) {
+	pts := zoomPts() // latitude increases with index
+	p, ok := Fit(pts)
+	if !ok {
+		t.Fatal("Fit: no projection")
+	}
+	at, ok := p.Placer(100, 100)
+	if !ok {
+		t.Fatal("Placer: none")
+	}
+	_, ySouth := at(pts[0])
+	_, yNorth := at(pts[len(pts)-1])
+	if !(yNorth < ySouth) {
+		t.Errorf("the northernmost point is at y=%v and the southernmost at y=%v; north must be UP (smaller y)", yNorth, ySouth)
+	}
+}
 
-	if _, ok := whole.Sub(pts[:1]); ok {
-		t.Error("Sub accepted a single point; one point is not an extent")
+// TestProjection_BoundsRoundTrip pins the geographic rectangle a map service
+// will be asked for. North comes from the SMALLER y, because Mercator's y
+// axis runs south -- reading that backwards asks for a view mirrored about
+// its own centre.
+func TestProjection_BoundsRoundTrip(t *testing.T) {
+	pts := zoomPts()
+	p, ok := Fit(pts)
+	if !ok {
+		t.Fatal("Fit: no projection")
 	}
-	if _, ok := whole.Sub(nil); ok {
-		t.Error("Sub accepted no points")
+	north, west, south, east := p.Bounds()
+	if north <= south {
+		t.Errorf("Bounds gave north=%v south=%v; north must be the larger latitude", north, south)
 	}
-	same := []Point{pts[3], pts[3], pts[3]}
-	if _, ok := whole.Sub(same); ok {
-		t.Error("Sub accepted three copies of one place; a stuck fix has no extent to frame")
+	if east <= west {
+		t.Errorf("Bounds gave east=%v west=%v; east must be the larger longitude", east, west)
+	}
+	for i, pt := range pts {
+		if pt.Lat < south-1e-9 || pt.Lat > north+1e-9 || pt.Lon < west-1e-9 || pt.Lon > east+1e-9 {
+			t.Errorf("point %d (%v, %v) lies outside the bounds fitted to it", i, pt.Lat, pt.Lon)
+		}
 	}
 }
 
@@ -522,7 +572,7 @@ func TestProjectionSub_RefusesWhatFitRefuses(t *testing.T) {
 func TestLerp_EndpointsAndMonotonicZoom(t *testing.T) {
 	pts := zoomPts()
 	whole, _ := Fit(pts)
-	sub, _ := whole.Sub(pts[6:])
+	sub, _ := Fit(pts[6:])
 
 	if got := Lerp(whole, sub, 0); got != whole {
 		t.Errorf("Lerp at 0 = %+v, want the starting view %+v", got, whole)
@@ -558,7 +608,7 @@ func TestLerp_EndpointsAndMonotonicZoom(t *testing.T) {
 func TestLerp_ScalesGeometrically(t *testing.T) {
 	pts := zoomPts()
 	whole, _ := Fit(pts)
-	sub, _ := whole.Sub(pts[8:])
+	sub, _ := Fit(pts[8:])
 
 	mid := Lerp(whole, sub, 0.5).spanX
 	geometric := math.Sqrt(whole.spanX * sub.spanX)
@@ -587,7 +637,7 @@ func TestLerp_AnAxisWithNoExtent(t *testing.T) {
 	if !ok {
 		t.Fatal("Fit: no projection for an east-west route")
 	}
-	sub, ok := whole.Sub(flat[1:])
+	sub, ok := Fit(flat[1:])
 	if !ok {
 		t.Fatal("Sub: no projection")
 	}
