@@ -1663,3 +1663,79 @@ func TestRoutePanel_ImageryIsFetchedForWhereTheRouteActuallySits(t *testing.T) {
 		}
 	}
 }
+
+// TestRoutePanel_ReLayoutAfterAFailedFetchRecomputesMarksAndKeepsTheZoom is
+// the field-level counterpart of
+// TestRoutePanel_BasemapZoomTotalFailureRendersIdenticalToNoBasemap: that
+// test proves the RE-LAID-OUT frame renders pixel-identical to a plain
+// render, which is the right end-to-end check, but it cannot say BY ITSELF
+// which of Prepare's several re-run steps (the credit strip being dropped,
+// layOut being re-run, resolveMarks being re-run) a broken build actually
+// lost -- an all-black diff and a one-pixel diff report the same "FAIL".
+// This asserts directly on the fields layOut and resolveMarks are
+// re-run to produce, so a regression here names the field that went wrong.
+//
+// A zooming highlight is the case that matters: resolveMarks recomputes
+// m.zoomOK from route.Fit over p.pts[i0:i1+1], using indices into the
+// COORDINATES layOut just rebuilt without the reserved strip. A second pass
+// that forgot to redo the projection, or that ran resolveMarks before
+// layOut instead of after, would leave marks pointing at coordinates from
+// the first, reserved layout -- which this catches by comparing against a
+// painter that never asked for a basemap at all and so only ever laid out
+// once.
+func TestRoutePanel_ReLayoutAfterAFailedFetchRecomputesMarksAndKeepsTheZoom(t *testing.T) {
+	const w, h = 800, 800
+	const fixes = 1200
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	track := squareTrack(base, fixes)
+	highlight := Highlight{Name: "Leg", From: 0, To: (fixes / 4) * time.Second, Zoom: true}
+	box := Box{X: 40, Y: 40, W: w - 80, H: h - 80}
+
+	// The reference: no basemap was ever asked for, so Prepare lays out
+	// exactly once, with no strip reserved for a credit that will never be
+	// drawn.
+	refCtx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
+	ref := RoutePanel{}.Prepare(refCtx, box).(*routePainter)
+	if !ref.anyZoom {
+		t.Fatal("precondition: the reference painter's own highlight did not resolve a zoom; " +
+			"this fixture cannot exercise the property under test")
+	}
+
+	// The subject: a basemap was asked for, so Prepare reserves a strip and
+	// lays out once against it, then the whole-course fetch fails and it
+	// has to lay out and resolve marks a SECOND time, against the box the
+	// reference used.
+	failCtx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
+	failCtx.Basemap = &fakeBasemap{err: errors.New("service down")}
+	got := RoutePanel{}.Prepare(failCtx, box).(*routePainter)
+
+	if got.reserveBottom != 0 {
+		t.Errorf("reserveBottom = %v after a failed fetch, want 0: the credit strip was not dropped", got.reserveBottom)
+	}
+	if !got.anyZoom {
+		t.Error("anyZoom = false after the re-layout; the zooming highlight did not survive the second pass")
+	}
+	if len(got.marks) != 1 || !got.marks[0].zoomOK {
+		t.Fatalf("marks = %+v after the re-layout, want one mark with zoomOK true", got.marks)
+	}
+	if got.marks[0].i0 != ref.marks[0].i0 || got.marks[0].i1 != ref.marks[0].i1 {
+		t.Errorf("mark span [%d,%d) after re-layout, want the reference's [%d,%d)",
+			got.marks[0].i0, got.marks[0].i1, ref.marks[0].i0, ref.marks[0].i1)
+	}
+
+	if len(got.xs) != len(ref.xs) || len(got.ys) != len(ref.ys) {
+		t.Fatalf("re-laid-out painter has %d,%d points, reference has %d,%d",
+			len(got.xs), len(got.ys), len(ref.xs), len(ref.ys))
+	}
+	for i := range ref.xs {
+		if math.Abs(got.xs[i]-ref.xs[i]) > 1e-6 || math.Abs(got.ys[i]-ref.ys[i]) > 1e-6 {
+			t.Fatalf("point %d re-laid-out at (%v, %v), reference has it at (%v, %v): "+
+				"the second layOut pass did not reproduce the no-basemap placement",
+				i, got.xs[i], got.ys[i], ref.xs[i], ref.ys[i])
+		}
+	}
+
+	if got.BasemapDrew() {
+		t.Error("BasemapDrew() is true although the only fetch failed")
+	}
+}

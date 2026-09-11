@@ -2799,6 +2799,109 @@ func basemapSummaryRender(t *testing.T, provider tilemap.Provider) (*render.Rend
 	return r, renderInputs{track: track, tl: tl, basemap: provider}
 }
 
+// basemapSummaryRenderWithHighlights is basemapSummaryRender plus a
+// zooming highlight, for the one outcome the plain fixture cannot reach:
+// the whole-course view arriving while a highlight's own ZOOMED view does
+// not, which fetchBasemaps reports through a different note than a total
+// failure ("some zoomed views have no imagery" rather than "no imagery at
+// all") -- see internal/panel's own
+// TestRoutePanel_BasemapReportsWhichWayTheFetchFailed, which pins that the
+// PANEL produces this note. Nothing before this asked whether writeBasemapSummary
+// actually prints it once the panel does.
+func basemapSummaryRenderWithHighlights(t *testing.T, provider tilemap.Provider, highlights []panel.Highlight) (*render.Renderer, renderInputs) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "activity.fit")
+	opts := fittest.DefaultOptions()
+	opts.Count = 60
+	if err := fittest.WriteFile(path, opts); err != nil {
+		t.Fatalf("generating fixture: %v", err)
+	}
+	track, err := fitactivity.Decode(path)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	timer := fitactivity.BuildTimerModel(track)
+	tl, err := panel.NewTimelineForActivity(timer, 30, 1)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivity: %v", err)
+	}
+	fonts, err := panel.NewFaceCache()
+	if err != nil {
+		t.Fatalf("NewFaceCache: %v", err)
+	}
+	ctx := &panel.Context{
+		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
+		Width: 800, Height: 600, FontScale: 0.05, Fonts: fonts,
+		Basemap: provider, BasemapDim: 0.5, Highlights: highlights,
+	}
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{
+		Dir: panel.Row, Children: []panel.Slot{{Panel: panel.RoutePanel{}}},
+	}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+	return r, renderInputs{track: track, tl: tl, basemap: provider}
+}
+
+// firstCallFailsProvider succeeds on the whole-course fetch (call 0) and
+// fails on every fetch after it -- a highlight's own zoomed view -- so a
+// test can put the fetch failure on exactly the view that produces
+// fetchBasemaps' OTHER note, "some zoomed views have no imagery", rather
+// than the total-failure note basemapSummaryProvider's fail case already
+// exercises.
+type firstCallFailsProvider struct {
+	calls int
+}
+
+func (p *firstCallFailsProvider) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	i := p.calls
+	p.calls++
+	if i > 0 {
+		return nil, errors.New("zoomed view unavailable")
+	}
+	return image.NewRGBA(image.Rect(0, 0, v.Width, v.Height)), nil
+}
+func (p *firstCallFailsProvider) Attribution() string {
+	return "Maps © Somebody, Data © OpenStreetMap contributors"
+}
+func (p *firstCallFailsProvider) Name() string { return "fake/style" }
+
+// TestWriteBasemapSummary_ReportsAPartialZoomFailure is the outcome
+// TestWriteBasemapSummary_SaysWhatActuallyHappened's table cannot reach: it
+// has no highlights, so fetchBasemaps' "some zoomed views have no imagery"
+// note -- distinct code from the "no imagery at all" note the "fetch failed
+// outright" case exercises -- was never asked to reach this function's own
+// output. A regression that dropped or garbled the note specifically on
+// this path, while leaving the total-failure note intact, would pass every
+// existing case here.
+func TestWriteBasemapSummary_ReportsAPartialZoomFailure(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{basemap: "outdoors", basemapDim: 0.65}
+
+	highlight := panel.Highlight{Name: "Leg", From: 0, To: 20 * time.Second, Zoom: true}
+	provider := &firstCallFailsProvider{}
+	r, in := basemapSummaryRenderWithHighlights(t, provider, []panel.Highlight{highlight})
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetErr(&buf)
+	writeBasemapSummary(cmd, r, in)
+
+	out := buf.String()
+	// The whole-course view arrived, so the panel drew and the summary says
+	// the ordinary imagery-sent line -- not the "could not be fetched"
+	// wording a total failure gets.
+	for _, want := range []string{"basemap:", "was sent to thunderforest.com", "zoomed views have no imagery"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary is missing %q; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "could not be fetched") {
+		t.Errorf("summary claims the fetch failed outright, but the whole-course view arrived; got:\n%s", out)
+	}
+}
+
 // TestWriteBasemapSummary_SaysWhatActuallyHappened is the privacy notice
 // under test, and it is the one line in this program whose WORDING is the
 // feature: it tells a user whether the area of their activity left the
