@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"image"
 	"image/color"
 	"io"
 	"os"
@@ -2733,5 +2736,142 @@ func TestFrameIndices_EachSeamIsALandmark(t *testing.T) {
 		if !slices.Contains(got, mid) {
 			t.Errorf("frame %d, the middle of the seam's notice, is not a landmark", mid)
 		}
+	}
+}
+
+// basemapSummaryProvider is a tilemap.Provider for the summary tests: it
+// either hands back an image or fails, and reports whether it "went to the
+// network" so the cached-versus-fetched line can be exercised.
+type basemapSummaryProvider struct {
+	fail    bool
+	fetched bool
+}
+
+func (p *basemapSummaryProvider) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	if p.fail {
+		return nil, errors.New("service down")
+	}
+	return image.NewRGBA(image.Rect(0, 0, v.Width, v.Height)), nil
+}
+func (p *basemapSummaryProvider) Attribution() string {
+	return "Maps © Somebody, Data © OpenStreetMap contributors"
+}
+func (p *basemapSummaryProvider) Name() string  { return "fake/style" }
+func (p *basemapSummaryProvider) Fetched() bool { return p.fetched }
+
+// basemapSummaryRender builds a real Renderer over a GPS-bearing activity
+// with a real RoutePanel, which is the only way this summary can be
+// exercised: the line it prints is assembled from what the panel actually
+// did with the provider, not from the flags alone.
+func basemapSummaryRender(t *testing.T, provider tilemap.Provider) (*render.Renderer, renderInputs) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "activity.fit")
+	opts := fittest.DefaultOptions()
+	opts.Count = 60
+	if err := fittest.WriteFile(path, opts); err != nil {
+		t.Fatalf("generating fixture: %v", err)
+	}
+	track, err := fitactivity.Decode(path)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	timer := fitactivity.BuildTimerModel(track)
+	tl, err := panel.NewTimelineForActivity(timer, 30, 1)
+	if err != nil {
+		t.Fatalf("NewTimelineForActivity: %v", err)
+	}
+	fonts, err := panel.NewFaceCache()
+	if err != nil {
+		t.Fatalf("NewFaceCache: %v", err)
+	}
+	ctx := &panel.Context{
+		Track: track, Report: inspect.Build(track), Timer: timer, Timeline: tl,
+		Width: 800, Height: 600, FontScale: 0.05, Fonts: fonts,
+		Basemap: provider, BasemapDim: 0.5,
+	}
+	layout := panel.Layout{Name: "test", FontScale: 0.05, Root: panel.Slot{
+		Dir: panel.Row, Children: []panel.Slot{{Panel: panel.RoutePanel{}}},
+	}}
+	r, err := render.New(ctx, layout, panel.DefaultTheme())
+	if err != nil {
+		t.Fatalf("render.New: %v", err)
+	}
+	return r, renderInputs{track: track, tl: tl, basemap: provider}
+}
+
+// TestWriteBasemapSummary_SaysWhatActuallyHappened is the privacy notice
+// under test, and it is the one line in this program whose WORDING is the
+// feature: it tells a user whether the area of their activity left the
+// machine. Saying that when it did not is as wrong as staying silent when it
+// did -- a notice that fires either way is one a reader learns to skip.
+func TestWriteBasemapSummary_SaysWhatActuallyHappened(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+
+	cases := []struct {
+		name     string
+		style    string
+		quiet    bool
+		provider *basemapSummaryProvider
+		want     []string
+		absent   []string
+	}{
+		{
+			name:     "imagery fetched over the network",
+			style:    "outdoors",
+			provider: &basemapSummaryProvider{fetched: true},
+			want:     []string{"basemap:", "outdoors", "was sent to thunderforest.com"},
+			absent:   []string{"served from your cache"},
+		},
+		{
+			name:     "every view served from the cache",
+			style:    "outdoors",
+			provider: &basemapSummaryProvider{fetched: false},
+			want:     []string{"served from your cache", "nothing was sent"},
+			absent:   []string{"was sent to thunderforest.com"},
+		},
+		{
+			name:     "the fetch failed outright",
+			style:    "landscape",
+			provider: &basemapSummaryProvider{fail: true},
+			want:     []string{"could not be fetched", "plain background"},
+			absent:   []string{"was sent to thunderforest.com", "served from your cache"},
+		},
+		{
+			name:     "no basemap asked for at all",
+			style:    basemapOff,
+			provider: &basemapSummaryProvider{fetched: true},
+			absent:   []string{"basemap:"},
+		},
+		{
+			name:     "quiet says nothing, as it does everywhere else",
+			style:    "outdoors",
+			quiet:    true,
+			provider: &basemapSummaryProvider{fetched: true},
+			absent:   []string{"basemap:"},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			renderOpts = renderOptions{basemap: c.style, basemapDim: 0.65, quiet: c.quiet}
+			r, in := basemapSummaryRender(t, c.provider)
+
+			var buf bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetErr(&buf)
+			writeBasemapSummary(cmd, r, in)
+
+			out := buf.String()
+			for _, want := range c.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("summary is missing %q; got:\n%s", want, out)
+				}
+			}
+			for _, absent := range c.absent {
+				if strings.Contains(out, absent) {
+					t.Errorf("summary contains %q, which is not true of this run; got:\n%s", absent, out)
+				}
+			}
+		})
 	}
 }
