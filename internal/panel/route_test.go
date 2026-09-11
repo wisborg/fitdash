@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/draw"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1231,5 +1232,318 @@ func TestRoutePanel_BasemapCreditSurvivesTheZoom(t *testing.T) {
 		if got := countNearInBox(img, corner, c.Theme.Foreground, 40); got == 0 {
 			t.Errorf("weight %v: no attribution on a zooming frame showing imagery", f.IntervalWeight)
 		}
+	}
+}
+
+// TestRoutePanel_BasemapStaysInsideItsBoxDuringZoom is
+// TestRoutePanel_ZoomStaysInsideItsBox's own property, asked with a basemap
+// present -- and the case that property's own coverage could not have caught,
+// because none of the ZoomStaysInsideItsBox fixtures ever set ctx.Basemap.
+//
+// The route panel's other drawing (the outline, the marks, the dot) is placed
+// through the box's own Placer/inset arithmetic and cannot leave the box by
+// construction. The basemap is different: it is composited with
+// golang.org/x/image/draw directly into the frame's pixel buffer rather than
+// through the gg drawing context Clipped confines, and a zoomed viewport's
+// own image is deliberately scaled LARGER than the box before being
+// positioned within it (see basemapView.drawInto's own comment) -- so
+// whatever mechanism keeps it inside the box has to be checked on its own
+// terms, in pixels, rather than assumed from the panel's other guarantees.
+func TestRoutePanel_BasemapStaysInsideItsBoxDuringZoom(t *testing.T) {
+	const w, h = 800, 800
+	for _, weight := range []float64{0.35, 1} {
+		t.Run("weight "+strconv.FormatFloat(weight, 'f', 2, 64), func(t *testing.T) {
+			ctx, box := zoomFixture(t, true, w, h)
+			ctx.Basemap = &fakeBasemap{fill: basemapGreen}
+			img, c := zoomCanvas(t, w, h)
+			p := RoutePanel{}.Prepare(ctx, box)
+
+			c.Fill(c.Theme.Background)
+			p.Static(c)
+			p.Dynamic(c, Frame{
+				At:       ctx.Timeline.Start().Add(100 * time.Second),
+				Interval: 0, IntervalWeight: weight,
+			})
+
+			in := countNearInBox(img, box, basemapGreen, 30)
+			if in == 0 {
+				t.Fatal("no basemap pixels in the box at all; this fixture cannot say anything")
+			}
+			if whole := countNearInBox(img, Box{W: w, H: h}, basemapGreen, 30); whole != in {
+				t.Errorf("%d basemap pixels escaped the box and painted over the panels beside it", whole-in)
+			}
+		})
+	}
+}
+
+// twoColorBasemap hands back a distinct, caller-chosen colour on each
+// successive call, so a test can tell WHICH fetched image ended up on screen
+// -- and how much of it -- without reproducing the compositing arithmetic
+// itself. fetchBasemaps always fetches the whole-course view first and a
+// zoomed highlight's view second, so colors[0] is the whole-course image and
+// colors[1] the zoomed one.
+type twoColorBasemap struct {
+	colors []color.RGBA
+	calls  int
+}
+
+func (f *twoColorBasemap) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	i := f.calls
+	f.calls++
+	col := basemapGreen
+	if i < len(f.colors) {
+		col = f.colors[i]
+	}
+	img := image.NewRGBA(image.Rect(0, 0, v.Width, v.Height))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: col}, image.Point{}, draw.Src)
+	return img, nil
+}
+func (f *twoColorBasemap) Attribution() string {
+	return "Maps © Somebody, Data © OpenStreetMap contributors"
+}
+func (f *twoColorBasemap) Name() string { return "fake/style" }
+
+// TestRoutePanel_ZoomCrossFadeReplacesTheWholeCourseImageAsWeightRises pins
+// the invariant docs/architecture.md claims for the cross-fade: "drawing the
+// whole-course image first and the zoomed one over it" -- both the ORDER
+// (the zoomed image must end up on top, not the reverse) and that the weight
+// this rides is Frame.IntervalWeight itself, not a constant.
+//
+// Asserted through the WHOLE-COURSE colour's own coverage inside the box,
+// which must fall to (near) zero by full zoom weight and must not fall at
+// all at weight zero -- a looser "did the colours change somewhere" check
+// would not separate "front is drawn over back" from "back is drawn over
+// front" (both change pixels), and would not separate "front's opacity rides
+// the weight" from "front is always drawn at full opacity once it exists"
+// (both eventually cover the box). This was mutation-tested: swapping the
+// draw order, and dropping the "weight > 0" guard so the front image is
+// drawn at opacity 1 regardless of weight, each make this test fail while
+// leaving every other basemap test in this file passing.
+func TestRoutePanel_ZoomCrossFadeReplacesTheWholeCourseImageAsWeightRises(t *testing.T) {
+	const w, h = 800, 800
+	const fixes = 1200
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	track := squareTrack(base, fixes)
+	highlight := Highlight{Name: "Leg", From: 0, To: (fixes / 4) * time.Second, Zoom: true}
+	wholeCourseColor := color.RGBA{R: 200, G: 0, B: 0, A: 255}
+	zoomedColor := color.RGBA{R: 0, G: 0, B: 200, A: 255}
+	box := Box{X: 40, Y: 40, W: w - 80, H: h - 80}
+	boxArea := int(box.W) * int(box.H)
+
+	wholeCourseCoverage := func(weight float64) int {
+		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
+		ctx.Basemap = &twoColorBasemap{colors: []color.RGBA{wholeCourseColor, zoomedColor}}
+		img, c := zoomCanvas(t, w, h)
+		p := RoutePanel{}.Prepare(ctx, box)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		p.Dynamic(c, Frame{At: ctx.Timeline.Start().Add(100 * time.Second), Interval: 0, IntervalWeight: weight})
+		return countNearInBox(img, box, wholeCourseColor, 15)
+	}
+
+	atStart, atMid, atFull := wholeCourseCoverage(0), wholeCourseCoverage(0.5), wholeCourseCoverage(1)
+	if atStart < boxArea*9/10 {
+		t.Errorf("at weight 0 the whole-course colour covers only %d of %d box pixels; "+
+			"the zoomed image is showing before its weight says to", atStart, boxArea)
+	}
+	if !(atStart > atMid && atMid > atFull) {
+		t.Errorf("whole-course coverage does not shrink monotonically as the zoom weight rises: %d, %d, %d",
+			atStart, atMid, atFull)
+	}
+	if atFull > boxArea/20 {
+		t.Errorf("at full zoom weight the whole-course colour still covers %d of %d box pixels; "+
+			"the zoomed image is not ending up on top", atFull, boxArea)
+	}
+}
+
+// TestRoutePanel_BasemapZoomTotalFailureRendersIdenticalToNoBasemap extends
+// TestRoutePanel_BasemapFailureLeavesTheOutlineAlone's own promise to the
+// zoom path, which draws the basemap through an entirely different method
+// (drawBasemap/draw, rather than Static) and was not exercised by that test
+// at all: a fetch that fails for every view must leave a zooming render
+// exactly as it would have rendered with no --basemap configured, at every
+// stage of the transition, not only the ordinary unzoomed frame.
+func TestRoutePanel_BasemapZoomTotalFailureRendersIdenticalToNoBasemap(t *testing.T) {
+	const w, h = 800, 800
+	const fixes = 1200
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	track := squareTrack(base, fixes)
+	highlight := Highlight{Name: "Leg", From: 0, To: (fixes / 4) * time.Second, Zoom: true}
+	box := Box{X: 40, Y: 40, W: w - 80, H: h - 80}
+
+	render := func(bm tilemap.Provider, weight float64) *image.RGBA {
+		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
+		ctx.Basemap = bm
+		img, c := zoomCanvas(t, w, h)
+		p := RoutePanel{}.Prepare(ctx, box)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		p.Dynamic(c, Frame{At: ctx.Timeline.Start().Add(100 * time.Second), Interval: 0, IntervalWeight: weight})
+		return img
+	}
+
+	for _, weight := range []float64{0, 0.35, 1} {
+		none := render(nil, weight)
+		failed := render(&fakeBasemap{err: errors.New("service down")}, weight)
+		if !bytes.Equal(none.Pix, failed.Pix) {
+			t.Errorf("weight %v: a totally failed basemap fetch did not render identically to no --basemap, "+
+				"in %d pixels", weight, countDiffPixels(none, failed))
+		}
+	}
+}
+
+// TestRoutePanel_BasemapNeverFetchedWithNoRouteToFit covers the early return
+// in Prepare that runs before the viewport or the fetch: a route can pass
+// Accepts (two-or-more GPS fixes present) and still have no EXTENT -- two
+// fixes at the same stuck coordinate -- in which case Fit refuses and Prepare
+// returns before ever consulting ctx.Basemap. A provider called anyway here
+// would mean an activity with a degenerate route still reaches the network
+// with --basemap configured, for a panel that is about to draw nothing.
+func TestRoutePanel_BasemapNeverFetchedWithNoRouteToFit(t *testing.T) {
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	track := &fitactivity.Track{Samples: []fitactivity.Sample{
+		{Time: base, HasGPS: true, Lat: 55, Lon: 12},
+		{Time: base.Add(time.Second), HasGPS: true, Lat: 55, Lon: 12},
+	}}
+	ctx := routeContext(t, track, 800, 800)
+	bm := &fakeBasemap{fill: basemapGreen}
+	ctx.Basemap = bm
+
+	RoutePanel{}.Prepare(ctx, Box{W: 800, H: 800})
+
+	if bm.calls != 0 {
+		t.Errorf("a route with no extent still fetched %d basemap views", bm.calls)
+	}
+}
+
+// nthCallFailsBasemap succeeds on every call except the ones named in
+// failOn, so a test can put the failure on exactly one view -- the
+// whole-course fetch (call 0) or a zoomed highlight's own fetch (call 1,
+// 2, ...) -- without the other succeeding or failing along with it.
+type nthCallFailsBasemap struct {
+	failOn map[int]bool
+	calls  int
+}
+
+func (f *nthCallFailsBasemap) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	i := f.calls
+	f.calls++
+	if f.failOn[i] {
+		return nil, errors.New("this view failed")
+	}
+	img := image.NewRGBA(image.Rect(0, 0, v.Width, v.Height))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: basemapGreen}, image.Point{}, draw.Src)
+	return img, nil
+}
+func (f *nthCallFailsBasemap) Attribution() string {
+	return "Maps © Somebody, Data © OpenStreetMap contributors"
+}
+func (f *nthCallFailsBasemap) Name() string { return "fake/style" }
+
+// TestRoutePanel_BasemapReportsWhichWayTheFetchFailed pins BasemapReporter's
+// two questions independently: DID anything reach the frame, and what does
+// the render summary say about WHY it might be less than the user expected.
+// fetchBasemaps has two distinct failure notes -- "no imagery at all" when
+// the whole-course fetch itself fails, and "some zoomed views have no
+// imagery" when only a highlight's own zoomed fetch does -- and nothing
+// before this test asked the panel for either one, in either case.
+func TestRoutePanel_BasemapReportsWhichWayTheFetchFailed(t *testing.T) {
+	const w, h = 800, 800
+	const fixes = 1200
+	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	track := squareTrack(base, fixes)
+	highlight := Highlight{Name: "Leg", From: 0, To: (fixes / 4) * time.Second, Zoom: true}
+
+	t.Run("the whole-course fetch fails: nothing drew, and the note says so", func(t *testing.T) {
+		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
+		ctx.Basemap = &nthCallFailsBasemap{failOn: map[int]bool{0: true}}
+
+		p := RoutePanel{}.Prepare(ctx, Box{X: 40, Y: 40, W: w - 80, H: h - 80})
+		rep, ok := p.(BasemapReporter)
+		if !ok {
+			t.Fatal("routePainter does not implement BasemapReporter")
+		}
+		if rep.BasemapDrew() {
+			t.Error("BasemapDrew() is true although the only fetch failed")
+		}
+		if got := rep.BasemapNote(); !strings.Contains(got, "no imagery") {
+			t.Errorf("BasemapNote() = %q, want it to explain nothing arrived", got)
+		}
+	})
+
+	t.Run("only the zoomed view fails: the whole course still drew, and the note names the fallback", func(t *testing.T) {
+		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
+		ctx.Basemap = &nthCallFailsBasemap{failOn: map[int]bool{1: true}}
+
+		p := RoutePanel{}.Prepare(ctx, Box{X: 40, Y: 40, W: w - 80, H: h - 80})
+		rep, ok := p.(BasemapReporter)
+		if !ok {
+			t.Fatal("routePainter does not implement BasemapReporter")
+		}
+		if !rep.BasemapDrew() {
+			t.Error("BasemapDrew() is false although the whole-course fetch succeeded")
+		}
+		if got := rep.BasemapNote(); !strings.Contains(got, "zoomed") {
+			t.Errorf("BasemapNote() = %q, want it to name the zoomed view that fell back", got)
+		}
+	})
+
+	t.Run("nothing fails: no note at all", func(t *testing.T) {
+		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
+		ctx.Basemap = &nthCallFailsBasemap{}
+
+		p := RoutePanel{}.Prepare(ctx, Box{X: 40, Y: 40, W: w - 80, H: h - 80})
+		rep := p.(BasemapReporter)
+		if !rep.BasemapDrew() {
+			t.Error("BasemapDrew() is false although nothing failed")
+		}
+		if got := rep.BasemapNote(); got != "" {
+			t.Errorf("BasemapNote() = %q, want empty when nothing went wrong", got)
+		}
+	})
+}
+
+// TestRoutePanel_BasemapCreditFitsAPortraitBoxInEitherTheme is
+// TestRoutePanel_BasemapCreditIsAlwaysDrawn's own property asked at the two
+// shapes and the one other theme that test never tried: every fixture there
+// is a SQUARE box under DarkTheme, and the credit's own colour is
+// Theme.Foreground, which differs between the two shipped themes. A plate or
+// text colour computed against a theme constant rather than c.Theme would
+// still find its own hard-coded colour in the square/dark case and only fail
+// once a real render actually chose the other theme or a narrow panel --
+// exactly the two things a layout and a --theme flag change together.
+func TestRoutePanel_BasemapCreditFitsAPortraitBoxInEitherTheme(t *testing.T) {
+	for _, theme := range Themes() {
+		t.Run(theme.Name, func(t *testing.T) {
+			const w, h = 300, 900 // narrow and tall: box is 220 x 820
+			bm := &fakeBasemap{fill: basemapGreen}
+			ctx, box := basemapContext(t, bm, 0, nil, w, h)
+			img := image.NewRGBA(image.Rect(0, 0, w, h))
+			faces, err := NewFaceCache()
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := NewCanvas(img, 20, theme, faces)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := RoutePanel{}.Prepare(ctx, box)
+
+			c.Fill(c.Theme.Background)
+			p.Static(c)
+
+			corner := Box{X: box.X + box.W/2, Y: box.Y + box.H*3/4, W: box.W / 2, H: box.H / 4}
+			if got := countNearInBox(img, corner, c.Theme.Foreground, 40); got == 0 {
+				t.Fatalf("no attribution text in the corner of a %vx%v %s-themed panel showing imagery", w, h, theme.Name)
+			}
+			// The credit's own plate/text must not spill past the panel's
+			// box either, the same escape check every other drawing
+			// operation in this file is held to.
+			whole := countNearInBox(img, Box{W: w, H: h}, c.Theme.Foreground, 40)
+			in := countNearInBox(img, box, c.Theme.Foreground, 40)
+			if whole != in {
+				t.Errorf("%d foreground-coloured pixels escaped the box in the %s theme", whole-in, theme.Name)
+			}
+		})
 	}
 }

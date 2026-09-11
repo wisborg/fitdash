@@ -20,6 +20,7 @@ import (
 	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/panel"
 	"github.com/wisborg/fitdash/internal/render"
+	"github.com/wisborg/fitdash/internal/tilemap"
 )
 
 // TestParseSize_ReadsWxHAndRefusesTheRest keeps a malformed --size from
@@ -811,6 +812,30 @@ func TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay(t *testing.
 			name: "--elevation-smoothing/-gain/-loss at zero (automatic) is fine",
 			set:  func() { renderOpts.crf = 20 },
 		},
+		{
+			// --basemap-dim is a wash fraction, meaningful only inside
+			// [0, 1] -- 0 is full-strength imagery, 1 is invisible, and
+			// anything outside that range is not a fraction of anything.
+			name:    "--basemap-dim below 0",
+			set:     func() { renderOpts.crf, renderOpts.basemapDim = 20, -0.1 },
+			wantErr: "--basemap-dim",
+		},
+		{
+			name:    "--basemap-dim above 1",
+			set:     func() { renderOpts.crf, renderOpts.basemapDim = 20, 1.1 },
+			wantErr: "--basemap-dim",
+		},
+		{
+			// Both ends of the range are valid, not merely tolerated: 0 is
+			// full-strength imagery and 1 is a basemap washed out entirely,
+			// and either could be a deliberate choice.
+			name: "--basemap-dim at 0 is fine",
+			set:  func() { renderOpts.crf, renderOpts.basemapDim = 20, 0 },
+		},
+		{
+			name: "--basemap-dim at 1 is fine",
+			set:  func() { renderOpts.crf, renderOpts.basemapDim = 20, 1 },
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -830,6 +855,227 @@ func TestValidateRenderOptions_RejectsFlagsThatCannotMeanWhatTheySay(t *testing.
 				t.Errorf("error %v does not mention %q", err, c.wantErr)
 			}
 		})
+	}
+}
+
+// --- --basemap wiring --------------------------------------------------
+
+// resolveBasemapTestKeyFile writes a bare Thunderforest key to a fresh file
+// with safe permissions, the shape resolveBasemap's own happy path needs.
+func resolveBasemapTestKeyFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(path, []byte("aabbccdd11223344aabbccdd11223344"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestResolveBasemap_NoStyleFetchesNothing pins the off-by-default case:
+// --basemap unset, or explicitly "none", must resolve to a nil provider and
+// print nothing -- a render that never asked for imagery must not even hint
+// that it considered it.
+func TestResolveBasemap_NoStyleFetchesNothing(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	for _, style := range []string{"", basemapOff} {
+		t.Run("style "+style, func(t *testing.T) {
+			renderOpts = renderOptions{basemap: style}
+			var buf bytes.Buffer
+			c := &cobra.Command{}
+			c.SetErr(&buf)
+			p, err := resolveBasemap(c)
+			if err != nil {
+				t.Fatalf("resolveBasemap: %v", err)
+			}
+			if p != nil {
+				t.Errorf("resolveBasemap returned a provider with --basemap %q", style)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("resolveBasemap printed %q with no --basemap given", buf.String())
+			}
+		})
+	}
+}
+
+// TestResolveBasemap_KeyFileWithNoStyleWarns is the flag combination that
+// looks like a mistake rather than a deliberate no-op: a key file was
+// clearly meant for something. Said rather than silently ignored, or the
+// user is left wondering why the render has no map.
+func TestResolveBasemap_KeyFileWithNoStyleWarns(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{basemapKeyFile: resolveBasemapTestKeyFile(t)}
+
+	var buf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetErr(&buf)
+	p, err := resolveBasemap(c)
+	if err != nil {
+		t.Fatalf("resolveBasemap: %v", err)
+	}
+	if p != nil {
+		t.Error("resolveBasemap returned a provider with no --basemap style given")
+	}
+	if !strings.Contains(buf.String(), "--basemap-key-file given without --basemap") {
+		t.Errorf("no warning about the orphaned key file; got %q", buf.String())
+	}
+}
+
+// TestResolveBasemap_RefusesAnUnknownStyle keeps a typo from silently
+// falling through to "no basemap" the way an unrecognised --theme or
+// --layout does not either.
+func TestResolveBasemap_RefusesAnUnknownStyle(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{basemap: "satellite-3d", basemapKeyFile: resolveBasemapTestKeyFile(t)}
+
+	c := &cobra.Command{}
+	c.SetErr(&bytes.Buffer{})
+	_, err := resolveBasemap(c)
+	if err == nil {
+		t.Fatal("an unknown --basemap style was accepted")
+	}
+	if !strings.Contains(err.Error(), "satellite-3d") || !strings.Contains(err.Error(), "outdoors") {
+		t.Errorf("error does not name the bad value or a valid one: %v", err)
+	}
+}
+
+// TestResolveBasemap_RequiresAKeyFile pins that fitdash never fetches
+// imagery under a key of its own: a style with no --basemap-key-file must
+// refuse rather than silently using some default.
+func TestResolveBasemap_RequiresAKeyFile(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{basemap: "outdoors"}
+
+	c := &cobra.Command{}
+	c.SetErr(&bytes.Buffer{})
+	_, err := resolveBasemap(c)
+	if err == nil {
+		t.Fatal("--basemap with no --basemap-key-file was accepted")
+	}
+	if !strings.Contains(err.Error(), "--basemap-key-file") {
+		t.Errorf("error does not name the missing flag: %v", err)
+	}
+}
+
+// TestResolveBasemap_ValidStyleAndKeyResolveAThunderforestProvider is the
+// happy path: a real style and a real key file must resolve to a working
+// Thunderforest provider carrying that exact style, uncached when
+// --basemap-cache=off.
+func TestResolveBasemap_ValidStyleAndKeyResolveAThunderforestProvider(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{
+		basemap: "landscape", basemapKeyFile: resolveBasemapTestKeyFile(t), basemapCache: "off",
+	}
+
+	c := &cobra.Command{}
+	var buf bytes.Buffer
+	c.SetErr(&buf)
+	p, err := resolveBasemap(c)
+	if err != nil {
+		t.Fatalf("resolveBasemap: %v", err)
+	}
+	tf, ok := p.(*tilemap.Thunderforest)
+	if !ok {
+		t.Fatalf("resolveBasemap returned %T, want *tilemap.Thunderforest (cache is off)", p)
+	}
+	if tf.Style != "landscape" {
+		t.Errorf("provider style = %q, want %q", tf.Style, "landscape")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("a private key file under a valid style still printed %q", buf.String())
+	}
+}
+
+// TestResolveBasemap_WrapsInACacheUnlessDisabled pins the OTHER half of the
+// wiring the happy-path test above deliberately turned off: by default (and
+// under any --basemap-cache value except "off"), the provider returned must
+// be wrapped so repeated renders of the same activity do not re-fetch
+// identical imagery.
+func TestResolveBasemap_WrapsInACacheUnlessDisabled(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{
+		basemap: "outdoors", basemapKeyFile: resolveBasemapTestKeyFile(t), basemapCache: t.TempDir(),
+	}
+
+	c := &cobra.Command{}
+	c.SetErr(&bytes.Buffer{})
+	p, err := resolveBasemap(c)
+	if err != nil {
+		t.Fatalf("resolveBasemap: %v", err)
+	}
+	cached, ok := p.(*tilemap.Cached)
+	if !ok {
+		t.Fatalf("resolveBasemap returned %T, want *tilemap.Cached", p)
+	}
+	if cached.Dir != renderOpts.basemapCache {
+		t.Errorf("cache dir = %q, want %q", cached.Dir, renderOpts.basemapCache)
+	}
+	if _, ok := cached.Provider.(*tilemap.Thunderforest); !ok {
+		t.Errorf("Cached wraps %T, want *tilemap.Thunderforest", cached.Provider)
+	}
+}
+
+// TestResolveBasemap_WorldReadableKeyWarnsButStillResolves pins that a
+// permissions problem is advisory: the file is the user's own, and a render
+// that refused over it would be this program deciding something that is not
+// its decision.
+func TestResolveBasemap_WorldReadableKeyWarnsButStillResolves(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(path, []byte("aabbccdd11223344aabbccdd11223344"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	renderOpts = renderOptions{basemap: "outdoors", basemapKeyFile: path, basemapCache: "off"}
+
+	c := &cobra.Command{}
+	var buf bytes.Buffer
+	c.SetErr(&buf)
+	p, err := resolveBasemap(c)
+	if err != nil {
+		t.Fatalf("resolveBasemap: %v", err)
+	}
+	if p == nil {
+		t.Error("a world-readable key file still refused to resolve a provider")
+	}
+	if !strings.Contains(buf.String(), "warning:") {
+		t.Errorf("no warning about the world-readable key file; got %q", buf.String())
+	}
+}
+
+// TestResolveBasemap_MissingKeyFileFails pins that a key file which cannot be
+// read is a render error rather than a silent "no basemap" -- a user who
+// typoed the path deserves to be told, not to get a plain render and wonder
+// why the map never turned up.
+func TestResolveBasemap_MissingKeyFileFails(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{basemap: "outdoors", basemapKeyFile: filepath.Join(t.TempDir(), "nope")}
+
+	c := &cobra.Command{}
+	c.SetErr(&bytes.Buffer{})
+	_, err := resolveBasemap(c)
+	if err == nil {
+		t.Fatal("a missing key file was accepted")
+	}
+}
+
+// TestBasemapCacheDir_OffDefaultAndCustom pins the three spellings
+// --basemap-cache accepts.
+func TestBasemapCacheDir_OffDefaultAndCustom(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+
+	renderOpts = renderOptions{basemapCache: "off"}
+	if got := basemapCacheDir(); got != "" {
+		t.Errorf("--basemap-cache off resolved to %q, want no caching", got)
+	}
+
+	renderOpts = renderOptions{basemapCache: ""}
+	if got, want := basemapCacheDir(), tilemap.DefaultCacheDir(); got != want {
+		t.Errorf("--basemap-cache unset resolved to %q, want the default %q", got, want)
+	}
+
+	custom := t.TempDir()
+	renderOpts = renderOptions{basemapCache: custom}
+	if got := basemapCacheDir(); got != custom {
+		t.Errorf("--basemap-cache %q resolved to %q", custom, got)
 	}
 }
 
