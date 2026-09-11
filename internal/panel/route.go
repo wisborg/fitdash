@@ -62,24 +62,109 @@ func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 		inset = box.H * 0.06
 	}
 	p.inset, p.base = inset, proj
-	// One placement function for the outline and the dot, so the dot cannot
-	// drift off the line it is meant to be travelling along.
-	place, ok := p.placer(proj)
-	if !ok {
-		return p
-	}
-	p.place = place
-	xs, ys := p.placeAll(pts, place)
 
 	unit := box.H
 	if box.W < unit {
 		unit = box.W
 	}
-	p.pts, p.all, p.xs, p.ys = pts, all, xs, ys
+	p.pts, p.all = pts, all
+	p.creditPx = maxf(9, unit*0.05)
+
+	// Room kept along the bottom for the attribution, so the route is not
+	// drawn underneath it.
+	//
+	// The credit sits in the panel's bottom-right corner and the route is
+	// fitted to fill the panel, so a course whose south-east corner is its
+	// furthest point runs straight under the words -- reported from real use,
+	// on a real activity. Reserving the strip effectively zooms the route out
+	// a little: it costs a few percent of size and buys a course that is
+	// never hidden behind the credit it obliges.
+	//
+	// Only when imagery was ASKED for, and dropped again below if none
+	// arrived: a render whose fetch failed has to come out identical to one
+	// that never asked, down to the bytes, and that includes where the route
+	// was placed.
+	if ctx.Basemap != nil {
+		p.reserveBottom = p.creditPx * creditReserveFraction
+	}
+	if !p.layOut(proj) {
+		return p
+	}
+
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*0.022)
 
+	p.resolveMarks(ctx, proj, unit)
+
+	// Fetched here, after the marks exist, because the zoomed views are
+	// defined by them -- and in Prepare at all because this is the phase that
+	// runs once. Everything below this line runs per frame.
+	if ctx.Basemap != nil {
+		p.baseMap, p.zoomMaps, p.mapNote = fetchBasemaps(ctx, p, proj, p.marks)
+		if p.baseMap != nil {
+			p.mapCredit = ctx.Basemap.Attribution()
+			p.mapDim = clampWeight(ctx.BasemapDim)
+		} else if p.reserveBottom > 0 {
+			// No imagery, so no credit, so nothing to keep room for. Laid
+			// out again rather than left with an empty strip, because a
+			// failed fetch has to render identically to no --basemap at all.
+			p.reserveBottom = 0
+			if !p.layOut(proj) {
+				return p
+			}
+			p.resolveMarks(ctx, proj, unit)
+		}
+	}
+	return p
+}
+
+// creditReserveFraction is how much of the credit's own text size is kept
+// clear beneath the route: the line itself, the plate's padding above and
+// below it, and a little air.
+const creditReserveFraction = 2.2
+
+// layOut resolves the placement everything drawn from this projection shares
+// -- the placer, the drawn coordinates, and the viewport imagery is
+// composited against.
+//
+// One function because those three have to agree exactly. The viewport comes
+// from the SAME placement the route uses rather than from the box, so the
+// imagery fetched for it lands under the line rather than beside it.
+func (p *routePainter) layOut(proj route.Projection) bool {
+	place, ok := p.placer(proj)
+	if !ok {
+		return false
+	}
+	p.place = place
+	p.xs, p.ys = p.placeAll(p.pts, place)
+
+	w, h := p.placeArea()
+	if vx, vy, vw, vh, ok := proj.CoverBox(w, h, p.box.W, p.box.H, p.inset, p.inset); ok {
+		// Static composites against this and runs BEFORE Dynamic ever writes
+		// it, so a render that never zooms would otherwise composite against
+		// a zero rectangle and draw no map at all -- on exactly the renders
+		// where the basemap is simplest.
+		p.viewport = [4]float64{vx, vy, vw, vh}
+	}
+	return true
+}
+
+// placeArea is the region inside the box the route itself is fitted into:
+// the box less its inset, less any room kept for the attribution.
+func (p *routePainter) placeArea() (w, h float64) {
+	return p.box.W - 2*p.inset, p.box.H - 2*p.inset - p.reserveBottom
+}
+
+// resolveMarks resolves every highlight's stretch of the drawn outline, and
+// the zoomed view that goes with one that asked for it.
+//
+// A method rather than a block inside Prepare because it has to be re-runnable:
+// the marks are indices into the DRAWN coordinates, and a basemap fetch that
+// fails re-lays the route out without the credit's reserved strip -- which
+// moves those coordinates, and would leave marks pointing at the old ones.
+func (p *routePainter) resolveMarks(ctx *Context, proj route.Projection, unit float64) {
+	p.marks, p.anyZoom = nil, false
 	// Every highlight's span, resolved against pts -- the DRAWN list, per
 	// route.SpanIndices's own doc comment on why this is the opposite rule
 	// from the position dot above, which deliberately uses p.all. The bounds
@@ -97,14 +182,17 @@ func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 	// at least minMarkLengthFraction of the panel's own unit -- see that
 	// constant's own comment for why this is the same class of fix as
 	// minBlockFraction on the strip.
-	if len(ctx.Highlights) > 0 {
+	if len(ctx.Highlights) == 0 {
+		return
+	}
+	{
 		start := ctx.Timeline.Start()
 		minLen := unit * minMarkLengthFraction
 		p.marks = make([]routeMark, len(ctx.Highlights))
 		for i, h := range ctx.Highlights {
-			i0, i1, ok := route.SpanIndices(pts, start.Add(h.From), start.Add(h.To))
+			i0, i1, ok := route.SpanIndices(p.pts, start.Add(h.From), start.Add(h.To))
 			if ok {
-				i0, i1 = extendMarkAlongPolyline(xs, ys, i0, i1, minLen)
+				i0, i1 = extendMarkAlongPolyline(p.xs, p.ys, i0, i1, minLen)
 			}
 			m := routeMark{ok: ok, i0: i0, i1: i1}
 			// The zoom is fitted to the very vertices the mark is drawn
@@ -124,36 +212,12 @@ func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
 				// previous projection needed a Sub that shared its mean
 				// latitude, or the two views sheared against each other as
 				// the zoom scaled between them.
-				m.zoom, m.zoomOK = route.Fit(pts[i0 : i1+1])
+				m.zoom, m.zoomOK = route.Fit(p.pts[i0 : i1+1])
 				p.anyZoom = p.anyZoom || m.zoomOK
 			}
 			p.marks[i] = m
 		}
 	}
-
-	// The viewport starts at the whole-course view. Static composites against
-	// it and runs BEFORE Dynamic ever writes it, so a render that never zooms
-	// would otherwise composite against a zero rectangle and draw no map at
-	// all -- on exactly the renders where the basemap is simplest.
-	// Left at zero on a box with no area, which draws no imagery -- and a
-	// projection that cannot be placed draws no route either, so there is
-	// nothing for the basemap to sit under in that case anyway.
-	if vx, vy, vw, vh, ok := proj.CoverProjected(box.W, box.H); ok {
-		p.viewport = [4]float64{vx, vy, vw, vh}
-	}
-
-	// Fetched here, after the marks exist, because the zoomed views are
-	// defined by them -- and in Prepare at all because this is the phase that
-	// runs once. Everything below this line runs per frame.
-	if ctx.Basemap != nil {
-		p.baseMap, p.zoomMaps, p.mapNote = fetchBasemaps(ctx, box, proj, p.marks)
-		if p.baseMap != nil {
-			p.mapCredit = ctx.Basemap.Attribution()
-			p.mapDim = clampWeight(ctx.BasemapDim)
-			p.creditPx = maxf(9, unit*0.05)
-		}
-	}
-	return p
 }
 
 // minMarkLengthFraction is the smallest a highlight's route mark is allowed
@@ -255,6 +319,13 @@ type routePainter struct {
 	mapCredit string
 	mapNote   string
 	creditPx  float64
+	// suppressMap leaves the imagery out while the render measures where it
+	// is drawing -- see BasemapSuppressor.
+	suppressMap bool
+	// reserveBottom is the strip kept clear beneath the route for the
+	// attribution, so a course reaching the panel's bottom-right corner is
+	// not drawn underneath the credit it obliges.
+	reserveBottom float64
 	// creditFitted is creditPx shrunk to fit the box, resolved on the first
 	// draw because it needs the canvas's font metrics, which Prepare cannot
 	// reach.
@@ -286,7 +357,8 @@ type routePainter struct {
 // different arithmetics -- which is the same guarantee Prepare's original
 // single closure gave, kept while the projection stopped being fixed.
 func (p *routePainter) placer(proj route.Projection) (func(route.Point) (float64, float64), bool) {
-	place, ok := proj.Placer(p.box.W-2*p.inset, p.box.H-2*p.inset)
+	w, h := p.placeArea()
+	place, ok := proj.Placer(w, h)
 	if !ok {
 		return nil, false
 	}
@@ -370,7 +442,7 @@ func (p *routePainter) Static(c *Canvas) {
 // simply leaves the whole-course one showing, magnified, rather than leaving
 // a hole.
 func (p *routePainter) drawBasemap(c *Canvas, back, front *basemapView, weight float64) {
-	if back == nil && front == nil {
+	if p.suppressMap || (back == nil && front == nil) {
 		return
 	}
 	minX, minY, spanX, spanY := p.viewport[0], p.viewport[1], p.viewport[2], p.viewport[3]
@@ -395,7 +467,7 @@ func (p *routePainter) drawBasemap(c *Canvas, back, front *basemapView, weight f
 // small for the imagery, and the honest response is to keep the obligation
 // and let the map be small.
 func (p *routePainter) drawCredit(c *Canvas) {
-	if p.baseMap == nil || p.mapCredit == "" {
+	if p.suppressMap || p.baseMap == nil || p.mapCredit == "" {
 		return
 	}
 	// The plate's margin, sized from the text it surrounds rather than
@@ -486,7 +558,8 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	// The viewport in projected units, which is what the basemap is
 	// composited against. Recorded even when nothing zoomed, so Static and
 	// Dynamic composite against the same rectangle.
-	if vpX, vpY, vpW, vpH, ok := proj.CoverProjected(p.box.W, p.box.H); ok {
+	w, h := p.placeArea()
+	if vpX, vpY, vpW, vpH, ok := proj.CoverBox(w, h, p.box.W, p.box.H, p.inset, p.inset); ok {
 		p.viewport = [4]float64{vpX, vpY, vpW, vpH}
 	}
 	if zoomed {

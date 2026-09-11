@@ -845,6 +845,22 @@ func (r *Renderer) resolveCutNotice() error {
 // frames: r.notice is still zero here, which is the same guard it uses for a
 // frame too small to place the card in at all.
 func (r *Renderer) inkMask(img *image.RGBA) ([]bool, error) {
+	// Map imagery is left out of this measurement, and put back afterwards.
+	//
+	// The mask answers "where is this render drawing", so the card can go
+	// where it is not. A basemap inks its panel's entire box, which makes
+	// every candidate position over the map look full and pushes the card
+	// onto a readout instead -- reported from real use, as a pause notice
+	// landing across the heart rate. Imagery is context and a reading is
+	// content, so the map does not count: a notice over the map is fine, and
+	// this restores exactly the placement a render without one would choose.
+	for _, p := range r.painters {
+		if s, ok := p.(panel.BasemapSuppressor); ok {
+			s.SuppressBasemap(true)
+			defer s.SuppressBasemap(false)
+		}
+	}
+
 	bg := color.RGBAModel.Convert(r.theme.Background).(color.RGBA)
 	mask := make([]bool, r.ctx.Width*r.ctx.Height)
 	n := r.Frames()

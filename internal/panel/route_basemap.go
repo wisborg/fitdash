@@ -40,10 +40,12 @@ type basemapView struct {
 // clean background exactly as it always has. That is what makes "offline
 // must keep working" a property of the code rather than a hope: there is no
 // path through here that can fail a render.
-func fetchBasemaps(ctx *Context, box Box, base route.Projection, marks []routeMark) (*basemapView, []*basemapView, string) {
+func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks []routeMark) (*basemapView, []*basemapView, string) {
 	if ctx.Basemap == nil {
 		return nil, nil, ""
 	}
+	box := rp.box
+	placerW, placerH := rp.placeArea()
 
 	c, cancel := context.WithTimeout(context.Background(), basemapTimeout)
 	defer cancel()
@@ -55,7 +57,10 @@ func fetchBasemaps(ctx *Context, box Box, base route.Projection, marks []routeMa
 		// rectangle: if they are ever computed twice and drift apart, the
 		// imagery sits a few pixels beside the route it was fetched for, and
 		// nothing short of comparing pixels would notice.
-		minX, minY, spanX, spanY, ok := p.CoverProjected(box.W, box.H)
+		//
+		// Derived from the route's own PLACEMENT rather than from the box,
+		// for the same reason -- see route.Projection.CoverBox.
+		minX, minY, spanX, spanY, ok := p.CoverBox(placerW, placerH, box.W, box.H, rp.inset, rp.inset)
 		if !ok {
 			return nil
 		}
@@ -142,3 +147,26 @@ func (p *routePainter) BasemapNote() string { return p.mapNote }
 
 // BasemapDrew reports whether imagery reached the frame.
 func (p *routePainter) BasemapDrew() bool { return p.baseMap != nil }
+
+// BasemapSuppressor is implemented by a Painter that can be asked to leave
+// its map imagery out for a pass.
+//
+// It exists for the pause notice. That card is placed wherever the render
+// draws least, measured by sampling frames and counting pixels that are not
+// background -- and a basemap inks its panel's whole box, so every candidate
+// position over the map counts as full and the card is pushed onto a
+// READOUT instead. Imagery is context and a reading is content: a notice over
+// the map is fine, a notice over the heart rate is not.
+//
+// So the mask is measured with imagery suppressed, which restores exactly the
+// placement a render without --basemap would have chosen. It is a toggle
+// rather than a second rendering path because the alternative -- teaching
+// internal/render what a basemap is -- would put that knowledge in the one
+// package that composites whatever panels draw without knowing what any of it
+// means.
+type BasemapSuppressor interface {
+	SuppressBasemap(bool)
+}
+
+// SuppressBasemap leaves the imagery out of the next draws, or puts it back.
+func (p *routePainter) SuppressBasemap(v bool) { p.suppressMap = v }

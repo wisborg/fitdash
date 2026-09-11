@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -1545,5 +1546,120 @@ func TestRoutePanel_BasemapCreditFitsAPortraitBoxInEitherTheme(t *testing.T) {
 				t.Errorf("%d foreground-coloured pixels escaped the box in the %s theme", whole-in, theme.Name)
 			}
 		})
+	}
+}
+
+// TestRoutePanel_RouteKeepsClearOfTheCredit is a regression test for the
+// second thing reported from real use: a course whose furthest point is its
+// south-east corner was drawn straight under the attribution.
+//
+// The credit sits in the panel's bottom-right corner and the route is fitted
+// to fill the panel, so the two collide on exactly the activities that reach
+// that corner. A strip is now kept clear beneath the route -- which
+// effectively zooms it out a little, costing a few percent of size and
+// buying a course that is never hidden behind the credit it obliges.
+func TestRoutePanel_RouteKeepsClearOfTheCredit(t *testing.T) {
+	const w, h = 800, 800
+	ctx, box := basemapContext(t, &fakeBasemap{fill: basemapGreen}, 0, nil, w, h)
+	p := RoutePanel{}.Prepare(ctx, box).(*routePainter)
+
+	if p.reserveBottom <= 0 {
+		t.Fatal("no room was kept for the credit, so this test cannot say anything")
+	}
+	limit := box.Y + box.H - p.inset - p.reserveBottom
+	for i, y := range p.ys {
+		if y > limit+1e-6 {
+			t.Fatalf("drawn point %d sits at y=%v, past the %v where the credit's strip begins", i, y, limit)
+		}
+	}
+
+	// The strip has to be big enough for what actually goes in it, or the
+	// route is merely shrunk for nothing.
+	_, credH := measureCreditFor(t, p, w, h)
+	if p.reserveBottom < credH {
+		t.Errorf("reserved %v for a credit that measures %v tall", p.reserveBottom, credH)
+	}
+}
+
+// measureCreditFor reports the size the credit actually draws at.
+func measureCreditFor(t *testing.T, p *routePainter, w, h int) (float64, float64) {
+	t.Helper()
+	_, c := zoomCanvas(t, w, h)
+	c.Fill(c.Theme.Background)
+	p.drawCredit(c) // resolves creditFitted
+	cw, ch, err := c.MeasureText(p.mapCredit, p.creditFitted)
+	if err != nil {
+		t.Fatalf("MeasureText: %v", err)
+	}
+	return cw, ch
+}
+
+// TestRoutePanel_NoCreditMeansNoReservedStrip is the other half, and the
+// reason the reserve is dropped again when a fetch fails: a render with no
+// imagery owes no credit, so keeping room for one would shrink its route for
+// nothing -- and would stop a failed fetch rendering identically to a run
+// that never asked for a basemap.
+func TestRoutePanel_NoCreditMeansNoReservedStrip(t *testing.T) {
+	const w, h = 800, 800
+	cases := []struct {
+		name     string
+		provider tilemap.Provider
+	}{
+		{"no basemap asked for", nil},
+		{"a basemap that could not be fetched", &fakeBasemap{err: errors.New("service down")}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, box := basemapContext(t, c.provider, 0, nil, w, h)
+			p := RoutePanel{}.Prepare(ctx, box).(*routePainter)
+			if p.reserveBottom != 0 {
+				t.Errorf("kept %v clear for a credit that will never be drawn", p.reserveBottom)
+			}
+		})
+	}
+}
+
+// TestRoutePanel_ImageryIsFetchedForWhereTheRouteActuallySits pins the
+// alignment the whole projection change exists for, at the panel level.
+//
+// The view handed to the provider has to describe the ground the route is
+// drawn over. It is derived from the route's own PLACEMENT -- inset, and
+// inset further for the credit -- not from the panel's box; deriving it from
+// the box assumes the route fills it, which cost 13.6%: the map was drawn
+// that much larger than the line on it.
+func TestRoutePanel_ImageryIsFetchedForWhereTheRouteActuallySits(t *testing.T) {
+	const w, h = 800, 800
+	bm := &fakeBasemap{fill: basemapGreen}
+	ctx, box := basemapContext(t, bm, 0, nil, w, h)
+	p := RoutePanel{}.Prepare(ctx, box).(*routePainter)
+
+	if len(bm.views) != 1 {
+		t.Fatalf("fetched %d views, want 1", len(bm.views))
+	}
+	v := bm.views[0]
+
+	// The rectangle the imagery is COMPOSITED against must be the rectangle
+	// it was FETCHED for. They are computed in different places -- the fetch
+	// from the provider's View, the compositing from the painter's viewport
+	// -- and a drift between them moves the picture under the line without
+	// changing either on its own.
+	north, west := tilemap.Unproject(p.viewport[0], p.viewport[1])
+	south, east := tilemap.Unproject(p.viewport[0]+p.viewport[2], p.viewport[1]+p.viewport[3])
+	if math.Abs(north-v.North) > 1e-9 || math.Abs(west-v.West) > 1e-9 ||
+		math.Abs(south-v.South) > 1e-9 || math.Abs(east-v.East) > 1e-9 {
+		t.Errorf("imagery fetched for N%v W%v S%v E%v is composited against N%v W%v S%v E%v",
+			v.North, v.West, v.South, v.East, north, west, south, east)
+	}
+
+	// Every drawn point must land where the fetched imagery says it should:
+	// the view spans the box, so a point's pixel is its position within that
+	// view, scaled to the box.
+	for i, pt := range p.pts {
+		wantX := (pt.Lon - v.West) / (v.East - v.West) * box.W
+		gotX := p.xs[i] - box.X
+		if math.Abs(gotX-wantX) > 0.5 {
+			t.Fatalf("drawn point %d sits at x=%v in the box but the fetched view puts it at %v; "+
+				"the imagery and the route are at different scales", i, gotX, wantX)
+		}
 	}
 }

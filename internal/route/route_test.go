@@ -543,72 +543,105 @@ func TestProjection_NorthIsUp(t *testing.T) {
 	}
 }
 
-// TestCoverProjected_WidensTheBoundsToTheBox pins what a basemap is fetched
-// for, and the property that keeps the imagery under the route rather than
-// beside it.
+// TestCoverBox_AgreesWithThePlacerWhenTheRouteIsInset is the regression test
+// for a bug that drew the map 13.6% larger than the route sitting on it.
 //
-// Placer preserves aspect and centres the leftover, so the box shows more
-// ground than the route's own extent on one axis. Imagery fetched for the
-// extent would sit letterboxed inside the box with the line flush against its
-// edges; imagery fetched for the COVER reaches the panel's edges with the
-// route inset in the middle of it.
-func TestCoverProjected_WidensTheBoundsToTheBox(t *testing.T) {
+// Imagery is fetched for what CoverBox returns and then drawn to fill the
+// box, so the mapping it implies has to be the identical mapping Placer uses
+// for the route. The version this replaces derived the cover from the BOX,
+// which silently assumed the route filled it -- and the route never does. It
+// is inset, and inset further still when room is kept for an attribution
+// credit.
+//
+// The old test could not see this: it passed the same width and height to
+// both Placer and the cover, so the two agreed by construction while the
+// panel's real call sites used different areas. This one deliberately gives
+// them the shapes the panel gives them.
+func TestCoverBox_AgreesWithThePlacerWhenTheRouteIsInset(t *testing.T) {
 	pts := zoomPts()
 	p, ok := Fit(pts)
 	if !ok {
 		t.Fatal("Fit: no projection")
 	}
 
-	// A box wider than the route's own aspect: the extra width is what the
-	// cover has to account for.
-	const w, h = 400.0, 200.0
-	minX, minY, spanX, spanY, ok := p.CoverProjected(w, h)
+	cases := []struct {
+		name                       string
+		boxW, boxH, inset, reserve float64
+	}{
+		{"no inset at all", 400, 300, 0, 0},
+		{"an ordinary inset", 400, 300, 18, 0},
+		{"an inset plus a credit strip", 400, 300, 18, 40},
+		{"a wide short panel", 900, 220, 13, 29},
+		{"a tall narrow panel", 300, 900, 18, 40},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			placerW := c.boxW - 2*c.inset
+			placerH := c.boxH - 2*c.inset - c.reserve
+
+			at, ok := p.Placer(placerW, placerH)
+			if !ok {
+				t.Fatal("Placer: none")
+			}
+			minX, minY, spanX, spanY, ok := p.CoverBox(placerW, placerH, c.boxW, c.boxH, c.inset, c.inset)
+			if !ok {
+				t.Fatal("CoverBox: none")
+			}
+
+			// For every point, where the ROUTE draws it and where the MAP
+			// would put it must be the same pixel. The map spans the box, so
+			// its mapping is (projected - minX) / spanX * boxW.
+			for i, pt := range pts {
+				rx, ry := at(pt)
+				rx, ry = rx+c.inset, ry+c.inset // the panel's own offset
+				mx, my := tilemap.Project(pt.Lat, pt.Lon)
+				wantX := (mx - minX) / spanX * c.boxW
+				wantY := (my - minY) / spanY * c.boxH
+				if math.Abs(rx-wantX) > 1e-6 || math.Abs(ry-wantY) > 1e-6 {
+					t.Fatalf("point %d: route draws it at (%.3f, %.3f) but the imagery puts it at (%.3f, %.3f) -- "+
+						"the map is drawn at a different scale from the line on it", i, rx, ry, wantX, wantY)
+				}
+			}
+		})
+	}
+}
+
+// TestCoverBox_ShowsAtLeastTheRoute checks the other half: the covered
+// rectangle has to CONTAIN the route, or imagery fetched for it would not
+// reach the whole line.
+func TestCoverBox_ShowsAtLeastTheRoute(t *testing.T) {
+	pts := zoomPts()
+	p, _ := Fit(pts)
+	const boxW, boxH, inset = 400.0, 300.0, 18.0
+	minX, minY, spanX, spanY, ok := p.CoverBox(boxW-2*inset, boxH-2*inset, boxW, boxH, inset, inset)
 	if !ok {
-		t.Fatal("CoverProjected refused an ordinary box")
+		t.Fatal("CoverBox: none")
 	}
-	if spanX < p.spanX-1e-12 || spanY < p.spanY-1e-12 {
-		t.Errorf("cover (%v x %v) is smaller than the route's own extent (%v x %v)", spanX, spanY, p.spanX, p.spanY)
-	}
-	if minX > p.minX+1e-12 || minY > p.minY+1e-12 {
+	if minX > p.minX || minY > p.minY {
 		t.Errorf("cover starts at (%v, %v), inside the route's own bounds (%v, %v)", minX, minY, p.minX, p.minY)
 	}
-
-	// The cover's aspect must match the BOX's, or the imagery fetched for it
-	// is stretched when it is drawn.
-	if got, want := spanX/spanY, w/h; math.Abs(got-want) > 1e-9 {
+	if minX+spanX < p.minX+p.spanX || minY+spanY < p.minY+p.spanY {
+		t.Error("cover ends before the route does")
+	}
+	// And its aspect is the BOX's, since that is what the imagery fills.
+	if got, want := spanX/spanY, boxW/boxH; math.Abs(got-want) > 1e-9 {
 		t.Errorf("cover aspect %v does not match the box's %v", got, want)
 	}
-
-	// And it agrees with Placer, which is the whole reason they share one
-	// scale: the route's own bounds must land exactly where the placer puts
-	// them inside the covered rectangle.
-	at, ok := p.Placer(w, h)
-	if !ok {
-		t.Fatal("Placer: none")
-	}
-	x, _ := at(pts[0])
-	wantX := (mercX(pts[0]) - minX) / spanX * w
-	if math.Abs(x-wantX) > 1e-6 {
-		t.Errorf("Placer puts a point at x=%v but the cover implies %v; the two disagree and imagery will sit beside the route", x, wantX)
-	}
 }
 
-// mercX is the projected x of a point, for comparing a placer against a cover.
-func mercX(pt Point) float64 {
-	x, _ := tilemap.Project(pt.Lat, pt.Lon)
-	return x
-}
-
-// TestCoverProjected_RefusesABoxWithNoArea matches Placer: a caller that got
-// a placer gets a cover, and one that did not has nothing to draw either way.
-func TestCoverProjected_RefusesABoxWithNoArea(t *testing.T) {
+// TestCoverBox_RefusesWhatPlacerRefuses matches Placer: a caller that got a
+// placer gets a cover, and one that did not has nothing to draw either way.
+func TestCoverBox_RefusesWhatPlacerRefuses(t *testing.T) {
 	p, ok := Fit(zoomPts())
 	if !ok {
 		t.Fatal("Fit: no projection")
 	}
-	for _, c := range []struct{ w, h float64 }{{0, 100}, {100, 0}, {-1, 100}, {100, -1}} {
-		if _, _, _, _, ok := p.CoverProjected(c.w, c.h); ok {
-			t.Errorf("CoverProjected(%v, %v) claimed a usable rectangle", c.w, c.h)
+	for _, c := range []struct{ pw, ph, bw, bh float64 }{
+		{0, 100, 400, 300}, {100, 0, 400, 300},
+		{-1, 100, 400, 300}, {100, 100, 0, 300}, {100, 100, 400, 0},
+	} {
+		if _, _, _, _, ok := p.CoverBox(c.pw, c.ph, c.bw, c.bh, 0, 0); ok {
+			t.Errorf("CoverBox(%v, %v, %v, %v) claimed a usable rectangle", c.pw, c.ph, c.bw, c.bh)
 		}
 	}
 }

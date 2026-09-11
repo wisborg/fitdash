@@ -2141,3 +2141,106 @@ func TestRenderer_CutNoticeIsResolvedOnlyForASkippingRender(t *testing.T) {
 		t.Errorf("a freeze render resolved a notice: %+v", r.notice)
 	}
 }
+
+// basemapPainterStub is a Painter that inks its whole box, the way a real
+// route panel does once it is drawing map imagery, and can be told to leave
+// that imagery out.
+type basemapPainterStub struct {
+	box        panel.Box
+	suppressed bool
+}
+
+func (p *basemapPainterStub) Static(c *panel.Canvas) {
+	if p.suppressed {
+		return
+	}
+	c.Rect(p.box, c.Theme.Dim)
+}
+func (p *basemapPainterStub) Dynamic(*panel.Canvas, panel.Frame) {}
+func (p *basemapPainterStub) SuppressBasemap(v bool)             { p.suppressed = v }
+
+type basemapPanelStub struct{}
+
+func (basemapPanelStub) Name() string                { return "map" }
+func (basemapPanelStub) Accepts(*panel.Context) bool { return true }
+func (basemapPanelStub) Prepare(_ *panel.Context, box panel.Box) panel.Painter {
+	return &basemapPainterStub{box: box}
+}
+
+// TestRenderer_CutNoticeIgnoresMapImageryWhenChoosingItsCorner is a
+// regression test for a bug reported from real use: turning on --basemap
+// moved the pause notice onto the heart rate readout.
+//
+// The notice goes wherever the render draws least, measured by counting
+// pixels that are not background. A basemap inks its panel's ENTIRE box, so
+// every candidate position over the map counted as full and the card was
+// pushed onto whatever panel was quietest -- a readout. Imagery is context
+// and a reading is content: a notice over the map is fine, a notice over the
+// heart rate is not, so the mask is measured with imagery suppressed.
+//
+// The layout here is the shape that makes this visible: a wide inking panel
+// on the left covering the top-centre position, a narrow quiet one on the
+// right. Without suppression the card is driven off the map and onto the
+// quiet panel; with it, the card stays where it would sit in a render that
+// never asked for a basemap. A single full-frame panel could not show the
+// difference, because then every candidate is equally inked and the
+// tie-break picks the same corner either way.
+func TestRenderer_CutNoticeIgnoresMapImageryWhenChoosingItsCorner(t *testing.T) {
+	layoutWith := func(left panel.Panel) panel.Layout {
+		return panel.Layout{Name: "test", FontScale: 0.05, Margin: 0.05, Root: panel.Slot{
+			Dir: panel.Row, Children: []panel.Slot{
+				{Panel: left, Weight: 3},
+				{Panel: quietPanelStub{}, Weight: 1},
+			},
+		}}
+	}
+	place := func(left panel.Panel) panel.Box {
+		t.Helper()
+		ctx, _ := buildCutContext(t, 400, 240, 10, panel.PausesSkip)
+		r, err := New(ctx, layoutWith(left), panel.DefaultTheme())
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return r.notice.box
+	}
+
+	plain := place(quietPanelStub{})
+	withMap := place(basemapPanelStub{})
+	if plain != withMap {
+		t.Errorf("the notice sits at %+v without imagery and %+v with it; turning on a basemap must not move it "+
+			"onto whatever panel happens to be quietest", plain, withMap)
+	}
+
+	// The fixture has to be able to show the difference, or the assertion
+	// above is satisfied by two identical nothings. An inking panel that did
+	// NOT suppress must move the card.
+	stubborn := place(stubbornPanelStub{})
+	if stubborn == plain {
+		t.Fatal("an inking panel that refuses to suppress left the notice where it was; this fixture cannot " +
+			"distinguish a working suppression from a broken one")
+	}
+}
+
+// quietPanelStub draws nothing at all.
+type quietPanelStub struct{}
+
+func (quietPanelStub) Name() string                { return "quiet" }
+func (quietPanelStub) Accepts(*panel.Context) bool { return true }
+func (quietPanelStub) Prepare(*panel.Context, panel.Box) panel.Painter {
+	return &basemapPainterStub{suppressed: true}
+}
+
+// stubbornPanelStub inks its box and does NOT implement BasemapSuppressor,
+// which is what the suppression is measured against.
+type stubbornPanelStub struct{}
+
+func (stubbornPanelStub) Name() string                { return "stubborn" }
+func (stubbornPanelStub) Accepts(*panel.Context) bool { return true }
+func (stubbornPanelStub) Prepare(_ *panel.Context, box panel.Box) panel.Painter {
+	return &inkingPainterStub{box: box}
+}
+
+type inkingPainterStub struct{ box panel.Box }
+
+func (p *inkingPainterStub) Static(c *panel.Canvas)             { c.Rect(p.box, c.Theme.Dim) }
+func (p *inkingPainterStub) Dynamic(*panel.Canvas, panel.Frame) {}

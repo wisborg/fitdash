@@ -205,29 +205,35 @@ func (p Projection) scaleFor(w, h float64) (float64, bool) {
 	return scale, true
 }
 
-// CoverProjected is the rectangle of the projected plane that a w by h box
-// covers when this projection is fitted into it.
+// CoverBox returns the rectangle of the projected plane that a boxW by boxH
+// box covers, given that this projection has been placed into a placerW by
+// placerH area whose top-left corner sits at (offsetX, offsetY) inside it.
 //
-// It is the projection's own bounds WIDENED to the box. Placer preserves
-// aspect and centres what is left over, so the box shows more ground than the
-// route's own extent on one axis -- and imagery fetched for the route's
-// extent would sit letterboxed inside the box with the line flush against its
-// edges. Asking what the box covers is what lets a basemap reach the panel's
-// edges with the route inset in the middle of it.
+// It takes the PLACEMENT rather than just the box, and that is the whole
+// point. Imagery is fetched for what this returns and then drawn to fill the
+// box, so the mapping it implies has to be the identical mapping Placer uses
+// for the route -- same scale and same origin. Deriving it from the box alone
+// assumes the route fills the box, and the route does not: it is inset, and
+// it is inset further still when room is being kept for an attribution
+// credit. That assumption was made once and cost 13.6% -- the map was drawn
+// that much larger than the route sitting on it, which looks like a plausible
+// map right up until you notice the line is not on the path.
 //
-// Reports false on a box with no area, matching Placer: a caller that got a
-// placer gets a cover too, and one that did not has nothing to draw either
-// way. It used to fall back silently to the un-widened bounds, which was a
-// second answer to the same question that only differed when something had
-// already gone wrong.
-func (p Projection) CoverProjected(w, h float64) (minX, minY, spanX, spanY float64, ok bool) {
-	scale, ok := p.scaleFor(w, h)
-	if !ok {
+// Reports false on a placement area with no room, matching Placer.
+func (p Projection) CoverBox(placerW, placerH, boxW, boxH, offsetX, offsetY float64) (minX, minY, spanX, spanY float64, ok bool) {
+	scale, ok := p.scaleFor(placerW, placerH)
+	if !ok || boxW <= 0 || boxH <= 0 {
 		return 0, 0, 0, 0, false
 	}
-	halfX, halfY := w/scale/2, h/scale/2
-	cx, cy := p.minX+p.spanX/2, p.minY+p.spanY/2
-	return cx - halfX, cy - halfY, 2 * halfX, 2 * halfY, true
+	// Placer centres what is left over inside its own area; the cover has to
+	// account for that offset as well as the placement's own.
+	offX := (placerW - p.spanX*scale) / 2
+	offY := (placerH - p.spanY*scale) / 2
+	return p.minX - (offsetX+offX)/scale,
+		p.minY - (offsetY+offY)/scale,
+		boxW / scale,
+		boxH / scale,
+		true
 }
 
 // IndexAt returns the last point recorded at or before at, or -1 when the
