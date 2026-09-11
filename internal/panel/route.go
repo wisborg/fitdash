@@ -185,38 +185,36 @@ func (p *routePainter) resolveMarks(ctx *Context, proj route.Projection, unit fl
 	if len(ctx.Highlights) == 0 {
 		return
 	}
-	{
-		start := ctx.Timeline.Start()
-		minLen := unit * minMarkLengthFraction
-		p.marks = make([]routeMark, len(ctx.Highlights))
-		for i, h := range ctx.Highlights {
-			i0, i1, ok := route.SpanIndices(p.pts, start.Add(h.From), start.Add(h.To))
-			if ok {
-				i0, i1 = extendMarkAlongPolyline(p.xs, p.ys, i0, i1, minLen)
-			}
-			m := routeMark{ok: ok, i0: i0, i1: i1}
-			// The zoom is fitted to the very vertices the mark is drawn
-			// from, not to the raw span, so the two cannot disagree: what
-			// the zoomed view frames is exactly the stretch drawn in
-			// Theme.Highlight, including whatever extendMarkAlongPolyline
-			// added to make it visible in the first place.
-			//
-			// A highlight whose span has no GPS anywhere near it (ok
-			// false) gets no zoom, for the same reason it gets no mark:
-			// there is no stretch of course to frame, and framing the
-			// nearest one would claim the highlight happened there.
-			if h.Zoom && ok {
-				// Fit over the marked vertices, not a constructor of its
-				// own: Mercator has no per-view parameter, so a sub-view is
-				// simply this projection re-fitted to fewer points. The
-				// previous projection needed a Sub that shared its mean
-				// latitude, or the two views sheared against each other as
-				// the zoom scaled between them.
-				m.zoom, m.zoomOK = route.Fit(p.pts[i0 : i1+1])
-				p.anyZoom = p.anyZoom || m.zoomOK
-			}
-			p.marks[i] = m
+	start := ctx.Timeline.Start()
+	minLen := unit * minMarkLengthFraction
+	p.marks = make([]routeMark, len(ctx.Highlights))
+	for i, h := range ctx.Highlights {
+		i0, i1, ok := route.SpanIndices(p.pts, start.Add(h.From), start.Add(h.To))
+		if ok {
+			i0, i1 = extendMarkAlongPolyline(p.xs, p.ys, i0, i1, minLen)
 		}
+		m := routeMark{ok: ok, i0: i0, i1: i1}
+		// The zoom is fitted to the very vertices the mark is drawn
+		// from, not to the raw span, so the two cannot disagree: what
+		// the zoomed view frames is exactly the stretch drawn in
+		// Theme.Highlight, including whatever extendMarkAlongPolyline
+		// added to make it visible in the first place.
+		//
+		// A highlight whose span has no GPS anywhere near it (ok
+		// false) gets no zoom, for the same reason it gets no mark:
+		// there is no stretch of course to frame, and framing the
+		// nearest one would claim the highlight happened there.
+		if h.Zoom && ok {
+			// Fit over the marked vertices, not a constructor of its
+			// own: Mercator has no per-view parameter, so a sub-view is
+			// simply this projection re-fitted to fewer points. The
+			// previous projection needed a Sub that shared its mean
+			// latitude, or the two views sheared against each other as
+			// the zoom scaled between them.
+			m.zoom, m.zoomOK = route.Fit(p.pts[i0 : i1+1])
+			p.anyZoom = p.anyZoom || m.zoomOK
+		}
+		p.marks[i] = m
 	}
 }
 

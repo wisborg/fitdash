@@ -3,6 +3,7 @@ package panel
 import (
 	"image"
 	"image/color"
+	"image/draw"
 	"math"
 	"testing"
 )
@@ -478,5 +479,39 @@ func TestNewCanvas_ReadsItsDimensionsFromTheImage(t *testing.T) {
 	c, _ := newTestCanvas(t, 1280, 720)
 	if c.W != 1280 || c.H != 720 {
 		t.Errorf("Canvas is %dx%d, want 1280x720", c.W, c.H)
+	}
+}
+
+// TestCanvas_ClippedToNothingDrawsNothing pins the direction this fails in.
+//
+// A clip box with no area produces an empty image.Rectangle, and an empty
+// rectangle is indistinguishable from the zero value a Canvas starts with --
+// so a guard written as "is the clip rectangle non-empty" reads a
+// clipped-to-nothing region as "no clip at all" and paints the image across
+// the WHOLE frame, which is the exact opposite of what was asked for. Nothing
+// in this program passes a zero-area box today; the point is that if
+// something ever does, the mistake must be an image that is missing rather
+// than an image over everything else on screen.
+func TestCanvas_ClippedToNothingDrawsNothing(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewCanvas(img, 20, DefaultTheme(), faces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Fill(c.Theme.Background)
+
+	src := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	draw.Draw(src, src.Bounds(), &image.Uniform{C: color.RGBA{R: 0, G: 200, B: 80, A: 255}}, image.Point{}, draw.Src)
+
+	c.Clipped(Box{X: 40, Y: 40, W: 0, H: 0}, func() {
+		c.Image(src, Box{X: 0, Y: 0, W: 100, H: 100}, 1)
+	})
+
+	if n := inkCount(img, Box{W: 100, H: 100}, c.Theme); n != 0 {
+		t.Errorf("%d pixels drawn through a clip with no area; an empty clip must draw nothing, not everything", n)
 	}
 }

@@ -255,6 +255,18 @@ type Canvas struct {
 	// than its box: a zoomed basemap is exactly that, and it painted over
 	// the panels beside it.
 	clip image.Rectangle
+	// clipActive says whether a clip is in force, separately from whether the
+	// rectangle has any area.
+	//
+	// Without it the two are conflated, and they fail in opposite
+	// directions: a clip box with no area produces an empty rectangle, an
+	// empty rectangle reads as "no clip was set", and imagery would then
+	// draw across the WHOLE frame precisely when it was asked to draw
+	// nowhere. Nothing reaches that today -- the only caller passes a
+	// panel's own box, and a panel with no area is never drawn -- but the
+	// wrong direction to fail is not a thing to leave lying next to a
+	// clip that exists to stop one panel painting over another.
+	clipActive bool
 
 	// img is the frame being drawn into, kept alongside the drawing context
 	// because scaled image compositing goes through golang.org/x/image/draw
@@ -336,7 +348,7 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 	// squash the picture into the box instead of showing the part of it the
 	// box is looking at.
 	target := c.img
-	if !c.clip.Empty() {
+	if c.clipActive {
 		visible := dst.Intersect(c.clip)
 		if visible.Empty() {
 			return
@@ -371,13 +383,13 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 // leave the outer one cleared on the way out, so do not add one without
 // fixing this first.
 func (c *Canvas) Clipped(b Box, draw func()) {
-	prev := c.clip
-	c.clip = image.Rect(int(b.X), int(b.Y), int(math.Ceil(b.X+b.W)), int(math.Ceil(b.Y+b.H)))
+	prevClip, prevActive := c.clip, c.clipActive
+	c.clip, c.clipActive = image.Rect(int(b.X), int(b.Y), int(math.Ceil(b.X+b.W)), int(math.Ceil(b.Y+b.H))), true
 	c.dc.DrawRectangle(b.X, b.Y, b.W, b.H)
 	c.dc.Clip()
 	defer func() {
 		c.dc.ResetClip()
-		c.clip = prev
+		c.clip, c.clipActive = prevClip, prevActive
 	}()
 	draw()
 }
