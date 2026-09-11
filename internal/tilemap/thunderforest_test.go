@@ -356,3 +356,97 @@ func TestThunderforest_RefusesAnImageLargerThanTheEndpointCanProduce(t *testing.
 		t.Errorf("an ordinary image was refused: %v", err)
 	}
 }
+
+// viewFor builds a View the way the panel builds one: a rectangle whose
+// PROJECTED aspect matches the pixel box it will fill.
+//
+// That property is not incidental, it is guaranteed by route.Projection's
+// CoverBox, and a test that hand-writes geographic bounds instead is testing
+// a shape this program never produces -- one whose two axes want different
+// zooms, where any choice is short on one of them.
+func viewFor(lat, lon, spanX float64, w, h int) View {
+	cx, cy := Project(lat, lon)
+	spanY := spanX * float64(h) / float64(w)
+	north, west := Unproject(cx-spanX/2, cy-spanY/2)
+	south, east := Unproject(cx+spanX/2, cy+spanY/2)
+	return View{North: north, West: west, South: south, East: east, Width: w, Height: h}
+}
+
+// TestPlanStatic_NeverAsksForLessDetailThanTheBoxNeeds pins the fix for a
+// map that was drawn visibly soft.
+//
+// The zoom was rounded DOWN, which reads as the safe direction and is not:
+// it guarantees a canvas smaller than the box it fills, by up to half on
+// each axis, so the imagery is upscaled. Measured at 0.70 of the requested
+// size on an ordinary run -- a 1368-pixel-wide panel drawn from a
+// 953-pixel image -- with nothing the user could see or change.
+func TestPlanStatic_NeverAsksForLessDetailThanTheBoxNeeds(t *testing.T) {
+	const oneDegree = 1.0 / 360.0
+	cases := []struct {
+		name string
+		view View
+	}{
+		{"a short run in a wide panel", viewFor(55.69, 12.53, oneDegree/60, 1368, 336)},
+		{"the same at 4K", viewFor(55.69, 12.53, oneDegree/60, 2736, 672)},
+		{"a long activity", viewFor(55.70, 12.50, oneDegree/3, 1368, 336)},
+		{"a portrait panel", viewFor(55.69, 12.52, oneDegree/40, 995, 480)},
+		{"a square panel", viewFor(55.69, 12.53, oneDegree/50, 900, 900)},
+		{"a tiny panel", viewFor(55.69, 12.53, oneDegree/200, 200, 150)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			plan, err := planStatic(c.view, thunderforestMaxPixels, thunderforestMaxZoom)
+			if err != nil {
+				t.Fatalf("planStatic: %v", err)
+			}
+			// Either the canvas already covers the box, or the endpoint's
+			// own ceiling stopped it -- in which case @2x is what buys the
+			// detail back, and the plan must be AT that ceiling rather than
+			// short of it for no reason.
+			short := plan.Width < c.view.Width || plan.Height < c.view.Height
+			atCeiling := plan.Width*2 > thunderforestMaxPixels || plan.Height*2 > thunderforestMaxPixels
+			if short && !atCeiling {
+				t.Errorf("planned a %dx%d canvas for a %dx%d box with the %d ceiling nowhere near: the map would be "+
+					"upscaled for no reason", plan.Width, plan.Height, c.view.Width, c.view.Height, thunderforestMaxPixels)
+			}
+		})
+	}
+}
+
+// TestThunderforest_DoublesTheScaleWhenTheCeilingForcesASmallCanvas covers
+// the other half: where a deeper zoom cannot fit, @2x returns twice the
+// pixels for the same requested size, so the ceiling costs no detail.
+func TestThunderforest_DoublesTheScaleWhenTheCeilingForcesASmallCanvas(t *testing.T) {
+	huge := viewFor(55.5, 12.5, 1.0/360.0, 2400, 2400)
+	plan, err := planStatic(huge, thunderforestMaxPixels, thunderforestMaxZoom)
+	if err != nil {
+		t.Fatalf("planStatic: %v", err)
+	}
+	if !(plan.Width < huge.Width || plan.Height < huge.Height) {
+		t.Skip("this fixture no longer hits the endpoint's ceiling, so it cannot exercise the doubling")
+	}
+
+	tf, reqs := fakeService(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes(t, 8, 8))
+	})
+	if _, err := tf.Image(context.Background(), huge); err != nil {
+		t.Fatalf("Image: %v", err)
+	}
+	if got := (*reqs)[0].URL.Path; !strings.Contains(got, "@2x") {
+		t.Errorf("path %q does not ask for @2x, so the ceiling costs detail the endpoint would have given", got)
+	}
+
+	// And a view the ceiling does not bind must NOT pay for the extra bytes.
+	small := viewFor(55.695, 12.51, 1.0/360.0/200, 400, 300)
+	tf2, reqs2 := fakeService(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes(t, 8, 8))
+	})
+	if _, err := tf2.Image(context.Background(), small); err != nil {
+		t.Fatalf("Image: %v", err)
+	}
+	if got := (*reqs2)[0].URL.Path; strings.Contains(got, "@2x") {
+		t.Errorf("path %q asks for @2x on a view that already has the detail it needs", got)
+	}
+}

@@ -185,8 +185,18 @@ func (t *Thunderforest) request(ctx context.Context, v View, style string) (*htt
 		return nil, fmt.Errorf("thunderforest: %w", err)
 	}
 
+	// Doubled when a single-scale canvas would still be smaller than the box
+	// it has to fill -- which happens whenever the endpoint's own pixel
+	// ceiling forces the zoom below what the panel wants, and is the only
+	// case a deeper zoom cannot fix. @2x returns twice the pixels for the
+	// same requested width and height, so it buys back exactly the detail
+	// the ceiling took away, and the ceiling itself is unaffected because it
+	// applies to what is asked for rather than to what comes back.
+	//
+	// Scale2x forces it on regardless, for a caller that wants the sharper
+	// image whatever the arithmetic says.
 	scale := ""
-	if t.Scale2x {
+	if t.Scale2x || plan.Width < v.Width || plan.Height < v.Height {
 		scale = "@2x"
 	}
 	// The path carries centre, zoom and size; the key is a query parameter,
@@ -301,7 +311,17 @@ func planStatic(v View, maxPixels, maxZoom int) (staticPlan, error) {
 	if !okx || !oky {
 		return staticPlan{}, fmt.Errorf("a view with no extent once projected")
 	}
-	z := int(math.Floor(math.Min(zx, zy)))
+	// Rounded UP, then stepped back down by the loop below until the canvas
+	// fits. Rounding down instead -- which this did, and which reads as the
+	// safe direction -- guarantees a canvas SMALLER than the box it will
+	// fill, by anything up to half on each axis, so the map is upscaled and
+	// visibly soft. It was measured at 0.70 of the requested size on an
+	// ordinary run: a 1368-pixel-wide panel drawn from a 953-pixel image.
+	//
+	// Up costs bytes on one request and nothing else, and the step-down loop
+	// already handles the case where it does not fit. The zoom that fits is
+	// the zoom that fits; there was never a reason to start below it.
+	z := int(math.Ceil(math.Min(zx, zy)))
 
 	// Step back until the canvas fits the endpoint's ceiling. Each step down
 	// halves both axes, so this terminates quickly and at worst at zoom 0.

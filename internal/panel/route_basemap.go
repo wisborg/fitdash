@@ -2,6 +2,7 @@ package panel
 
 import (
 	"context"
+	"errors"
 	"image"
 	"time"
 
@@ -50,7 +51,17 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 	c, cancel := context.WithTimeout(context.Background(), basemapTimeout)
 	defer cancel()
 
-	fetch := func(p route.Projection) *basemapView {
+	// The error is carried back, not swallowed. A provider knows things the
+	// caller cannot work out -- that the key was refused, that the plan does
+	// not cover this endpoint, that the service is rate-limiting -- and says
+	// so in words chosen for a user to act on. Dropping it and substituting
+	// "could not be fetched" throws away the only sentence that would have
+	// told somebody what to do next.
+	//
+	// A nil view with a nil error is the third case, and it is not a failure
+	// at all: the course could not be placed on a map, so nothing was ever
+	// asked of anyone.
+	fetch := func(p route.Projection) (*basemapView, error) {
 		// ONE call, and the degrees derived from its result rather than
 		// asked for separately. The rectangle the service is asked about and
 		// the rectangle the returned image is drawn into have to be the same
@@ -62,7 +73,7 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 		// for the same reason -- see route.Projection.CoverBox.
 		minX, minY, spanX, spanY, ok := p.CoverBox(placerW, placerH, box.W, box.H, rp.inset, rp.inset)
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		north, west := tilemap.Unproject(minX, minY)
 		south, east := tilemap.Unproject(minX+spanX, minY+spanY)
@@ -71,34 +82,52 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 			North: north, West: west, South: south, East: east,
 			Width: int(box.W), Height: int(box.H),
 		})
-		if err != nil || img == nil {
-			return nil
+		if err != nil {
+			return nil, err
 		}
-		return &basemapView{img: img, minX: minX, minY: minY, spanX: spanX, spanY: spanY}
+		if img == nil {
+			return nil, errors.New("the service returned no image")
+		}
+		return &basemapView{img: img, minX: minX, minY: minY, spanX: spanX, spanY: spanY}, nil
 	}
 
-	baseView := fetch(base)
-	if baseView == nil {
+	baseView, err := fetch(base)
+	switch {
+	case baseView != nil:
+	case err != nil:
 		// The whole-course view is the one every render needs. Without it
 		// there is no basemap worth having, and fetching the zoomed ones
 		// would be several more requests to a service that has just proved
 		// it cannot answer.
-		return nil, nil, "the map service returned no imagery; the route is drawn without a basemap"
+		return nil, nil, "no imagery: " + err.Error()
+	default:
+		// Nothing was asked of the service, so it must not be blamed. This
+		// is an activity whose course cannot be placed -- every fix at one
+		// spot, say -- and pointing the user at their key or their network
+		// for a property of their own file is worse than saying nothing.
+		return nil, nil, "this activity has no course that can be placed on a map, so none was fetched"
 	}
 
 	zooms := make([]*basemapView, len(marks))
-	missing := 0
+	missing, firstErr := 0, error(nil)
 	for i, m := range marks {
 		if !m.zoomOK {
 			continue
 		}
-		if zooms[i] = fetch(m.zoom); zooms[i] == nil {
+		var zoomErr error
+		if zooms[i], zoomErr = fetch(m.zoom); zooms[i] == nil {
 			missing++
+			if firstErr == nil {
+				firstErr = zoomErr
+			}
 		}
 	}
 	note := ""
 	if missing > 0 {
 		note = "some zoomed views have no imagery; they fall back to the whole-course map"
+		if firstErr != nil {
+			note += " (" + firstErr.Error() + ")"
+		}
 	}
 	return baseView, zooms, note
 }
