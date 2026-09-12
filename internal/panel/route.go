@@ -444,7 +444,22 @@ func (p *routePainter) drawBasemap(c *Canvas, back, front *basemapView, weight f
 		return
 	}
 	minX, minY, spanX, spanY := p.viewport[0], p.viewport[1], p.viewport[2], p.viewport[3]
-	back.drawInto(c, p.box, minX, minY, spanX, spanY, 1)
+	// The whole-course view is skipped on the frames where the zoomed one
+	// buries it. At full weight the viewport IS the zoomed view's own
+	// rectangle, so that image covers the box edge to edge and opaquely,
+	// and everything underneath is resampled only to be painted out -- at
+	// the zoom's own magnification, which on a tight zoom is the single most
+	// expensive thing a frame does. Those frames are also the bulk of a
+	// zooming highlight: the viewport moves during two short ramps and sits
+	// still between them.
+	//
+	// Only when it genuinely covers, and hides says what "genuinely" means.
+	// A zoomed image that failed to arrive, or a partial cross-fade, leaves
+	// the whole-course map showing through exactly as before -- which is the
+	// fallback this pair of draws exists for.
+	if !front.hides(p.box, minX, minY, spanX, spanY, weight) {
+		back.drawInto(c, p.box, minX, minY, spanX, spanY, 1)
+	}
 	if front != nil && weight > 0 {
 		front.drawInto(c, p.box, minX, minY, spanX, spanY, weight)
 	}
@@ -579,6 +594,21 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	// for the clip; the default render is untouched.
 	if p.anyZoom {
 		c.Clipped(p.box, func() { p.draw(c, f, place, xs, ys) })
+		// The credit is drawn OUTSIDE the clip, and it has to be. Under a
+		// clip mask gg draws a string by rasterizing it into a fresh
+		// full-frame image and compositing that across the whole frame
+		// through the mask -- 33 MB allocated and eight million pixels
+		// touched at 4K, to place one short line inside one panel. Profiled
+		// on a zooming render it was 47% of the frame, more than the map
+		// and the route together.
+		//
+		// Nothing is given up for it. drawCredit fits the text to the box
+		// and anchors it to the box's own bottom-right corner, so the plate
+		// and the line are inside the box by construction rather than by
+		// the clip -- which is also why this reads as putting the
+		// obligation somewhere it cannot be trimmed, rather than as taking
+		// a guard away.
+		p.drawCredit(c)
 		return
 	}
 	p.draw(c, f, place, xs, ys)
@@ -643,25 +673,8 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 	// which is a claim about position this program does not invent.
 	cur := route.IndexAt(p.all, f.At)
 	if cur < 0 {
-		// No position yet -- but the imagery is already on screen, so the
-		// credit it owes is due whether or not a dot can be placed.
-		p.creditOnTop(c)
 		return
 	}
 	x, y := place(p.all[cur])
 	c.Circle(x, y, p.dotR, c.Theme.Accent)
-	p.creditOnTop(c)
-}
-
-// creditOnTop draws the attribution over everything else this method drew.
-//
-// Only on the zoom path, because Static owns it otherwise -- but it MUST be
-// here, and its absence was a real bug rather than a cosmetic one: a zooming
-// render takes the Static early return, so the credit was drawn on no frame
-// at all. The obligation vanished on exactly the renders that use the
-// feature it exists for, and nothing on screen said so.
-func (p *routePainter) creditOnTop(c *Canvas) {
-	if p.anyZoom {
-		p.drawCredit(c)
-	}
 }

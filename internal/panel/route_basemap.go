@@ -30,6 +30,29 @@ const basemapTimeout = 30 * time.Second
 type basemapView struct {
 	img                      image.Image
 	minX, minY, spanX, spanY float64
+
+	// opaque records whether the image has any transparency in it, settled
+	// once when it arrives. It is the precondition for drawing this view
+	// INSTEAD of the one underneath rather than over it -- and the only way
+	// to ask an image.Image is to scan every pixel, which is not a question
+	// to re-answer forty thousand times.
+	opaque bool
+
+	// scaled is img resampled to scaledAt, the size it was last drawn at.
+	// One entry, not a table, and a size rather than a rectangle: see
+	// resampled.
+	scaled   *image.RGBA
+	scaledAt image.Point
+}
+
+// isOpaque reports whether img is free of transparency.
+//
+// image.Image itself cannot say; the concrete types the standard decoders
+// return all carry Opaque, so this asks and treats "would not say" as "assume
+// not", which is the direction that draws more rather than less.
+func isOpaque(img image.Image) bool {
+	o, ok := img.(interface{ Opaque() bool })
+	return ok && o.Opaque()
 }
 
 // fetchBasemaps resolves imagery for every view this render will draw: the
@@ -88,7 +111,7 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 		if img == nil {
 			return nil, errors.New("the service returned no image")
 		}
-		return &basemapView{img: img, minX: minX, minY: minY, spanX: spanX, spanY: spanY}, nil
+		return &basemapView{img: img, opaque: isOpaque(img), minX: minX, minY: minY, spanX: spanX, spanY: spanY}, nil
 	}
 
 	baseView, err := fetch(base)
@@ -142,17 +165,82 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 // magnify a corner of the image without the rest of it landing on the panels
 // alongside.
 func (v *basemapView) drawInto(c *Canvas, box Box, minX, minY, spanX, spanY float64, opacity float64) {
-	if v == nil || v.img == nil || spanX <= 0 || spanY <= 0 || v.spanX <= 0 || v.spanY <= 0 {
+	dst, ok := v.dest(box, minX, minY, spanX, spanY)
+	if !ok {
 		return
 	}
+	c.Image(v.resampled(dst, box), dst, opacity)
+}
+
+// dest is where in the frame this view's image lands, for a viewport, and
+// whether it lands anywhere at all.
+func (v *basemapView) dest(box Box, minX, minY, spanX, spanY float64) (Box, bool) {
+	if v == nil || v.img == nil || spanX <= 0 || spanY <= 0 || v.spanX <= 0 || v.spanY <= 0 {
+		return Box{}, false
+	}
 	scaleX, scaleY := box.W/spanX, box.H/spanY
-	dst := Box{
+	return Box{
 		X: box.X + (v.minX-minX)*scaleX,
 		Y: box.Y + (v.minY-minY)*scaleY,
 		W: v.spanX * scaleX,
 		H: v.spanY * scaleY,
+	}, true
+}
+
+// resampled is the image to hand Canvas.Image for dst: this view already
+// redrawn at dst's size when that is worth keeping, and the original
+// otherwise.
+//
+// Resampling is what a basemap costs. Profiled on a zooming render it was
+// three quarters of the frame, and every one of those frames was rescaling
+// the same source into the same rectangle as the frame before it: a render
+// only moves the viewport during a highlight's two short ramps, and sits
+// still either side of them.
+//
+// Keyed on the destination's SIZE, not on where it sits: resample derives
+// each pixel from its offset within the destination, so a draw that moves
+// across the frame is the same picture and the cache should say so.
+//
+// ONE entry per view rather than a table, and only for a destination no
+// larger than the panel's own box. Both bounds fall out of the same
+// observation. The sizes that repeat are the settled ones -- the whole course
+// filling the box, a zoom filling the box -- and each view has exactly one of
+// those, so a second entry could only ever hold a size from the middle of a
+// ramp, which by construction is never asked for twice. The bound is what
+// keeps the cache smaller than the thing it is drawn into: a zoomed viewport
+// magnifies the whole-course image to many times the box on its way past, and
+// that is a picture worth tens of megabytes to hold and nothing to look up.
+func (v *basemapView) resampled(dst, box Box) image.Image {
+	size := pixelRect(dst).Size()
+	if v.scaled != nil && v.scaledAt == size {
+		return v.scaled
 	}
-	c.Image(v.img, dst, opacity)
+	if lim := pixelRect(box).Size(); size.X <= 0 || size.Y <= 0 || size.X > lim.X || size.Y > lim.Y {
+		return v.img
+	}
+	v.scaled, v.scaledAt = resample(v.img, size), size
+	return v.scaled
+}
+
+// hides reports whether drawing this view at opacity would cover every pixel
+// of box, leaving nothing of whatever is beneath it visible.
+//
+// Three things have to hold, and none of them is safe to assume: the image
+// has to have no transparency, it has to be drawn at full weight, and its
+// destination has to contain the box. The last is true by construction of a
+// fully-zoomed frame -- the viewport IS this view's own rectangle -- but
+// "true by construction" is exactly the kind of claim that stops being true
+// when the construction changes, and the failure here would be a hole in the
+// map rather than a compile error.
+func (v *basemapView) hides(box Box, minX, minY, spanX, spanY, opacity float64) bool {
+	if v == nil || !v.opaque || opacity < 1 {
+		return false
+	}
+	dst, ok := v.dest(box, minX, minY, spanX, spanY)
+	if !ok {
+		return false
+	}
+	return pixelRect(box).In(pixelRect(dst))
 }
 
 // BasemapReporter is implemented by a Painter that fetched map imagery and

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"math"
 	"strings"
 	"sync"
@@ -356,14 +357,36 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 		target = c.img.SubImage(visible).(*image.RGBA)
 	}
 
+	// A source already at the destination's size is COPIED rather than run
+	// through the kernel. It is purely a speed path: CatmullRom sampled at
+	// whole-pixel offsets has weights of exactly one and zero, so a 1:1 pass
+	// already reproduces the source -- which is the property the cache below
+	// depends on and TestCanvasImage_SourceAtTheDestinationSizeIsCopiedExactly
+	// pins. What it saves is the pass itself, and that is worth having: it
+	// is the case basemapView.resampled arranges on every settled frame of a
+	// zooming render.
+	if s := src.Bounds(); s.Dx() == dst.Dx() && s.Dy() == dst.Dy() {
+		if opacity >= 1 {
+			draw.Draw(target, dst, src, s.Min, draw.Over)
+			return
+		}
+		draw.DrawMask(target, dst, src, s.Min,
+			image.NewUniform(color.Alpha{A: alpha8(opacity)}), image.Point{}, draw.Over)
+		return
+	}
+
 	if opacity >= 1 {
 		xdraw.CatmullRom.Scale(target, dst, src, src.Bounds(), xdraw.Over, nil)
 		return
 	}
 	xdraw.CatmullRom.Scale(target, dst, src, src.Bounds(), xdraw.Over, &xdraw.Options{
-		SrcMask: image.NewUniform(color.Alpha{A: uint8(opacity*255 + 0.5)}),
+		SrcMask: image.NewUniform(color.Alpha{A: alpha8(opacity)}),
 	})
 }
+
+// alpha8 is an opacity as the 8-bit value a uniform mask carries, in one
+// place so the two compositing paths above cannot round it differently.
+func alpha8(opacity float64) uint8 { return uint8(opacity*255 + 0.5) }
 
 // pixelRect is the integer rectangle a Box covers: every pixel the box
 // touches, including the ones it only touches part of.
@@ -385,6 +408,24 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 // touches that row too.
 func pixelRect(b Box) image.Rectangle {
 	return image.Rect(int(b.X), int(b.Y), int(math.Ceil(b.X+b.W)), int(math.Ceil(b.Y+b.H)))
+}
+
+// resample returns src redrawn at size, through the same filter Image uses.
+//
+// It exists so a caller drawing one image at one size over many frames can
+// keep the result. The filter choice lives here, next to Image's, rather than
+// at the call site: two resamplers in one program would let a cached image
+// differ visibly from the uncached draw of the same thing, which is the one
+// way a cache is allowed to be wrong and the hardest to notice.
+//
+// SIZE, not a rectangle, and that is what makes the cache worth keying on
+// size too: the scaler derives each destination pixel from its offset within
+// the destination rectangle, never from where that rectangle sits, so moving
+// a draw across the frame does not change a pixel of it.
+func resample(src image.Image, size image.Point) *image.RGBA {
+	out := image.NewRGBA(image.Rect(0, 0, size.X, size.Y))
+	xdraw.CatmullRom.Scale(out, out.Bounds(), src, src.Bounds(), xdraw.Src, nil)
+	return out
 }
 
 // Clipped runs draw with every drawing operation confined to b.

@@ -515,3 +515,52 @@ func TestCanvas_ClippedToNothingDrawsNothing(t *testing.T) {
 		t.Errorf("%d pixels drawn through a clip with no area; an empty clip must draw nothing, not everything", n)
 	}
 }
+
+// TestCanvasImage_SourceAtTheDestinationSizeIsCopiedExactly pins the copy
+// path Image takes when the source already matches the rectangle it is going
+// into.
+//
+// It is not only a speed question. CatmullRom has negative lobes, so running
+// an image through it at 1:1 is a real operation -- it softens edges and
+// rings at hard ones -- and a cache that stores a resampled image would then
+// differ from an uncached draw of the same thing by a little blur nobody
+// would trace back to the cache. So the contract is exactness: a source
+// already at size arrives pixel for pixel.
+func TestCanvasImage_SourceAtTheDestinationSizeIsCopiedExactly(t *testing.T) {
+	const w, h = 64, 48
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	faces, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewCanvas(img, 20, DefaultTheme(), faces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Fill(color.RGBA{A: 255})
+
+	// A hard checkerboard: the pattern a resampling filter cannot reproduce.
+	// A gradient would survive the kernel closely enough to pass.
+	src := image.NewRGBA(image.Rect(0, 0, 20, 12))
+	for y := 0; y < 12; y++ {
+		for x := 0; x < 20; x++ {
+			v := uint8(0)
+			if (x+y)%2 == 0 {
+				v = 255
+			}
+			src.Set(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
+		}
+	}
+
+	c.Image(src, Box{X: 8, Y: 6, W: 20, H: 12}, 1)
+
+	for y := 0; y < 12; y++ {
+		for x := 0; x < 20; x++ {
+			want := src.RGBAAt(x, y)
+			got := img.RGBAAt(8+x, 6+y)
+			if got != want {
+				t.Fatalf("pixel (%d,%d) is %v, want %v: a source already at the destination's size was resampled rather than copied", x, y, got, want)
+			}
+		}
+	}
+}
