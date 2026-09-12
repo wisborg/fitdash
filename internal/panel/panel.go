@@ -203,6 +203,29 @@ type Context struct {
 	// readouts beside it; the map is context and the activity is the subject.
 	BasemapDim float64
 
+	// BasemapProgress, when non-nil, is told how many views this render will
+	// fetch and then as each one arrives -- (0, total) before the first
+	// request goes out, then (1, total), and so on.
+	//
+	// It exists because the fetch is the longest thing that happens before a
+	// frame is drawn, and until it finishes there is nothing on screen. On a
+	// route nobody has rendered before, a whole-course view takes about two
+	// seconds; the program used to spend them silent, which reads as a
+	// program that has hung rather than one that is waiting on somebody
+	// else's server.
+	//
+	// A func rather than an interface, and (done, total) rather than an
+	// event, because that is the shape render.Run's own progress callback
+	// already has: one spelling for "this is how far along a slow thing is",
+	// not two.
+	//
+	// The count arrives with the first call rather than being predictable
+	// from the highlights: a highlight whose span carries no GPS resolves no
+	// zoomed view and is never fetched, so only Prepare knows the real
+	// number, and a bar that counted to a total it never reached would be
+	// worse than one that started without one.
+	BasemapProgress func(done, total int)
+
 	// Highlights is the resolved, sorted, clipped set of --highlight ranges,
 	// or nil when none were given. Panels read it in Accepts (a highlight
 	// panel declines outright with none configured, which is a fact about

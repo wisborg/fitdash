@@ -492,7 +492,22 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Clock:               clock,
 		Pauses:              pauses,
 	}
+	// Map imagery is fetched inside render.New, by the route panel's own
+	// Prepare, and on a route nobody has rendered before that is the longest
+	// thing standing between the command line and the first frame -- about
+	// two seconds for the whole course, and it used to pass in silence.
+	//
+	// Its own short-lived display rather than a second bar on the render's:
+	// the two never overlap, the fetch is finished before a frame is drawn,
+	// and a completed line reading "map imagery 4 of 4" would otherwise sit
+	// above the frame count for the rest of the run, saying nothing.
+	fetchDisplay, fetchBar := newFetchProgress(cmd, basemap)
+	rctx.BasemapProgress = func(done, total int) {
+		fetchBar.SetTotal(int64(total))
+		fetchBar.Set(int64(done))
+	}
 	r, err := render.New(rctx, layout, theme)
+	fetchDisplay.Stop()
 	if err != nil {
 		return err
 	}
@@ -890,6 +905,55 @@ func newProgress(cmd *cobra.Command, total int) (*progress.Display, *progress.Ba
 	// NO_COLOR or TERM=dumb says otherwise.
 	d := progress.New(cmd.ErrOrStderr(), progress.Options{Palette: progress.DefaultGradient()})
 	return d, d.Bar(progress.BarSpec{Label: "rendering", Total: int64(total), Unit: "frames"})
+}
+
+// wantFetchProgress reports whether the map-imagery line should exist at all.
+//
+// Split out from newFetchProgress because two of its three conditions can
+// only be seen on a terminal, and a test cannot conjure one: with stderr
+// redirected the display is not live, which makes every other reason to
+// decline unobservable. Reading the decision separately is what lets each one
+// be checked on its own -- and the basemap condition in particular, whose
+// only symptom is a line flashing through renders that never asked for a map.
+func wantFetchProgress(basemap tilemap.Provider, live bool) bool {
+	return basemap != nil && live
+}
+
+// newFetchProgress builds the display that covers the map-imagery fetch, or
+// nils when there is nothing to wait for.
+//
+// Nil under --quiet, for the reason newProgress is, and nil with no basemap
+// configured -- which is not only an optimisation. A Display draws its bars
+// the moment they are created, so building one for a fetch that never happens
+// would flash a line reading "map imagery" through every render that does not
+// use the feature.
+//
+// Nil when the display would not be LIVE, which is the one place this differs
+// from the render's own progress. This exists because a terminal that goes
+// quiet for several seconds looks like a program that has hung. A log does
+// not look like anything, and it already gets the summary's own line saying
+// whether imagery was fetched or came off disk -- so a couple of "0 of 4
+// views" lines in the middle of somebody's captured output would be noise
+// with no reader. The render bar keeps its plain mode because a render is
+// long enough that a log wants to know how far along it is.
+func newFetchProgress(cmd *cobra.Command, basemap tilemap.Provider) (*progress.Display, *progress.Bar) {
+	if renderOpts.quiet {
+		return nil, nil
+	}
+	// Built before the decision because liveness is the display's own call to
+	// make from the writer, not this program's -- see newProgress on why
+	// fitdash stopped guessing. An unwanted one is stopped again having
+	// written nothing, since a Display draws only when a bar is added to it.
+	d := progress.New(cmd.ErrOrStderr(), progress.Options{Palette: progress.DefaultGradient()})
+	if !wantFetchProgress(basemap, d.Live()) {
+		d.Stop()
+		return nil, nil
+	}
+	// No total yet: only Prepare knows how many views there are, since a
+	// highlight whose span carries no GPS resolves none. The bar starts as
+	// an unsized job -- reported as a moving count rather than as a trough
+	// that never fills -- and SetTotal fills it in a moment later.
+	return d, d.Bar(progress.BarSpec{Label: "map imagery", Unit: "views"})
 }
 
 // formatMultiplier renders a compression factor for display, rounded to two

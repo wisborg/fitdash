@@ -291,6 +291,80 @@ func TestNewProgress_QuietReturnsNils(t *testing.T) {
 	d.Stop()
 }
 
+// TestNewFetchProgress_OnlyAppearsWhereSilenceWouldLookLikeAHang pins the
+// three ways the map-imagery line declines to exist, each for its own reason.
+//
+// The line covers the seconds before the first frame, while the route panel
+// waits on a map service. Every case below is one where drawing it would be
+// wrong rather than merely unnecessary, and each would be invisible in
+// ordinary use: --quiet asked for no output at all; a render with no basemap
+// waits for nothing, and a display draws its bars the moment they are made,
+// so building one would flash "map imagery" through every render that does
+// not use the feature; and a redirected stderr is a log, which cannot look
+// like it has hung and already gets the summary's own line about whether
+// imagery was fetched.
+func TestNewFetchProgress_OnlyAppearsWhereSilenceWouldLookLikeAHang(t *testing.T) {
+	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
+	provider := &basemapSummaryProvider{}
+
+	cases := []struct {
+		name     string
+		quiet    bool
+		basemap  tilemap.Provider
+		wantNils bool
+	}{
+		{"--quiet", true, provider, true},
+		{"no basemap configured", false, nil, true},
+		// A bytes.Buffer is not a terminal, so this stands for a redirected
+		// stderr. It is also why the other two cases cannot be told apart
+		// from this one by output alone -- all three write nothing -- and
+		// why the nils are what is asserted.
+		{"stderr is not a terminal", false, provider, true},
+	}
+	// The basemap and liveness conditions read on their own, because with
+	// stderr redirected the display is never live and that alone would
+	// account for every case below -- so the table underneath would pass
+	// with the basemap check deleted.
+	for _, c := range []struct {
+		name    string
+		basemap tilemap.Provider
+		live    bool
+		want    bool
+	}{
+		{"a basemap and a terminal", provider, true, true},
+		{"a basemap, but stderr is a log", provider, false, false},
+		{"a terminal, but no basemap", nil, true, false},
+		{"neither", nil, false, false},
+	} {
+		if got := wantFetchProgress(c.basemap, c.live); got != c.want {
+			t.Errorf("wantFetchProgress(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			renderOpts.quiet = c.quiet
+			cmd := &cobra.Command{}
+			var buf bytes.Buffer
+			cmd.SetErr(&buf)
+
+			d, bar := newFetchProgress(cmd, c.basemap)
+			if (d == nil) != c.wantNils || (bar == nil) != c.wantNils {
+				t.Fatalf("display nil = %v, bar nil = %v; want both nil = %v", d == nil, bar == nil, c.wantNils)
+			}
+			// The nils must be usable, or runRender needs a guard around
+			// every call -- including the callback it hands to the panel,
+			// which runs on the fetch's own goroutines.
+			bar.SetTotal(4)
+			bar.Set(2)
+			d.Stop()
+			if buf.Len() != 0 {
+				t.Errorf("wrote %q to a non-terminal; the fetch line is for a terminal that has gone quiet, not for a log", buf.String())
+			}
+		})
+	}
+}
+
 // TestNewProgress_WritesNoEscapeSequencesToANonTerminal keeps a redirected
 // stderr from collecting cursor movements.
 //

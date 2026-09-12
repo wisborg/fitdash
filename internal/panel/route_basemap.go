@@ -135,7 +135,7 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 	// since the failures arrive in parallel too. What it did buy is politeness
 	// toward a service that is already struggling, and the bound below is
 	// what is left of it.
-	views, errs := fetchViews(c, fetch, base, marks)
+	views, errs := fetchViews(c, fetch, base, marks, ctx.BasemapProgress)
 
 	baseView, err := views[0], errs[0]
 	switch {
@@ -196,7 +196,7 @@ const maxConcurrentFetches = 4
 // a zoomed one is not -- and because a fixed slice written by index needs no
 // synchronisation beyond the wait: every goroutine owns one element and no
 // two own the same one.
-func fetchViews(c context.Context, fetch func(route.Projection) (*basemapView, error), base route.Projection, marks []routeMark) ([]*basemapView, []error) {
+func fetchViews(c context.Context, fetch func(route.Projection) (*basemapView, error), base route.Projection, marks []routeMark, report func(done, total int)) ([]*basemapView, []error) {
 	projs := make([]route.Projection, len(marks)+1)
 	want := make([]bool, len(marks)+1)
 	projs[0], want[0] = base, true
@@ -206,6 +206,33 @@ func fetchViews(c context.Context, fetch func(route.Projection) (*basemapView, e
 
 	views := make([]*basemapView, len(projs))
 	errs := make([]error, len(projs))
+
+	// The real count, not the number of highlights: a highlight whose span
+	// carries no GPS resolved no zoomed view and is never asked for.
+	total := 0
+	for _, w := range want {
+		if w {
+			total++
+		}
+	}
+	done := 0
+	var reportMu sync.Mutex
+	tick := func() {
+		if report == nil {
+			return
+		}
+		// Under a lock rather than an atomic, so the count a caller is told
+		// never goes backwards: two goroutines incrementing atomically can
+		// still call out of order, and a bar that showed 3 of 4 and then 2
+		// of 4 would look like a retry that never happened.
+		reportMu.Lock()
+		done++
+		report(done, total)
+		reportMu.Unlock()
+	}
+	if report != nil {
+		report(0, total)
+	}
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxConcurrentFetches)
@@ -227,9 +254,11 @@ func fetchViews(c context.Context, fetch func(route.Projection) (*basemapView, e
 				// and reporting a view that ran out of time as one that was
 				// never wanted would blame the activity for the clock.
 				errs[i] = fmt.Errorf("gave up waiting to send the request: %w", c.Err())
+				tick()
 				return
 			}
 			views[i], errs[i] = fetch(projs[i])
+			tick()
 		}()
 	}
 	wg.Wait()
