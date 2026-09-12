@@ -5,10 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"image"
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -52,7 +56,24 @@ type Cached struct {
 	// came off their own disk, and a privacy notice that cries wolf is worse
 	// than none.
 	fetched atomic.Int64
+
+	// swept guards the one-per-run pass that removes entries this cache can
+	// no longer read. It runs on first use rather than on construction, so a
+	// render that never asks for imagery never reads the directory.
+	swept sync.Once
 }
+
+// entryVersion is bumped whenever the MEANING of the cache key changes.
+//
+// It exists so that entries written under an older scheme can be recognised
+// and removed rather than left unreachable forever. Without it a key change
+// is a silent leak: every previous entry stays on disk, is never read again,
+// and there is nothing in the name to say which scheme wrote it.
+//
+//	1 -- keyed on the view, including the pixel size it was requested at.
+//	     Written with no prefix at all, which is what identifies it.
+//	2 -- keyed on the request the view resolves to. See CacheKeyer.
+const entryVersion = 2
 
 // Image returns the cached image for v, fetching and storing it on a miss.
 //
@@ -65,6 +86,7 @@ func (c *Cached) Image(ctx context.Context, v View) (image.Image, error) {
 	if c.Dir == "" {
 		return c.Provider.Image(ctx, v)
 	}
+	c.swept.Do(c.sweep)
 	path := filepath.Join(c.Dir, c.entry(v))
 
 	if img, ok := readEntry(path, c.ttl()); ok {
@@ -151,13 +173,110 @@ func (c *Cached) entry(v View) string {
 	if k, ok := c.Provider.(CacheKeyer); ok {
 		if key, resolved := k.CacheKey(v); resolved {
 			fmt.Fprintf(h, "req|%s", key)
-			return hex.EncodeToString(h.Sum(nil)) + ".png"
+			return entryName(h)
 		}
 	}
 	fmt.Fprintf(h, "view|%.9f|%.9f|%.9f|%.9f|%d|%d",
 		v.North, v.West, v.South, v.East, v.Width, v.Height)
-	return hex.EncodeToString(h.Sum(nil)) + ".png"
+	return entryName(h)
 }
+
+func entryName(h hash.Hash) string {
+	return fmt.Sprintf("%d-%s.png", entryVersion, hex.EncodeToString(h.Sum(nil)))
+}
+
+// sweep removes what this cache can no longer read: entries written under an
+// older key scheme, and anything past the TTL.
+//
+// Both are already unreadable. An entry from an older scheme is filed under a
+// name nothing will ask for again, and one past the TTL is treated as a miss
+// and refetched -- so deleting them takes nothing away, and not deleting them
+// is a directory that only ever grows. It grew for two reasons before this: a
+// view rendered once was never revisited to be overwritten, and a change to
+// the key orphaned everything at a stroke.
+//
+// WHAT IT WILL NOT TOUCH is the important half. The directory is the user's
+// own choice -- --basemap-cache takes a path -- so a sweep that deleted
+// whatever it found would be one typo away from eating somebody's documents.
+// It removes only names this cache could itself have written, leaves every
+// other file exactly where it is, and never descends into a subdirectory.
+//
+// Errors are ignored throughout, for the reason every other failure here is:
+// the cache is an optimisation, and a render must not fail because a
+// directory could not be read or a file could not be removed.
+func (c *Cached) sweep() {
+	if c.Dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(c.Dir)
+	if err != nil {
+		return
+	}
+	ttl := c.ttl()
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		version, ours := parseEntryName(e.Name())
+		if !ours {
+			continue
+		}
+		if version == entryVersion {
+			// The current scheme. Only age condemns it, and the age
+			// threshold is the TTL itself -- past it the entry is already
+			// a miss, so removing it changes nothing except the disk.
+			info, err := e.Info()
+			if err != nil || time.Since(info.ModTime()) <= ttl {
+				continue
+			}
+		}
+		_ = os.Remove(filepath.Join(c.Dir, e.Name()))
+	}
+}
+
+// parseEntryName reports whether a file name is one this cache wrote, and
+// under which key scheme.
+//
+// The shape is deliberately strict, because a false positive here deletes a
+// file somebody else owns. A name qualifies only as a full 64-character hex
+// digest with the .png suffix, optionally preceded by a decimal version and a
+// dash. Version 1 is the unprefixed form, which is the only thing the
+// original scheme ever wrote.
+//
+// A half-written temporary also qualifies, but by its own rule: writeEntry
+// creates them with a ".tmp-" prefix, and one still present is from a run
+// that was killed between creating the file and renaming it. They are aged
+// out by the TTL like anything else rather than removed on sight, so a sweep
+// cannot delete one a concurrent render is in the middle of writing.
+func parseEntryName(name string) (version int, ours bool) {
+	if strings.HasPrefix(name, tempPrefix) {
+		return entryVersion, true
+	}
+	digest, ok := strings.CutSuffix(name, ".png")
+	if !ok {
+		return 0, false
+	}
+	version = 1
+	if i := strings.IndexByte(digest, '-'); i >= 0 {
+		n, err := strconv.Atoi(digest[:i])
+		if err != nil || n < 1 {
+			return 0, false
+		}
+		version, digest = n, digest[i+1:]
+	}
+	if len(digest) != sha256.Size*2 {
+		return 0, false
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return 0, false
+	}
+	return version, true
+}
+
+// tempPrefix names a half-written entry. Shared by writeEntry and the sweep,
+// so the pattern that creates them and the rule that ages them out cannot
+// disagree about what one looks like.
+const tempPrefix = ".tmp-"
 
 func readEntry(path string, ttl time.Duration) (image.Image, bool) {
 	info, err := os.Stat(path)
@@ -185,7 +304,7 @@ func writeEntry(path string, img image.Image) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
 	if err != nil {
 		return
 	}

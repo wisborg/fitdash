@@ -441,3 +441,160 @@ func sizedAs(v View, wh [2]int) View {
 	v.Width, v.Height = wh[0], wh[1]
 	return v
 }
+
+// TestCached_SurvivesItsOwnSweepOnTheNextRun is the bug a single-process test
+// cannot see, and it is the one that would have destroyed the feature.
+//
+// The sweep runs once per Cached, on first use, which in one run means it
+// happens BEFORE anything is written. So an entry whose name the sweep does
+// not recognise still survives the run that wrote it, and every test inside
+// one process passes. The next run sweeps first, deletes the lot, and the
+// cache becomes a slower way of always missing -- with no error, and with the
+// summary cheerfully reporting a fetch every time.
+//
+// A second Cached over the same directory is what a second run is.
+func TestCached_SurvivesItsOwnSweepOnTheNextRun(t *testing.T) {
+	dir := t.TempDir()
+	v := viewFor(-33.82, 151.19, spanSplitsAtThisSize, 1368, 336)
+
+	first, reqs := fakeService(t, servedPNG(t))
+	if _, err := (&Cached{Provider: first, Dir: dir}).Image(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	if len(*reqs) != 1 {
+		t.Fatalf("the first run made %d requests, want 1", len(*reqs))
+	}
+
+	second, reqs2 := fakeService(t, servedPNG(t))
+	second.Key, second.Style = first.Key, first.Style
+	if _, err := (&Cached{Provider: second, Dir: dir}).Image(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(*reqs2); got != 0 {
+		t.Errorf("the second run made %d requests, want 0 -- it swept away the entry the first run had just written", got)
+	}
+}
+
+// TestCached_SweepsWhenItIsUsed wires the two halves together.
+//
+// Everything else here calls sweep directly, which proves what it does and
+// not that anything calls it. Without this, deleting the one line that runs
+// it leaves a cache that grows forever and a suite that passes.
+//
+// It also pins WHEN: on use, not on construction. A render configured with a
+// cache directory it never reaches -- no --basemap, or a route with no GPS --
+// must not go reading and deleting in a directory it was never asked to open.
+func TestCached_SweepsWhenItIsUsed(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, strings.Repeat("b", 64)+".png")
+	if err := os.WriteFile(stale, []byte("an entry from the previous key scheme"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tf, _ := fakeService(t, servedPNG(t))
+	cached := &Cached{Provider: tf, Dir: dir}
+
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("constructing a Cached already touched the directory: %v", err)
+	}
+
+	v := viewFor(-33.82, 151.19, spanSplitsAtThisSize, 1368, 336)
+	if _, err := cached.Image(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Error("an entry from the previous key scheme survived a fetch; nothing is calling the sweep")
+	}
+}
+
+// TestCached_SweepRemovesOnlyWhatItWrote is the safety half, and the reason
+// the sweep matches names strictly instead of emptying the directory.
+//
+// --basemap-cache takes a path, so the directory belongs to the user. A sweep
+// that deleted whatever it found would be one typo away from eating a folder
+// of documents, and it would do it silently, on a run whose purpose was to
+// draw a map.
+func TestCached_SweepRemovesOnlyWhatItWrote(t *testing.T) {
+	dir := t.TempDir()
+	const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	// Written long enough ago to be past any TTL, so age is never the reason
+	// one of these survives.
+	old := time.Now().Add(-90 * 24 * time.Hour)
+	write := func(name string, stale bool) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if stale {
+			if err := os.Chtimes(p, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return p
+	}
+
+	condemned := map[string]string{
+		"an entry from the previous key scheme": write(digest+".png", false),
+		"an entry past the TTL":                 write("2-"+digest+".png", true),
+		"a temporary left by a killed run":      write(".tmp-1234567890", true),
+	}
+	spared := map[string]string{
+		"a current entry within the TTL": write("2-"+strings.Repeat("a", 64)+".png", false),
+		"somebody's photograph":          write("holiday.png", true),
+		"a README":                       write("README.md", true),
+		"a digest with the wrong length": write("abc123.png", true),
+		"a digest that is not hex":       write(strings.Repeat("z", 64)+".png", true),
+		"a version that is not a number": write("v2-"+digest+".png", true),
+	}
+	sub := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	(&Cached{Provider: &countingProvider{}, Dir: dir}).sweep()
+
+	for what, p := range condemned {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s was kept; the cache can never read it again", what)
+		}
+	}
+	for what, p := range spared {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s was deleted: %v", what, err)
+		}
+	}
+	if _, err := os.Stat(sub); err != nil {
+		t.Errorf("a subdirectory was removed: %v", err)
+	}
+}
+
+// TestParseEntryName covers the rule the sweep's safety rests on directly,
+// since a name that is wrongly accepted is a file that is wrongly deleted.
+func TestParseEntryName(t *testing.T) {
+	const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		name    string
+		version int
+		ours    bool
+	}{
+		{digest + ".png", 1, true},
+		{"2-" + digest + ".png", 2, true},
+		{"17-" + digest + ".png", 17, true},
+		{".tmp-9876", entryVersion, true},
+		{digest, 0, false},
+		{digest + ".jpg", 0, false},
+		{"0-" + digest + ".png", 0, false},
+		{"-" + digest + ".png", 0, false},
+		{digest[:63] + ".png", 0, false},
+		{digest + "0.png", 0, false},
+		{strings.Repeat("g", 64) + ".png", 0, false},
+		{"", 0, false},
+	}
+	for _, c := range cases {
+		version, ours := parseEntryName(c.name)
+		if ours != c.ours || (ours && version != c.version) {
+			t.Errorf("parseEntryName(%q) = %d, %v; want %d, %v", c.name, version, ours, c.version, c.ours)
+		}
+	}
+}
