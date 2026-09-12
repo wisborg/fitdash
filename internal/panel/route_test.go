@@ -10,6 +10,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1010,16 +1011,24 @@ func TestRoutePanel_ZoomDeclinesWithNoGPSInTheSpan(t *testing.T) {
 // fakeBasemap is a provider that hands back a solid image, so a test can ask
 // "did map imagery reach the frame" by counting pixels of a colour nothing
 // else in the panel draws.
+// The recording is guarded because fetchBasemaps requests every view
+// concurrently: an unguarded append is a data race, and it loses calls, which
+// makes a fake that counts them quietly report the wrong number rather than
+// failing.
 type fakeBasemap struct {
-	fill  color.RGBA
-	err   error
+	fill color.RGBA
+	err  error
+
+	mu    sync.Mutex
 	calls int
 	views []tilemap.View
 }
 
 func (f *fakeBasemap) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	f.mu.Lock()
 	f.calls++
 	f.views = append(f.views, v)
+	f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -1193,9 +1202,11 @@ func TestRoutePanel_ZoomedBasemapIsFetchedForItsOwnView(t *testing.T) {
 	}
 	// The zoomed view must cover less ground than the whole course, or it is
 	// not a zoom.
-	whole, zoomed := bm.views[0], bm.views[1]
-	wholeSpan := (whole.East - whole.West) * (whole.North - whole.South)
-	zoomSpan := (zoomed.East - zoomed.West) * (zoomed.North - zoomed.South)
+	//
+	// Taken as the larger and the smaller of the two rather than as the first
+	// and the second: the views are requested concurrently, so which one is
+	// recorded first is the scheduler's business and not this panel's.
+	wholeSpan, zoomSpan := viewSpans(bm.views)
 	if !(zoomSpan < wholeSpan) {
 		t.Errorf("the zoomed view covers %v square degrees against the whole course's %v; it is not zoomed in", zoomSpan, wholeSpan)
 	}
@@ -1277,27 +1288,78 @@ func TestRoutePanel_BasemapStaysInsideItsBoxDuringZoom(t *testing.T) {
 	}
 }
 
-// twoColorBasemap hands back a distinct, caller-chosen colour on each
-// successive call, so a test can tell WHICH fetched image ended up on screen
-// -- and how much of it -- without reproducing the compositing arithmetic
-// itself. fetchBasemaps always fetches the whole-course view first and a
-// zoomed highlight's view second, so colors[0] is the whole-course image and
-// colors[1] the zoomed one.
+// twoColorBasemap hands back a distinct, caller-chosen colour for each view
+// it is asked about, so a test can tell WHICH fetched image ended up on
+// screen -- and how much of it -- without reproducing the compositing
+// arithmetic itself.
+//
+// Which colour goes to which view is settled by arrival and then READ BACK,
+// rather than being assumed. This used to lean on fetchBasemaps requesting
+// the whole-course view first and a zoomed highlight's second; the two are
+// concurrent now, so the assumption is gone and the mapping has to be asked
+// for. colorForWidest is how: the whole-course request is the one covering
+// the most ground, which is a property of the view rather than of the order.
 type twoColorBasemap struct {
 	colors []color.RGBA
-	calls  int
+
+	mu    sync.Mutex
+	calls int
+	views []tilemap.View
+	given []color.RGBA
 }
 
 func (f *twoColorBasemap) Image(_ context.Context, v tilemap.View) (image.Image, error) {
-	i := f.calls
-	f.calls++
+	f.mu.Lock()
 	col := basemapGreen
-	if i < len(f.colors) {
-		col = f.colors[i]
+	if f.calls < len(f.colors) {
+		col = f.colors[f.calls]
 	}
+	f.calls++
+	f.views = append(f.views, v)
+	f.given = append(f.given, col)
+	f.mu.Unlock()
+
 	img := image.NewRGBA(image.Rect(0, 0, v.Width, v.Height))
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: col}, image.Point{}, draw.Src)
 	return img, nil
+}
+
+// colorForWidest returns the colour given to the view covering the most
+// ground -- the whole course -- or, with widest false, to the one covering
+// the least.
+func (f *twoColorBasemap) colorForWidest(t *testing.T, widest bool) color.RGBA {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.views) == 0 {
+		t.Fatal("no views were fetched, so there is no colour to report")
+	}
+	best, col := -1.0, f.given[0]
+	for i, v := range f.views {
+		span := viewSpan(v)
+		if i == 0 || (widest && span > best) || (!widest && span < best) {
+			best, col = span, f.given[i]
+		}
+	}
+	return col
+}
+
+// viewSpan is the ground a view covers, in square degrees.
+func viewSpan(v tilemap.View) float64 {
+	return (v.East - v.West) * (v.North - v.South)
+}
+
+// viewSpans is the largest and smallest ground covered among views.
+func viewSpans(views []tilemap.View) (widest, narrowest float64) {
+	for i, v := range views {
+		span := viewSpan(v)
+		if i == 0 {
+			widest, narrowest = span, span
+			continue
+		}
+		widest, narrowest = max(widest, span), min(narrowest, span)
+	}
+	return widest, narrowest
 }
 func (f *twoColorBasemap) Attribution() string {
 	return "Maps © Somebody, Data © OpenStreetMap contributors"
@@ -1331,15 +1393,24 @@ func TestRoutePanel_ZoomCrossFadeReplacesTheWholeCourseImageAsWeightRises(t *tes
 	box := Box{X: 40, Y: 40, W: w - 80, H: h - 80}
 	boxArea := int(box.W) * int(box.H)
 
+	// The colour the whole-course view actually got is read back rather than
+	// assumed, since the two views are requested concurrently and either may
+	// be answered first. What is counted is then whichever colour went to the
+	// view covering the most ground -- which is the whole course, by
+	// definition of a zoom.
 	wholeCourseCoverage := func(weight float64) int {
 		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
-		ctx.Basemap = &twoColorBasemap{colors: []color.RGBA{wholeCourseColor, zoomedColor}}
+		bm := &twoColorBasemap{colors: []color.RGBA{wholeCourseColor, zoomedColor}}
+		ctx.Basemap = bm
 		img, c := zoomCanvas(t, w, h)
 		p := RoutePanel{}.Prepare(ctx, box)
 		c.Fill(c.Theme.Background)
 		p.Static(c)
 		p.Dynamic(c, Frame{At: ctx.Timeline.Start().Add(100 * time.Second), Interval: 0, IntervalWeight: weight})
-		return countNearInBox(img, box, wholeCourseColor, 15)
+		if bm.calls != 2 {
+			t.Fatalf("fetched %d views, want 2; this test cannot tell the two images apart otherwise", bm.calls)
+		}
+		return countNearInBox(img, box, bm.colorForWidest(t, true), 15)
 	}
 
 	atStart, atMid, atFull := wholeCourseCoverage(0), wholeCourseCoverage(0.5), wholeCourseCoverage(1)
@@ -1417,29 +1488,54 @@ func TestRoutePanel_BasemapNeverFetchedWithNoRouteToFit(t *testing.T) {
 	}
 }
 
-// nthCallFailsBasemap succeeds on every call except the ones named in
-// failOn, so a test can put the failure on exactly one view -- the
-// whole-course fetch (call 0) or a zoomed highlight's own fetch (call 1,
-// 2, ...) -- without the other succeeding or failing along with it.
-type nthCallFailsBasemap struct {
-	failOn map[int]bool
+// viewFailsBasemap fails the fetches its predicate names and succeeds at the
+// rest, so a test can put a failure on exactly one view without the others
+// failing along with it.
+//
+// Named by VIEW rather than by call number, which is what this used to do.
+// The views are requested concurrently now, so "the second call" is whichever
+// one the scheduler reached first, and a failure aimed that way lands
+// somewhere different from run to run. How much ground a view covers is a
+// property of the view itself: a zoom onto part of a course always covers
+// less of it than the whole course does.
+type viewFailsBasemap struct {
+	fail func(tilemap.View) bool
+
+	mu     sync.Mutex
 	calls  int
+	failed int
 }
 
-func (f *nthCallFailsBasemap) Image(_ context.Context, v tilemap.View) (image.Image, error) {
-	i := f.calls
+func (f *viewFailsBasemap) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	fail := f.fail != nil && f.fail(v)
+	f.mu.Lock()
 	f.calls++
-	if f.failOn[i] {
+	if fail {
+		f.failed++
+	}
+	f.mu.Unlock()
+	if fail {
 		return nil, errors.New("this view failed")
 	}
 	img := image.NewRGBA(image.Rect(0, 0, v.Width, v.Height))
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: basemapGreen}, image.Point{}, draw.Src)
 	return img, nil
 }
-func (f *nthCallFailsBasemap) Attribution() string {
+func (f *viewFailsBasemap) Attribution() string {
 	return "Maps © Somebody, Data © OpenStreetMap contributors"
 }
-func (f *nthCallFailsBasemap) Name() string { return "fake/style" }
+func (f *viewFailsBasemap) Name() string { return "fake/style" }
+
+// squareTrackWholeCourseSpan separates the whole-course view from a zoom of
+// part of it, in square degrees.
+//
+// squareTrack draws a 0.01-degree square, and the whole-course view comes out
+// at about 2.9e-4 square degrees once it is fitted to a square box, against
+// about 7.2e-5 for a zoom onto one edge of it -- a factor of four apart. The
+// threshold sits between them, and every test using it also asserts how many
+// fetches actually failed, so a fixture change that stopped separating the
+// two would fail loudly rather than quietly stop testing anything.
+const squareTrackWholeCourseSpan = 1.5e-4
 
 // TestRoutePanel_BasemapReportsWhichWayTheFetchFailed pins BasemapReporter's
 // two questions independently: DID anything reach the frame, and what does
@@ -1457,9 +1553,15 @@ func TestRoutePanel_BasemapReportsWhichWayTheFetchFailed(t *testing.T) {
 
 	t.Run("the whole-course fetch fails: nothing drew, and the note says so", func(t *testing.T) {
 		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
-		ctx.Basemap = &nthCallFailsBasemap{failOn: map[int]bool{0: true}}
+		bm := &viewFailsBasemap{fail: func(v tilemap.View) bool {
+			return viewSpan(v) >= squareTrackWholeCourseSpan
+		}}
+		ctx.Basemap = bm
 
 		p := RoutePanel{}.Prepare(ctx, Box{X: 40, Y: 40, W: w - 80, H: h - 80})
+		if bm.failed != 1 {
+			t.Fatalf("%d of %d fetches failed, want exactly the whole-course one; the fixture no longer separates it from the zoom", bm.failed, bm.calls)
+		}
 		rep, ok := p.(BasemapReporter)
 		if !ok {
 			t.Fatal("routePainter does not implement BasemapReporter")
@@ -1474,9 +1576,15 @@ func TestRoutePanel_BasemapReportsWhichWayTheFetchFailed(t *testing.T) {
 
 	t.Run("only the zoomed view fails: the whole course still drew, and the note names the fallback", func(t *testing.T) {
 		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
-		ctx.Basemap = &nthCallFailsBasemap{failOn: map[int]bool{1: true}}
+		bm := &viewFailsBasemap{fail: func(v tilemap.View) bool {
+			return viewSpan(v) < squareTrackWholeCourseSpan
+		}}
+		ctx.Basemap = bm
 
 		p := RoutePanel{}.Prepare(ctx, Box{X: 40, Y: 40, W: w - 80, H: h - 80})
+		if bm.failed != 1 {
+			t.Fatalf("%d of %d fetches failed, want exactly the zoomed one; the fixture no longer separates it from the whole course", bm.failed, bm.calls)
+		}
 		rep, ok := p.(BasemapReporter)
 		if !ok {
 			t.Fatal("routePainter does not implement BasemapReporter")
@@ -1491,7 +1599,7 @@ func TestRoutePanel_BasemapReportsWhichWayTheFetchFailed(t *testing.T) {
 
 	t.Run("nothing fails: no note at all", func(t *testing.T) {
 		ctx := routeHighlightContext(t, track, fixes, []Highlight{highlight}, w, h)
-		ctx.Basemap = &nthCallFailsBasemap{}
+		ctx.Basemap = &viewFailsBasemap{}
 
 		p := RoutePanel{}.Prepare(ctx, Box{X: 40, Y: 40, W: w - 80, H: h - 80})
 		rep := p.(BasemapReporter)

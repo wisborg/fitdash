@@ -2,9 +2,12 @@ package panel
 
 import (
 	"context"
+	"fmt"
+	"hash/fnv"
 	"image"
 	"image/color"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +23,8 @@ import (
 // the zoomed one belongs would be invisible if the two were the same colour,
 // which is what the existing fakeBasemap is for and why it is not used here.
 type patternedBasemap struct {
+	// Guarded because the views are fetched concurrently.
+	mu    sync.Mutex
 	calls int
 	// oversample is how much larger than the requested box the returned
 	// image is, mirroring the real provider: planStatic rounds its zoom up,
@@ -30,14 +35,23 @@ type patternedBasemap struct {
 }
 
 func (f *patternedBasemap) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	f.mu.Lock()
 	f.calls++
+	f.mu.Unlock()
+
 	over := f.oversample
 	if over <= 0 {
 		over = 1
 	}
 	w, h := int(float64(v.Width)*over), int(float64(v.Height)*over)
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	rnd := rand.New(rand.NewSource(int64(f.calls)))
+	// Seeded from the VIEW, so the same ground always comes back as the same
+	// picture no matter which goroutine asked or in what order -- which is
+	// how a real map service behaves, and is what lets this file compare two
+	// painters that fetched the same views along different paths. Seeding
+	// from a call counter instead made the image depend on arrival order,
+	// and the views are requested concurrently.
+	rnd := rand.New(rand.NewSource(viewSeed(v)))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			img.Set(x, y, color.RGBA{
@@ -46,6 +60,13 @@ func (f *patternedBasemap) Image(_ context.Context, v tilemap.View) (image.Image
 		}
 	}
 	return img, nil
+}
+
+// viewSeed turns a view into a stable seed.
+func viewSeed(v tilemap.View) int64 {
+	h := fnv.New64a()
+	fmt.Fprintf(h, "%.9f|%.9f|%.9f|%.9f|%d|%d", v.North, v.West, v.South, v.East, v.Width, v.Height)
+	return int64(h.Sum64() & 0x7fffffffffffffff)
 }
 
 func (f *patternedBasemap) Attribution() string { return "Maps © Somebody, Data © Somebody" }

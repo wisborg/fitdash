@@ -3,7 +3,9 @@ package panel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
+	"sync"
 	"time"
 
 	"github.com/wisborg/fitdash/internal/route"
@@ -114,14 +116,34 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 		return &basemapView{img: img, opaque: isOpaque(img), minX: minX, minY: minY, spanX: spanX, spanY: spanY}, nil
 	}
 
-	baseView, err := fetch(base)
+	// Every view is requested AT ONCE, and the whole-course one no longer
+	// goes first.
+	//
+	// They are independent requests to a service that spends over a second
+	// rendering each one, so they overlap almost perfectly: measured on a
+	// real activity, four views took 4.6 seconds in sequence. That second is
+	// not this program's to shorten, but the queue in front of it is -- and
+	// every bit of it is spent before the first frame, with nothing on
+	// screen, which is where a user is least willing to wait.
+	//
+	// Fetching the whole-course view first used to be a deliberate gate: if
+	// the service cannot answer at all, the zoomed views are several more
+	// requests it will also refuse. That reasoning does not survive the
+	// change, because with everything in flight together nothing has proved
+	// anything yet when the others are sent -- and it was not buying much.
+	// A refused key costs one round trip either way before the user is told,
+	// since the failures arrive in parallel too. What it did buy is politeness
+	// toward a service that is already struggling, and the bound below is
+	// what is left of it.
+	views, errs := fetchViews(c, fetch, base, marks)
+
+	baseView, err := views[0], errs[0]
 	switch {
 	case baseView != nil:
 	case err != nil:
 		// The whole-course view is the one every render needs. Without it
-		// there is no basemap worth having, and fetching the zoomed ones
-		// would be several more requests to a service that has just proved
-		// it cannot answer.
+		// there is no basemap worth having, so whatever the zoomed requests
+		// came back with is discarded with it.
 		return nil, nil, "no imagery: " + err.Error()
 	default:
 		// Nothing was asked of the service, so it must not be blamed. This
@@ -137,11 +159,10 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 		if !m.zoomOK {
 			continue
 		}
-		var zoomErr error
-		if zooms[i], zoomErr = fetch(m.zoom); zooms[i] == nil {
+		if zooms[i] = views[i+1]; zooms[i] == nil {
 			missing++
 			if firstErr == nil {
-				firstErr = zoomErr
+				firstErr = errs[i+1]
 			}
 		}
 	}
@@ -153,6 +174,66 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 		}
 	}
 	return baseView, zooms, note
+}
+
+// maxConcurrentFetches bounds how many requests are in flight at once.
+//
+// It is not a throughput knob -- a render has one view plus one per zooming
+// highlight, which is a handful -- but a ceiling on the worst case, since
+// nothing stops someone configuring fifty highlights. Firing fifty requests
+// at a map service at once is the kind of thing that gets an API key rate
+// limited, and the difference between four at a time and fifty is invisible
+// against a per-request render time of a second.
+const maxConcurrentFetches = 4
+
+// fetchViews resolves every view together and returns them positionally: the
+// whole-course view at index 0, then one per mark, so index i+1 belongs to
+// marks[i]. A mark that resolved no zoom is left nil with no error, having
+// been asked for nothing.
+//
+// Positional rather than a channel of results, because the caller needs to
+// know WHICH view failed -- the whole-course one is fatal to the basemap and
+// a zoomed one is not -- and because a fixed slice written by index needs no
+// synchronisation beyond the wait: every goroutine owns one element and no
+// two own the same one.
+func fetchViews(c context.Context, fetch func(route.Projection) (*basemapView, error), base route.Projection, marks []routeMark) ([]*basemapView, []error) {
+	projs := make([]route.Projection, len(marks)+1)
+	want := make([]bool, len(marks)+1)
+	projs[0], want[0] = base, true
+	for i, m := range marks {
+		projs[i+1], want[i+1] = m.zoom, m.zoomOK
+	}
+
+	views := make([]*basemapView, len(projs))
+	errs := make([]error, len(projs))
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrentFetches)
+	for i := range projs {
+		if !want[i] {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-c.Done():
+				// The shared deadline passed while this view was queued
+				// behind the bound, so it is never sent. It gets a real
+				// error rather than being left nil: a nil view with a nil
+				// error is this function's way of saying nothing was ASKED,
+				// and reporting a view that ran out of time as one that was
+				// never wanted would blame the activity for the clock.
+				errs[i] = fmt.Errorf("gave up waiting to send the request: %w", c.Err())
+				return
+			}
+			views[i], errs[i] = fetch(projs[i])
+		}()
+	}
+	wg.Wait()
+	return views, errs
 }
 
 // drawInto composites this view into the box for a viewport, at an opacity.

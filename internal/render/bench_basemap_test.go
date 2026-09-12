@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,17 +27,24 @@ import (
 // returning an exactly-sized image would measure a cost nobody pays.
 type stubProvider struct {
 	oversample float64
-	calls      int
+
+	// Guarded because the views are fetched concurrently.
+	mu    sync.Mutex
+	calls int
 }
 
 func (s *stubProvider) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	s.mu.Lock()
 	s.calls++
+	seed := int64(s.calls)
+	s.mu.Unlock()
+
 	w, h := int(float64(v.Width)*s.oversample), int(float64(v.Height)*s.oversample)
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	// Noise, not a flat fill: a resampling filter on a constant image is not
 	// the same work as one on real map detail, and a flat source would also
 	// let a caching bug pass unnoticed.
-	rnd := rand.New(rand.NewSource(1))
+	rnd := rand.New(rand.NewSource(seed))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			img.Set(x, y, color.RGBA{uint8(rnd.Intn(256)), uint8(rnd.Intn(256)), uint8(rnd.Intn(256)), 255})

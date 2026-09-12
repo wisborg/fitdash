@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2844,28 +2845,49 @@ func basemapSummaryRenderWithHighlights(t *testing.T, provider tilemap.Provider,
 	return r, renderInputs{track: track, tl: tl, basemap: provider}
 }
 
-// firstCallFailsProvider succeeds on the whole-course fetch (call 0) and
-// fails on every fetch after it -- a highlight's own zoomed view -- so a
-// test can put the fetch failure on exactly the view that produces
+// zoomFailsProvider serves the whole-course view and refuses the zoomed one,
+// so a test can put the fetch failure on exactly the view that produces
 // fetchBasemaps' OTHER note, "some zoomed views have no imagery", rather
 // than the total-failure note basemapSummaryProvider's fail case already
 // exercises.
-type firstCallFailsProvider struct {
-	calls int
+//
+// It tells the two apart by how much ground each covers, not by which came
+// first. fetchBasemaps requests every view concurrently, so the call order is
+// the scheduler's and a failure aimed at "the second call" lands on a
+// different view from run to run.
+type zoomFailsProvider struct {
+	mu     sync.Mutex
+	calls  int
+	failed int
 }
 
-func (p *firstCallFailsProvider) Image(_ context.Context, v tilemap.View) (image.Image, error) {
-	i := p.calls
+// zoomSpanCeiling separates the zoomed view from the whole-course one, in
+// square degrees, for the fixture basemapSummaryRenderWithHighlights builds.
+//
+// Measured at 6.0e-7 for the zoom against 5.8e-6 for the whole course, a
+// factor of ten apart, so the threshold between them is not delicate. The
+// test also asserts that exactly one fetch failed, which is what turns a
+// fixture change that stopped separating them into a failure rather than
+// into a test that silently checks nothing.
+const zoomSpanCeiling = 2e-6
+
+func (p *zoomFailsProvider) Image(_ context.Context, v tilemap.View) (image.Image, error) {
+	fail := (v.East-v.West)*(v.North-v.South) < zoomSpanCeiling
+	p.mu.Lock()
 	p.calls++
-	if i > 0 {
+	if fail {
+		p.failed++
+	}
+	p.mu.Unlock()
+	if fail {
 		return nil, errors.New("zoomed view unavailable")
 	}
 	return image.NewRGBA(image.Rect(0, 0, v.Width, v.Height)), nil
 }
-func (p *firstCallFailsProvider) Attribution() string {
+func (p *zoomFailsProvider) Attribution() string {
 	return "Maps © Somebody, Data © OpenStreetMap contributors"
 }
-func (p *firstCallFailsProvider) Name() string { return "fake/style" }
+func (p *zoomFailsProvider) Name() string { return "fake/style" }
 
 // TestWriteBasemapSummary_ReportsAPartialZoomFailure is the outcome
 // TestWriteBasemapSummary_SaysWhatActuallyHappened's table cannot reach: it
@@ -2880,8 +2902,11 @@ func TestWriteBasemapSummary_ReportsAPartialZoomFailure(t *testing.T) {
 	renderOpts = renderOptions{basemap: "outdoors", basemapDim: 0.65}
 
 	highlight := panel.Highlight{Name: "Leg", From: 0, To: 20 * time.Second, Zoom: true}
-	provider := &firstCallFailsProvider{}
+	provider := &zoomFailsProvider{}
 	r, in := basemapSummaryRenderWithHighlights(t, provider, []panel.Highlight{highlight})
+	if provider.failed != 1 {
+		t.Fatalf("%d of %d fetches failed, want exactly the zoomed one; the fixture no longer separates it from the whole course", provider.failed, provider.calls)
+	}
 
 	var buf bytes.Buffer
 	cmd := &cobra.Command{}
