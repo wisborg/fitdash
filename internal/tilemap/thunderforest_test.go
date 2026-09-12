@@ -413,40 +413,33 @@ func TestPlanStatic_NeverAsksForLessDetailThanTheBoxNeeds(t *testing.T) {
 	}
 }
 
-// TestThunderforest_DoublesTheScaleWhenTheCeilingForcesASmallCanvas covers
-// the other half: where a deeper zoom cannot fit, @2x returns twice the
-// pixels for the same requested size, so the ceiling costs no detail.
-func TestThunderforest_DoublesTheScaleWhenTheCeilingForcesASmallCanvas(t *testing.T) {
-	huge := viewFor(55.5, 12.5, 1.0/360.0, 2400, 2400)
-	plan, err := planStatic(huge, thunderforestMaxPixels, thunderforestMaxZoom)
-	if err != nil {
-		t.Fatalf("planStatic: %v", err)
-	}
-	if !(plan.Width < huge.Width || plan.Height < huge.Height) {
-		t.Skip("this fixture no longer hits the endpoint's ceiling, so it cannot exercise the doubling")
-	}
-
-	tf, reqs := fakeService(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(pngBytes(t, 8, 8))
-	})
-	if _, err := tf.Image(context.Background(), huge); err != nil {
-		t.Fatalf("Image: %v", err)
-	}
-	if got := (*reqs)[0].URL.Path; !strings.Contains(got, "@2x") {
-		t.Errorf("path %q does not ask for @2x, so the ceiling costs detail the endpoint would have given", got)
-	}
-
-	// And a view the ceiling does not bind must NOT pay for the extra bytes.
-	small := viewFor(55.695, 12.51, 1.0/360.0/200, 400, 300)
-	tf2, reqs2 := fakeService(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(pngBytes(t, 8, 8))
-	})
-	if _, err := tf2.Image(context.Background(), small); err != nil {
-		t.Fatalf("Image: %v", err)
-	}
-	if got := (*reqs2)[0].URL.Path; strings.Contains(got, "@2x") {
-		t.Errorf("path %q asks for @2x on a view that already has the detail it needs", got)
+// TestThunderforest_NeverAsksForDoubleDensity pins the other half of the
+// ceiling, and it is a regression test with a live-service measurement behind
+// it.
+//
+// Asking for @2x looks like the way to beat the endpoint's 2560-pixel
+// ceiling, and this package did ask, on exactly the large views where the
+// ceiling binds. The service answers HTTP 400: the ceiling is on the pixels
+// returned, so double density past 1280 on an axis is a request it will not
+// serve. The symptom was a basemap that silently stopped arriving on any
+// panel wider than 1280 -- which is most panels -- while the small-panel
+// tests all kept passing, so the size that provokes it is the point of the
+// fixture.
+func TestThunderforest_NeverAsksForDoubleDensity(t *testing.T) {
+	for _, v := range []View{
+		viewFor(55.5, 12.5, 1.0/360.0, 2400, 2400),       // the ceiling binds
+		viewFor(55.695, 12.51, 1.0/360.0/200, 1368, 336), // a 1080p route panel
+		viewFor(55.695, 12.51, 1.0/360.0/200, 400, 300),  // a small one
+	} {
+		tf, reqs := fakeService(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(pngBytes(t, 8, 8))
+		})
+		if _, err := tf.Image(context.Background(), v); err != nil {
+			t.Fatalf("%dx%d: Image: %v", v.Width, v.Height, err)
+		}
+		if got := (*reqs)[0].URL.Path; strings.Contains(got, "@2x") {
+			t.Errorf("%dx%d: path %q asks for double density, which the endpoint refuses above 1280 on an axis", v.Width, v.Height, got)
+		}
 	}
 }

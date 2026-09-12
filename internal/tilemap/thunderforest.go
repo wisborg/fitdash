@@ -54,10 +54,6 @@ type Thunderforest struct {
 	// has stopped answering, since the basemap is decoration and the render
 	// is the product.
 	Client *http.Client
-
-	// Scale requests double-resolution imagery when true, which is worth it
-	// for a large panel and wasteful for a small one.
-	Scale2x bool
 }
 
 // Attribution is what must appear in any frame this imagery is drawn into.
@@ -155,13 +151,13 @@ func (t *Thunderforest) Image(ctx context.Context, v View) (image.Image, error) 
 
 // maxImageEdge and maxImagePixels bound what will be decoded.
 //
-// The endpoint's own ceiling is 2560 on each axis, doubled by @2x, so
-// anything past that is not imagery this program asked for. The area bound is
-// the belt to that pair of braces: it is what stops a long thin image --
-// within both edge limits on one axis and enormous on the other -- from
-// allocating what the edges alone would allow.
+// The endpoint's own ceiling is 2560 on each axis and nothing raises it -- see
+// request on why @2x does not -- so anything past that is not imagery this
+// program asked for. The area bound is the belt to that pair of braces: it is
+// what stops a long thin image -- within both edge limits on one axis and
+// enormous on the other -- from allocating what the edges alone would allow.
 const (
-	maxImageEdge   = 2 * thunderforestMaxPixels
+	maxImageEdge   = thunderforestMaxPixels
 	maxImagePixels = maxImageEdge * maxImageEdge
 )
 
@@ -185,24 +181,28 @@ func (t *Thunderforest) request(ctx context.Context, v View, style string) (*htt
 		return nil, fmt.Errorf("thunderforest: %w", err)
 	}
 
-	// Doubled when a single-scale canvas would still be smaller than the box
-	// it has to fill -- which happens whenever the endpoint's own pixel
-	// ceiling forces the zoom below what the panel wants, and is the only
-	// case a deeper zoom cannot fix. @2x returns twice the pixels for the
-	// same requested width and height, so it buys back exactly the detail
-	// the ceiling took away, and the ceiling itself is unaffected because it
-	// applies to what is asked for rather than to what comes back.
+	// NO @2x, and its absence is a decision rather than an omission.
 	//
-	// Scale2x forces it on regardless, for a caller that wants the sharper
-	// image whatever the arithmetic says.
-	scale := ""
-	if t.Scale2x || plan.Width < v.Width || plan.Height < v.Height {
-		scale = "@2x"
-	}
+	// It reads like the answer to the endpoint's pixel ceiling: where a
+	// deeper zoom will not fit, ask for the same rectangle at double
+	// density and get twice the pixels back. That is what this did, and the
+	// service refuses it -- HTTP 400 on anything past 1280 on an axis,
+	// measured against the live endpoint. The 2560 ceiling is on the pixels
+	// RETURNED, not on the pixels asked for, so @2x does not raise it: a
+	// 1280-wide request at double density and a 2560-wide request at single
+	// both come back 2560 wide, covering the same ground at the same detail.
+	// The only difference is that labels and symbols are drawn at twice the
+	// size, which is a matter of taste and not of resolution.
+	//
+	// So there is nothing here to buy, and asking silently broke every
+	// basemap on a panel wider than 1280 -- which is most of them. What the
+	// ceiling costs is now what it always was and no more: a canvas up to
+	// 2560 on an axis, upscaled the last few percent on a 4K panel.
+	//
 	// The path carries centre, zoom and size; the key is a query parameter,
 	// which is the whole reason redact exists.
-	raw := fmt.Sprintf("%s/static/%s/%.6f,%.6f,%d/%dx%d%s.png",
-		thunderforestBase, style, plan.CentreLon, plan.CentreLat, plan.Zoom, plan.Width, plan.Height, scale)
+	raw := fmt.Sprintf("%s/static/%s/%.6f,%.6f,%d/%dx%d.png",
+		thunderforestBase, style, plan.CentreLon, plan.CentreLat, plan.Zoom, plan.Width, plan.Height)
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("thunderforest: building the request: %w", err)
