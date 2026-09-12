@@ -337,7 +337,7 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 	if src == nil || b.W <= 0 || b.H <= 0 || opacity <= 0 {
 		return
 	}
-	dst := image.Rect(int(b.X), int(b.Y), int(b.X+b.W), int(b.Y+b.H))
+	dst := pixelRect(b)
 	if dst.Empty() {
 		return
 	}
@@ -365,6 +365,28 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 	})
 }
 
+// pixelRect is the integer rectangle a Box covers: every pixel the box
+// touches, including the ones it only touches part of.
+//
+// ONE conversion, shared by everything that turns a box into pixels, and the
+// sharing is the point. A layout hands a panel fractional edges, so a box
+// running to y=369.9 has two defensible pixel rectangles -- through 368, or
+// through 369 -- and the program used both. Clipped rounded its bottom edge
+// out and Image rounded the imagery's in, so the map stopped one row short of
+// the box while the clip still admitted that row. The row showed the plain
+// background, a hairline of it along the bottom of every basemap, and it hid
+// behind the whole-course image drawn underneath a zoom, which reached it
+// because IT was magnified past the box.
+//
+// Outward is the right direction of the two. A box owns 90% of that last row;
+// leaving it unpainted is a visible gap where covering it is at worst a
+// pixel of overreach into the padding between panels -- and it is what every
+// other panel already does, since a stroke antialiased to a fractional edge
+// touches that row too.
+func pixelRect(b Box) image.Rectangle {
+	return image.Rect(int(b.X), int(b.Y), int(math.Ceil(b.X+b.W)), int(math.Ceil(b.Y+b.H)))
+}
+
 // Clipped runs draw with every drawing operation confined to b.
 //
 // A panel is trusted to stay inside its own box, and every panel here does so
@@ -384,7 +406,7 @@ func (c *Canvas) Image(src image.Image, b Box, opacity float64) {
 // fixing this first.
 func (c *Canvas) Clipped(b Box, draw func()) {
 	prevClip, prevActive := c.clip, c.clipActive
-	c.clip, c.clipActive = image.Rect(int(b.X), int(b.Y), int(math.Ceil(b.X+b.W)), int(math.Ceil(b.Y+b.H))), true
+	c.clip, c.clipActive = pixelRect(b), true
 	c.dc.DrawRectangle(b.X, b.Y, b.W, b.H)
 	c.dc.Clip()
 	defer func() {
