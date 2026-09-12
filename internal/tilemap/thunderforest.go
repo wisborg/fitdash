@@ -75,11 +75,17 @@ func (t *Thunderforest) Attribution() string {
 // different pictures of the same ground, and a name that omitted the style
 // would serve a Landscape render out of an Outdoors cache.
 func (t *Thunderforest) Name() string {
-	style := t.Style
-	if style == "" {
-		style = ThunderforestStyles[0]
+	return ThunderforestProvider + "/" + t.styleName()
+}
+
+// styleName is the configured style or the default, in one place. Three
+// callers resolve it -- Name, Image and CacheKey -- and a fourth spelling
+// that disagreed would put one style's imagery under another's cache entry.
+func (t *Thunderforest) styleName() string {
+	if t.Style == "" {
+		return ThunderforestStyles[0]
 	}
-	return ThunderforestProvider + "/" + style
+	return t.Style
 }
 
 // Image fetches imagery covering v.
@@ -95,10 +101,7 @@ func (t *Thunderforest) Image(ctx context.Context, v View) (image.Image, error) 
 	if t.Key.Empty() {
 		return nil, fmt.Errorf("thunderforest: no API key")
 	}
-	style := t.Style
-	if style == "" {
-		style = ThunderforestStyles[0]
-	}
+	style := t.styleName()
 
 	req, err := t.request(ctx, v, style)
 	if err != nil {
@@ -201,9 +204,7 @@ func (t *Thunderforest) request(ctx context.Context, v View, style string) (*htt
 	//
 	// The path carries centre, zoom and size; the key is a query parameter,
 	// which is the whole reason redact exists.
-	raw := fmt.Sprintf("%s/static/%s/%.6f,%.6f,%d/%dx%d.png",
-		thunderforestBase, style, plan.CentreLon, plan.CentreLat, plan.Zoom, plan.Width, plan.Height)
-	u, err := url.Parse(raw)
+	u, err := url.Parse(thunderforestBase + plan.path(style))
 	if err != nil {
 		return nil, fmt.Errorf("thunderforest: building the request: %w", err)
 	}
@@ -279,6 +280,37 @@ type staticPlan struct {
 	CentreLat, CentreLon float64
 	Zoom                 int
 	Width, Height        int
+}
+
+// path is the endpoint path this plan asks for, and it is ALSO the cache key
+// -- see CacheKey. One function, so the two cannot drift: a key formatted to
+// a different precision from the request would put two identical responses in
+// two cache entries, or worse, two different ones in one.
+//
+// The centre is written at six decimal places because that is what the
+// endpoint is given. Any precision beyond it is a distinction the service
+// never sees, and a cache that drew one would miss on views that produce
+// byte-identical requests.
+//
+// It carries no credential. The key is a query parameter, which is what makes
+// this safe to hash into a filename and is the whole reason redact exists.
+func (p staticPlan) path(style string) string {
+	return fmt.Sprintf("/static/%s/%.6f,%.6f,%d/%dx%d.png",
+		style, p.CentreLon, p.CentreLat, p.Zoom, p.Width, p.Height)
+}
+
+// CacheKey reduces a view to the request this provider will actually make,
+// which is what Cached stores an entry against. See CacheKeyer.
+//
+// The second return is false when the view cannot be planned at all. Such a
+// view cannot be fetched either, so there is nothing to cache and the caller
+// falls back to keying on the view itself.
+func (t *Thunderforest) CacheKey(v View) (string, bool) {
+	plan, err := planStatic(v, thunderforestMaxPixels, thunderforestMaxZoom)
+	if err != nil {
+		return "", false
+	}
+	return plan.path(t.styleName()), true
 }
 
 // planStatic resolves v into a request the static endpoint will accept.

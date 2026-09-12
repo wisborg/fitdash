@@ -105,18 +105,57 @@ func (c *Cached) ttl() time.Duration {
 	return DefaultTTL
 }
 
+// CacheKeyer is implemented by a Provider that can reduce a View to the
+// distinct request it will actually make.
+//
+// It exists because a View is not what determines the response. A static-map
+// endpoint takes a centre and an integer zoom, so a whole RANGE of requested
+// pixel sizes resolves to one request and one byte-identical image -- and a
+// cache keyed on the view asked for, rather than on the request made, misses
+// every one of them.
+//
+// That was not hypothetical. Keying on View.Width and View.Height meant every
+// render at a new resolution re-fetched imagery already on disk, at the user's
+// own quota, sending the area of their activity again to be told the same
+// thing. A layout change or a theme whose credit strip is a fraction taller
+// did it too, because both move the panel's box by a pixel.
+//
+// Optional rather than part of Provider, and named rather than written inline,
+// for the same reasons Reporter is: a provider with nothing to canonicalise
+// simply does not implement it, and this package already answers one
+// question of this shape that way.
+type CacheKeyer interface {
+	// CacheKey returns a string identifying the request v resolves to, and
+	// whether v resolves to one at all. It must not contain a credential --
+	// it is hashed, but a key that reaches a hash function is a key that was
+	// held in a string somewhere it did not need to be.
+	CacheKey(v View) (string, bool)
+}
+
+var _ CacheKeyer = (*Thunderforest)(nil)
+
 // entry names the file for a view.
 //
 // The name is a hash of the provider (style included -- see Thunderforest.Name)
-// and the view, at a precision well past what any zoom can distinguish. The
-// coordinates are formatted rather than hashed as float bits so that two runs
-// computing the same view by slightly different arithmetic still agree, which
-// is the difference between a cache that works across a rebuild and one that
-// quietly never hits.
+// and, where the provider can say, the request that view resolves to. See
+// CacheKeyer for why the view alone is the wrong thing to key on.
+//
+// The fallback is the view itself, at a precision well past what any zoom can
+// distinguish. The coordinates are formatted rather than hashed as float bits
+// so that two runs computing the same view by slightly different arithmetic
+// still agree, which is the difference between a cache that works across a
+// rebuild and one that quietly never hits.
 func (c *Cached) entry(v View) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%.9f|%.9f|%.9f|%.9f|%d|%d",
-		c.Provider.Name(), v.North, v.West, v.South, v.East, v.Width, v.Height)
+	fmt.Fprintf(h, "%s|", c.Provider.Name())
+	if k, ok := c.Provider.(CacheKeyer); ok {
+		if key, resolved := k.CacheKey(v); resolved {
+			fmt.Fprintf(h, "req|%s", key)
+			return hex.EncodeToString(h.Sum(nil)) + ".png"
+		}
+	}
+	fmt.Fprintf(h, "view|%.9f|%.9f|%.9f|%.9f|%d|%d",
+		v.North, v.West, v.South, v.East, v.Width, v.Height)
 	return hex.EncodeToString(h.Sum(nil)) + ".png"
 }
 
