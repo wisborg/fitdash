@@ -317,6 +317,7 @@ func runFetchErr(t *testing.T, in io.Reader, args ...string) error {
 
 func execFetch(t *testing.T, out io.Writer, in io.Reader, args ...string) error {
 	t.Helper()
+	redirectUserCache(t)
 	defer func(o basemapFetchOptions, f formatFlag) {
 		basemapFetchOpts, format = o, f
 	}(basemapFetchOpts, format)
@@ -433,4 +434,35 @@ func buildArchiveFile(t *testing.T, dir, name, credit string) string {
 		t.Fatalf("writing the fixture archive: %v", err)
 	}
 	return path
+}
+
+// redirectUserCache points the user cache directory at a temporary one for the
+// duration of a test.
+//
+// It is a guard against a whole class of accident rather than a tidy-up. The
+// store directory falls back to slice.DefaultRoot when --store is empty, and
+// DefaultRoot resolves through os.UserCacheDir -- so any test that reaches the
+// fetch path without a store writes REAL tiles into the developer's own cache,
+// under a source named after a temp archive that will not exist a second
+// later. That happened: a run left a second archive in
+// ~/Library/Caches/osmbase whose source was a t.TempDir path, and because a
+// store holding two archives is refused, every subsequent "osmbase render"
+// against the real cache failed with a message about a file in /var/folders.
+//
+// The test that caused it passed --store correctly; it was reached in a
+// transient state while other edits were in flight. Which is the argument for
+// doing this here rather than auditing call sites: an assertion that every
+// invocation names a store can be true today and false after the next edit,
+// while a redirected HOME cannot leak whatever the code under test decides to
+// do.
+//
+// os.UserCacheDir reads XDG_CACHE_HOME on Unix and HOME on macOS, so both are
+// set. t.Setenv restores them and refuses to run under t.Parallel, which is
+// the behaviour wanted: a process-wide environment change must not overlap
+// with another test.
+func redirectUserCache(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
 }
