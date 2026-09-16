@@ -204,7 +204,7 @@ func (a *Archive) Close() error {
 // Attribution is the credit the archive's own metadata declares, RAW -- as
 // the archive wrote it, markup and all.
 //
-// Deliberately not run through plainCredit. What goes into a store's manifest
+// Deliberately not run through render.PlainCredit. What goes into a store's manifest
 // is a faithful record of what the source said, so that a store written here
 // and a store written by osmbase's own command hold the same bytes and stay
 // interchangeable; the conversion to text a frame can carry belongs at the

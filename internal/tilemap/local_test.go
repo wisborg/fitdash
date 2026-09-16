@@ -272,7 +272,7 @@ func TestLocal_NameIdentifiesTheSourceItDrawsFrom(t *testing.T) {
 // into every frame as markup, and the ODbL credit for the rendered video
 // reads as an anchor tag.
 //
-// Asserted through OpenLocal rather than over plainCredit alone because the
+// Asserted through OpenLocal rather than over render.PlainCredit alone because the
 // conversion has to happen at the point the manifest is read: that is what
 // makes the string in the frame, the string in the summary and the string in
 // this accessor one string.

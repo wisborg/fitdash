@@ -97,7 +97,8 @@ type Local struct {
 // keeps one plain string in the field, in Attribution(), in the summary and
 // in the frame: a conversion at the drawing end would leave the same string
 // meaning two different things depending on who asked for it. See
-// plainCredit.
+// render.PlainCredit in osmbase, which both this and osmbase's own render
+// command call so the obligation is discharged one way.
 func OpenLocal(root string, inks MapInks) (*Local, error) {
 	store, err := slice.Open(root)
 	if err != nil {
@@ -114,9 +115,9 @@ func OpenLocal(root string, inks MapInks) (*Local, error) {
 	// The refusal is tested against the CONVERTED string rather than the raw
 	// one, because what the frame can carry is what matters: a manifest whose
 	// attribution is whitespace credits nobody however it was spelled.
-	// plainCredit keeps anything it cannot make sense of, so this is empty
+	// PlainCredit keeps anything it cannot make sense of, so this is empty
 	// only when there was nothing there.
-	credit := plainCredit(m.Attribution)
+	credit := osm.PlainCredit(m.Attribution)
 	if credit == "" {
 		return nil, fmt.Errorf("tilemap: the map data in %s records no attribution, so a render from it could not credit anyone; a rendered map is a Produced Work under its data licence, and fitdash will not draw one it cannot credit", root)
 	}
