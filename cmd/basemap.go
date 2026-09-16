@@ -13,6 +13,7 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/osmbase/acquire"
+	osm "github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
 	"github.com/wisborg/output"
 	"github.com/wisborg/output/progress"
@@ -139,6 +140,14 @@ type fetchReport struct {
 	Transfer  int64    `json:"download_bytes"`
 	Requests  int      `json:"requests"`
 
+	// Credit is who the map data is owed to, in the plain text a frame can
+	// carry rather than the markup the archive wrote. It is recorded here,
+	// and printed, because this command is the moment the obligation is
+	// taken on: from here the data is on the user's disk and every render
+	// from it carries this line. A fetch that never said whose data it was
+	// downloading leaves the user to discover the credit in their own video.
+	Credit string `json:"credit,omitempty"`
+
 	// Fetched is nil when nothing was downloaded, which covers three
 	// different endings -- a dry run, an area already held, and a prompt
 	// answered no -- so Outcome says which.
@@ -205,7 +214,7 @@ func runBasemapFetch(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("basemap fetch: %w", err)
 	}
-	rep := newFetchReport(root, archive, sources, area, plan)
+	rep := newFetchReport(root, archive, credit, sources, area, plan)
 
 	writeFetchPlan(errw, rep, plan)
 	switch {
@@ -515,6 +524,9 @@ func writeFetchResult(w io.Writer, rep fetchReport, res acquire.Result, p *acqui
 	if n, err := store.Bytes(); err == nil {
 		fmt.Fprintf(w, "%-12s %s at %s\n", "store", humanBytes(n), root)
 	}
+	if rep.Credit != "" {
+		fmt.Fprintf(w, "%-12s %s\n", "credit", rep.Credit)
+	}
 	fmt.Fprintf(w, "\nNow: fitdash ACTIVITY.fit --basemap %s", tilemap.LocalProvider)
 	if basemapFetchOpts.store != "" {
 		fmt.Fprintf(w, " --basemap-store %s", root)
@@ -552,10 +564,10 @@ func writeFetchReport(w io.Writer, rep fetchReport, p *acquire.Plan) error {
 
 // newFetchReport assembles the record from the plan, which is where every
 // figure in it comes from -- none of them are this command's arithmetic.
-func newFetchReport(root string, a *tilemap.Archive, sources []activitySource, b slice.Bounds, p *acquire.Plan) fetchReport {
+func newFetchReport(root string, a *tilemap.Archive, credit string, sources []activitySource, b slice.Bounds, p *acquire.Plan) fetchReport {
 	w, h := acquire.ExtentKM(b)
 	rep := fetchReport{
-		Store: root, Archive: a.Name(), Remote: a.Remote(),
+		Store: root, Archive: a.Name(), Remote: a.Remote(), Credit: osm.PlainCredit(credit),
 		Bounds:  bounds{West: b.West, South: b.South, East: b.East, North: b.North},
 		WidthKM: w, HeightKM: h, PadKM: basemapFetchOpts.pad,
 		MinZoom: p.Zoom.Min, MaxZoom: p.Zoom.Max,

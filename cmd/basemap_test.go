@@ -319,6 +319,14 @@ func runFetchErr(t *testing.T, in io.Reader, args ...string) error {
 
 func execFetch(t *testing.T, out io.Writer, in io.Reader, args ...string) error {
 	t.Helper()
+	return execFetchTo(t, out, io.Discard, in, args...)
+}
+
+// execFetchTo is execFetch with the human-readable half kept as well. Most
+// assertions here are about the JSON report on stdout; the few that are about
+// what a person reads need the other stream.
+func execFetchTo(t *testing.T, out, errw io.Writer, in io.Reader, args ...string) error {
+	t.Helper()
 	redirectUserCache(t)
 	defer func(o basemapFetchOptions, f formatFlag) {
 		basemapFetchOpts, format = o, f
@@ -342,7 +350,7 @@ func execFetch(t *testing.T, out io.Writer, in io.Reader, args ...string) error 
 		}
 	})
 	cmd.SetOut(out)
-	cmd.SetErr(io.Discard)
+	cmd.SetErr(errw)
 	if in != nil {
 		cmd.SetIn(in)
 	}
@@ -592,4 +600,51 @@ func TestActivityBounds_AnActivityThatNeverMovedIsRefusedOrPaddedIntoAnArea(t *t
 			}
 		}
 	})
+}
+
+// TestRunBasemapFetch_NamesWhoTheMapDataIsOwedTo is the attribution
+// obligation at the moment it is taken on.
+//
+// Everything OpenStreetMap ships is free to use on one condition: say where
+// it came from. Until now this command read the archive's credit -- early,
+// so an uncreditable archive is refused before the download rather than
+// after -- wrote it into the store's manifest, and never showed it to the
+// person who ran it. That is enough to keep a later render honest, and it
+// leaves the user to discover whose data they downloaded by rendering a video
+// and reading the corner of it.
+//
+// Two things are asserted, and the second is the one with teeth. The credit
+// has to reach the output, AND it has to arrive as the text a person reads
+// rather than the markup the archive wrote: Protomaps writes its attribution
+// as HTML because in a browser the credit is a link, and an anchor tag
+// printed into a terminal report discharges nothing. The fixture's credit is
+// deliberately HTML for exactly that reason.
+func TestRunBasemapFetch_NamesWhoTheMapDataIsOwedTo(t *testing.T) {
+	dir := t.TempDir()
+	fit := writeFetchActivity(t, dir)
+	archive := buildFetchArchive(t, dir)
+	store := filepath.Join(dir, "store")
+
+	var out, errw strings.Builder
+	if err := execFetchTo(t, &out, &errw, nil,
+		"--source", archive, "--store", store, "--max-zoom", "12", fit); err != nil {
+		t.Fatalf("basemap fetch: %v", err)
+	}
+	var rep fetchReport
+	if err := json.Unmarshal([]byte(out.String()), &rep); err != nil {
+		t.Fatalf("decoding the report %q: %v", out.String(), err)
+	}
+
+	const want = "© OpenStreetMap contributors"
+	if rep.Credit != want {
+		t.Errorf("the report credits %q, want %q", rep.Credit, want)
+	}
+	if !strings.Contains(errw.String(), want) {
+		t.Errorf("the fetch output never says whose data was downloaded; got:\n%s", errw.String())
+	}
+	for _, markup := range []string{"<a ", "&copy;", "href="} {
+		if strings.Contains(rep.Credit, markup) || strings.Contains(errw.String(), markup) {
+			t.Errorf("the credit reaches the user as markup (%q), which credits nobody a person can read", markup)
+		}
+	}
 }

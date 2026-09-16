@@ -1208,11 +1208,14 @@ func writeBasemapSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs
 	// entirely from cache sent nothing, and so did a run drawn from a local
 	// store -- and a privacy notice that fires anyway is one a user learns to
 	// skip past, which is the one line here that must not become noise.
-	origin := "served from your cache; nothing was sent this run"
-	if f, ok := in.basemap.(tilemap.Reporter); !ok || f.Fetched() {
-		origin = "the area of this activity was sent to thunderforest.com"
-	}
-	source := tilemap.ThunderforestProvider + " " + renderOpts.basemap
+	//
+	// The two backends are branches of one if/else rather than a default
+	// followed by an override, and deliberately: this sentence is a privacy
+	// statement, and the version of it that said "sent to thunderforest.com"
+	// about a render that opened no socket was previously prevented only by
+	// which assignment came second. A claim of that kind should not rest on
+	// statement order.
+	var source, origin string
 	if l, ok := in.basemap.(*tilemap.Local); ok {
 		source = "drawn here from " + l.Root()
 		origin = "nothing was sent to anybody"
@@ -1221,6 +1224,12 @@ func writeBasemapSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs
 			// and a viewer who did not fetch the whole area has no other way
 			// to tell a hatched gap from a rendering fault.
 			origin = fmt.Sprintf("%.0f%% of the map area is in the store, the rest is hatched; nothing was sent to anybody", c*100)
+		}
+	} else {
+		source = tilemap.ThunderforestProvider + " " + renderOpts.basemap
+		origin = "served from your cache; nothing was sent this run"
+		if f, ok := in.basemap.(tilemap.Reporter); !ok || f.Fetched() {
+			origin = "the area of this activity was sent to thunderforest.com"
 		}
 	}
 	fmt.Fprintf(out, "basemap: %s, dimmed %.0f%% -- %s\n", source, in.basemapDim*100, origin)
