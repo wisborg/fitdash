@@ -124,9 +124,18 @@ func OpenLocal(root string, inks MapInks) (*Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: opening source %s of the local map store: %w", m.ID, err)
 	}
+	// A theme whose inks leave no room for a map is refused here rather than
+	// drawn. There is no degraded picture to fall back to: the collapse puts
+	// every map role on the same colour, which renders as a solid rectangle
+	// indistinguishable from no basemap at all -- while the summary would
+	// still report one as drawn. See MapInks.band.
+	palette, err := inks.localPalette()
+	if err != nil {
+		return nil, fmt.Errorf("tilemap: the theme cannot carry a local basemap: %w", err)
+	}
 	rend, err := osm.New(src, osm.Options{
 		Style:       osm.BasemapStyle(),
-		Palette:     inks.localPalette(),
+		Palette:     palette,
 		Attribution: credit,
 	})
 	if err != nil {

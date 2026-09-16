@@ -209,12 +209,21 @@ func (i MapInks) overlay() osm.Overlay {
 // rather than to two different ones. The cost is that open sea reads as
 // background rather than as water, which is the honest reading of a tile
 // schema in which open sea is the absence of land.
-func (i MapInks) localPalette() osm.Palette {
-	quiet, loud := i.band()
+func (i MapInks) localPalette() (osm.Palette, error) {
+	quiet, loud, light, ok, binding := i.band()
+	if !ok {
+		return osm.Palette{}, fmt.Errorf(
+			"these theme colours leave no room for a map between the background and the inks drawn over it: "+
+				"the background sits at luminance %.4f and %s, the binding ink, allows the map no further "+
+				"than %.4f, which is the wrong side of it. Moving %s further from the background is the fix; "+
+				"it is the overlay colour with the least room between itself and the map beneath it",
+			quiet, binding, loud, binding)
+	}
 	p := osm.Palette{Background: rgba(i.Background), NoData: noDataDark}
-	if quiet > loud {
-		// A light background: the map lies BELOW the overlay inks, and so
-		// does the hatch.
+	if light {
+		// The map lies BELOW the overlay inks, and so does the hatch. Taken
+		// from the branch band() actually used rather than re-derived from
+		// quiet > loud, which is also true of a collapsed dark band.
 		p.NoData = noDataLight
 	}
 	for _, r := range mapRoles {
@@ -232,7 +241,7 @@ func (i MapInks) localPalette() osm.Palette {
 		ink := atChroma(atLuminance(r.anchor, target), maxRoleChroma)
 		r.set(&p, nearestStorable(ink, target, maxRoleChroma))
 	}
-	return p
+	return p, nil
 }
 
 // band is the luminance interval the map's inks may occupy, from the end
@@ -241,30 +250,56 @@ func (i MapInks) localPalette() osm.Palette {
 // The second value may be BELOW the first -- that is the light case, where
 // the map is darker than its background -- and every caller treats the pair
 // as an interpolation rather than as an ordered range for that reason.
-func (i MapInks) band() (quiet, loud float64) {
+// The second return says whether the band is usable at all, and it is not a
+// formality.
+//
+// Both branches can put loud on the wrong side of quiet. Making a dark theme's
+// Dim ink a little dimmer -- #6E6E78 to #4A4A52, one plausible edit -- drives
+// (dimmest+0.05)/3-0.05 negative, so every role is asked for a luminance below
+// black, bisection has nothing to search, and all six mix fully to #000000.
+// The map is then a solid rectangle indistinguishable from no basemap at all,
+// while the summary still says it was drawn. Reproduced: with that one ink
+// changed, the band runs 0.0061 down to -0.0092 and the palette collapses to
+// one colour.
+//
+// Returning ok from the branch that computed it, rather than letting a caller
+// re-derive the polarity from the interval's own ordering, is also what stops
+// the second bug this caused: localPalette picked its hatch from quiet > loud,
+// which is true for BOTH a light theme and a collapsed dark one, so a dark
+// theme with an inverted band got the light hatch as well.
+func (i MapInks) band() (quiet, loud float64, light, ok bool, binding string) {
 	dimmest, brightest := 1.0, 0.0
-	for _, c := range []color.Color{i.Foreground, i.Dim, i.Accent, i.Highlight} {
-		l := luminance(c)
+	dimmestName, brightestName := "", ""
+	for _, c := range []struct {
+		name string
+		c    color.Color
+	}{{"Foreground", i.Foreground}, {"Dim", i.Dim}, {"Accent", i.Accent}, {"Highlight", i.Highlight}} {
+		l := luminance(c.c)
 		if l < dimmest {
-			dimmest = l
+			dimmest, dimmestName = l, c.name
 		}
 		if l > brightest {
-			brightest = l
+			brightest, brightestName = l, c.name
 		}
 	}
 	quiet = luminance(i.Background)
 	if quiet < dimmest {
+		// A dark background: the map lies ABOVE it and below the overlay inks.
 		loud = (dimmest+0.05)/3 - 0.05
 		if ceiling := 4.5*(quiet+0.05) - 0.05; ceiling < loud {
 			loud = ceiling
 		}
+		ok, binding = loud > quiet, dimmestName
 	} else {
+		// A light background: the map lies BELOW it and above the overlay inks.
+		light = true
 		loud = 3*(brightest+0.05) - 0.05
 		if floor := (quiet+0.05)/4.5 - 0.05; floor > loud {
 			loud = floor
 		}
+		ok, binding = loud < quiet, brightestName
 	}
-	return quiet, quiet + mapHeadroom*(loud-quiet)
+	return quiet, quiet + mapHeadroom*(loud-quiet), light, ok, binding
 }
 
 // CheckContrast reports whether the map derived from these inks can carry
@@ -277,7 +312,11 @@ func (i MapInks) band() (quiet, loud float64) {
 // fails in patterns -- every map ink against one overlay colour, usually --
 // and being told one at a time turns reading the report into guesswork.
 func (i MapInks) CheckContrast() error {
-	if err := i.localPalette().CheckContrast(i.overlay()); err != nil {
+	p, err := i.localPalette()
+	if err != nil {
+		return fmt.Errorf("tilemap: %w", err)
+	}
+	if err := p.CheckContrast(i.overlay()); err != nil {
 		return fmt.Errorf("tilemap: the map these colours derive cannot carry them: %w", err)
 	}
 	return nil

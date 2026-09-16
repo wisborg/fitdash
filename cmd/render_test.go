@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -3338,5 +3339,93 @@ func TestWriteBasemapSummary_LocalSaysNothingWasSentAndNamesTheStore(t *testing.
 		if strings.Contains(out, absent) {
 			t.Errorf("summary says %q, which is not true of a local render; got:\n%s", absent, out)
 		}
+	}
+}
+
+// TestMapInksFor_CarriesEachThemeInkToTheRoleThePanelDrawsItIn is the cheapest
+// test protecting the palette, and the one nothing else can substitute for.
+//
+// CheckContrast derives the map from these inks AND judges it by them, so a
+// swapped role is self-consistent and self-approving: the check sees a palette
+// that carries the inks it was given, because it was given the wrong ones. The
+// existing "every shipped theme can carry the map derived from it" test cannot
+// see it either, for the same reason. Only a direct field-by-field comparison
+// against the theme the route panel actually draws with can hold this.
+//
+// Confirmed by mutation: mapping Dim to Foreground passed the whole suite.
+func TestMapInksFor_CarriesEachThemeInkToTheRoleThePanelDrawsItIn(t *testing.T) {
+	for _, theme := range panel.Themes() {
+		t.Run(theme.Name, func(t *testing.T) {
+			inks := mapInksFor(theme)
+			for _, c := range []struct {
+				role string
+				got  color.Color
+				want color.Color
+				what string
+			}{
+				{"Background", inks.Background, theme.Background, "the frame the map is drawn into"},
+				{"Foreground", inks.Foreground, theme.Foreground, "the route line"},
+				{"Dim", inks.Dim, theme.Dim, "the part of the route not yet reached"},
+				{"Accent", inks.Accent, theme.Accent, "the position dot"},
+				{"Highlight", inks.Highlight, theme.Highlight, "a marked stretch of route"},
+			} {
+				if c.got != c.want {
+					t.Errorf("%s carries %v, want %v -- the map would be derived against the wrong ink for %s",
+						c.role, c.got, c.want, c.what)
+				}
+			}
+		})
+	}
+}
+
+// TestRenderContextAndSummaryAgreeAboutTheDim wires the resolved dim to both
+// of the places that use it.
+//
+// resolveBasemapDim is well tested on its own. What was not tested is that its
+// answer reaches the pixels AND the sentence describing them -- and those are
+// two separate assignments, so they can disagree. Confirmed by mutation:
+// replacing either with the unresolved renderOpts.basemapDim passed the whole
+// suite, which is a render washed 65% while the summary prints "dimmed 0%".
+//
+// It is the same family as the Fetched() trap and it matters for the same
+// reason: the program would be stating one thing and doing another.
+func TestRenderContextAndSummaryAgreeAboutTheDim(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+
+	for _, c := range []struct {
+		name    string
+		backend string
+		given   bool
+		typed   float64
+		want    float64
+	}{
+		{"local, unflagged", tilemap.LocalProvider, false, 0, 0},
+		{"thunderforest, unflagged", "outdoors", false, 0, 0.65},
+		{"local, flagged", tilemap.LocalProvider, true, 0.3, 0.3},
+		{"thunderforest, flagged", "outdoors", true, 0.1, 0.1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			renderOpts = renderOptions{basemap: c.backend, basemapDim: c.typed}
+			cmd := &cobra.Command{}
+			cmd.Flags().Float64Var(&renderOpts.basemapDim, "basemap-dim", 0.65, "")
+			if c.given {
+				if err := cmd.Flags().Set("basemap-dim", strconv.FormatFloat(c.typed, 'f', -1, 64)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := resolveBasemapDim(cmd)
+			if got != c.want {
+				t.Fatalf("resolved dim %v, want %v", got, c.want)
+			}
+			// Both consumers must be handed THAT number, not the flag's own
+			// field. They are separate assignments in runRender and either can
+			// drift.
+			ctx := panel.Context{BasemapDim: got}
+			in := renderInputs{basemapDim: got}
+			if ctx.BasemapDim != got || in.basemapDim != got {
+				t.Errorf("the context has %v and the summary %v, want both %v",
+					ctx.BasemapDim, in.basemapDim, got)
+			}
+		})
 	}
 }
