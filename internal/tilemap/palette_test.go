@@ -182,42 +182,69 @@ func TestMapInks_EveryDerivedInkIsBoundedInChromaSoTheMapReadsAsContext(t *testi
 	}
 }
 
-// TestAtChroma_DesaturatingLeavesTheInkWhereTheBandPutIt is the invariant
-// that lets the cap be applied at all. Every contrast guarantee in this file
-// is a statement about LUMINANCE, computed before the chroma bound is
-// applied, so a desaturation that moved an ink even slightly out of the band
-// would be a check that passed for a colour nobody draws.
+// TestAtChroma_TheSTOREDInkIsWhatStaysInTheBand is the invariant that lets
+// the chroma cap be applied at all, measured at both stages because only one
+// of them actually holds it.
 //
-// It holds because the mix runs in linear light toward a grey of the ink's
-// own luminance, and relative luminance is a weighted sum of the linear
-// channels: any convex combination of two colours with the same luminance has
-// that luminance exactly. The only error left is the eight-bit rounding at
-// the end, which is worth about half a channel step -- 0.0004 in luminance
-// near black, where the sRGB curve is shallowest, and about 0.004 near white,
-// where it is steepest. Those are the tolerances below and they are the same
-// two figures the band test above derives.
+// Every contrast guarantee in this file is a statement about LUMINANCE,
+// computed before the chroma bound is applied, so a desaturation that moved
+// an ink out of its band would leave a check that passed for a colour nobody
+// draws.
 //
-// The target luminances are the two bands' loud ends, which is where the cap
-// bites hardest: 0.018512 for the dark inks and 0.704456 for the light ones.
-func TestAtChroma_DesaturatingLeavesTheInkWhereTheBandPutIt(t *testing.T) {
+// The reasoning used to be that this follows from the mix alone: it runs in
+// linear light toward a grey of the ink's own luminance, relative luminance
+// is a weighted sum of the linear channels, and any convex combination of two
+// colours with the same luminance has that luminance exactly -- leaving only
+// eight-bit rounding, worth about 0.0004 near black where the sRGB curve is
+// shallowest and 0.004 near white where it is steepest.
+//
+// That is wrong, and the earlier version of this test could not see it was
+// wrong: it measured the ink AFTER nearestStorable, which searches the
+// neighbouring channel values for a better luminance and so repairs exactly
+// the drift being claimed not to exist. Measured before that repair, the
+// desaturation alone misses by up to 0.0055 at the light band -- above the
+// 0.004 the comment attributed to rounding. The mix is exact in real
+// arithmetic; what breaks it is that atLuminance and atChroma each quantise
+// to eight bits, and the second one quantises a value the first already
+// moved.
+//
+// So the property is about the composed pipeline, and it is the composed
+// pipeline that produces the ink a palette stores and a contrast check
+// judges. Both stages are asserted here: the loose bound on the bare
+// desaturation records what it really does, and the tight bound on the stored
+// ink is the one the guarantees rest on. Deleting the repair fails the
+// second, which is the point of measuring them apart.
+//
+// The target luminances are the two bands' loud ends, where the cap bites
+// hardest: 0.018512 for the dark inks and 0.704456 for the light ones.
+func TestAtChroma_TheStoredInkIsWhatStaysInTheBand(t *testing.T) {
 	for _, c := range []struct {
-		name      string
-		target    float64
-		tolerance float64
+		name   string
+		target float64
+		// bare is what the desaturation alone manages, stored what survives
+		// the search for a better neighbouring colour. Both have headroom
+		// over the measured worst case; neither is the measurement itself,
+		// which would make any change to the rounding a test failure.
+		bare, stored float64
 	}{
-		{"dark band", 0.018512, 0.0006},
-		{"light band", 0.704456, 0.004},
+		{"dark band", 0.018512, 0.0008, 0.0006},
+		{"light band", 0.704456, 0.008, 0.004},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for _, r := range mapRoles {
-				ink := nearestStorable(
-					atChroma(atLuminance(r.anchor, c.target), maxRoleChroma), c.target, maxRoleChroma)
+				bare := atChroma(atLuminance(r.anchor, c.target), maxRoleChroma)
+				if got := math.Abs(luminance(bare) - c.target); got > c.bare {
+					t.Errorf("%s: desaturating moved the ink %.6f from its band, further than the %.4f this stage is expected to drift",
+						r.name, got, c.bare)
+				}
+
+				ink := nearestStorable(bare, c.target, maxRoleChroma)
 				if got := chroma(ink); got > maxRoleChroma {
 					t.Errorf("%s: chroma %.2f after capping at %.1f", r.name, got, maxRoleChroma)
 				}
-				if got := luminance(ink); math.Abs(got-c.target) > c.tolerance {
-					t.Errorf("%s: the derived ink sits at luminance %.6f, want %.6f (+/- %.4f)",
-						r.name, got, c.target, c.tolerance)
+				if got := math.Abs(luminance(ink) - c.target); got > c.stored {
+					t.Errorf("%s: the stored ink sits %.6f from luminance %.6f, outside the %.4f every contrast guarantee here assumes",
+						r.name, got, c.target, c.stored)
 				}
 			}
 		})
