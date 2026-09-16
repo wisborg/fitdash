@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/mvt"
 	"github.com/wisborg/osmbase/osmbasetest"
 	osm "github.com/wisborg/osmbase/render"
@@ -289,5 +290,133 @@ func TestLocal_AnHTMLAttributionBecomesTextTheFrameCanCarry(t *testing.T) {
 	}
 	if strings.ContainsAny(p.Attribution(), "<>") {
 		t.Errorf("Attribution() still carries markup: %q", p.Attribution())
+	}
+}
+
+// oneCellFixtureStore builds a store holding map data for exactly ONE cell,
+// and returns the root together with that cell's own bounds.
+//
+// Exactly one, rather than the handful localFixtureStore writes, because the
+// property under test is what happens at the EDGE of what a store holds, and
+// an edge is only reachable if the test knows where it is. The cell's bounds
+// come back from the store's own geometry rather than being written down
+// here: a cell is a tile at the store's cell zoom, so its extent depends on a
+// zoom this test does not choose and should not assume.
+func oneCellFixtureStore(t *testing.T, lat, lon float64) (root string, cell slice.Bounds) {
+	t.Helper()
+	root = filepath.Join(t.TempDir(), "store")
+
+	tile, err := osmbasetest.BuildTile(osmbasetest.TileSpec{Layers: []osmbasetest.LayerSpec{{
+		Name: "earth",
+		Features: []osmbasetest.FeatureSpec{{
+			Type: mvt.GeomPolygon,
+			Geometry: mvt.Geometry{Polygons: []mvt.Polygon{{
+				Exterior: mvt.Ring{{X: 0, Y: 0}, {X: 4096, Y: 0}, {X: 4096, Y: 4096}, {X: 0, Y: 4096}},
+			}}},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("building the fixture tile: %v", err)
+	}
+	store, err := slice.Create(root, slice.Config{})
+	if err != nil {
+		t.Fatalf("creating the fixture store: %v", err)
+	}
+	src, err := store.AddSource(slice.SourceDesc{
+		Source:          "synthetic.pmtiles",
+		Build:           "fixture",
+		Schema:          "protomaps/basemap v4",
+		Attribution:     fixtureCredit,
+		TileType:        "mvt",
+		TileCompression: slice.CompressionNone,
+		SourceZoom:      slice.ZoomRange{Min: 0, Max: 15},
+	})
+	if err != nil {
+		t.Fatalf("adding the fixture source: %v", err)
+	}
+	cellZoom := store.CellZoom()
+	cells, err := store.CellsFor(slice.Bounds{West: lon, South: lat, East: lon, North: lat})
+	if err != nil {
+		t.Fatalf("finding the fixture cell: %v", err)
+	}
+	if len(cells) != 1 {
+		t.Fatalf("a degenerate bounds covers %d cells, want exactly 1", len(cells))
+	}
+	if _, err := src.Fill(context.Background(), oneTileArchive{tile}, cells[0],
+		slice.ZoomRange{Min: cellZoom, Max: cellZoom}); err != nil {
+		t.Fatalf("filling cell %s: %v", cells[0], err)
+	}
+	w, s, e, n, err := mercator.TileBounds(cellZoom, cells[0].X, cells[0].Y)
+	if err != nil {
+		t.Fatalf("TileBounds for cell %s: %v", cells[0], err)
+	}
+	return root, slice.Bounds{West: w, South: s, East: e, North: n}
+}
+
+// TestLocal_CoverageKeepsTheWORSTViewDrawnRatherThanTheLatestOrTheBest is
+// about a number the user reads and cannot check.
+//
+// The summary prints one coverage figure for a whole render, and the render
+// draws hundreds of views: the route panel asks for a new one as the map
+// pans. Those views differ -- the middle of a route can be fully held while
+// its first kilometre runs off the edge of what was fetched -- so a single
+// figure has to choose, and the only honest choice is the worst. "94% of the
+// map area is in the store" printed after a render whose opening frames were
+// three-quarters hatched is a sentence that tells a user their store was
+// nearly complete while they are looking at the hole.
+//
+// Both orders are asserted, and that is the point rather than thoroughness
+// for its own sake. A single-order test cannot tell "keeps the minimum" from
+// "keeps the first" or "keeps the last": drawing worst-then-best passes under
+// min AND under first, drawing best-then-worst passes under min AND under
+// last. Only the pair excludes everything but the minimum.
+func TestLocal_CoverageKeepsTheWORSTViewDrawnRatherThanTheLatestOrTheBest(t *testing.T) {
+	root, cell := oneCellFixtureStore(t, fixtureLat, fixtureLon)
+
+	// Wholly inside the one cell the store holds: every tile this needs is on
+	// disk, so it is the BEST view available from this fixture.
+	inset := (cell.East - cell.West) / 4
+	held := View{
+		West: cell.West + inset, East: cell.East - inset,
+		South: cell.South + inset, North: cell.North - inset,
+		Width: 480, Height: 320,
+	}
+	// Shifted east so that half of it lies over the cell the store holds and
+	// half over the neighbour it does not. Partly held, so it draws -- with
+	// the missing half hatched -- rather than failing.
+	straddling := View{
+		West: cell.West + 2*inset, East: cell.East + 2*inset,
+		South: cell.South + inset, North: cell.North - inset,
+		Width: 480, Height: 320,
+	}
+
+	for _, c := range []struct {
+		name  string
+		views []View
+	}{
+		{"the worst view drawn first", []View{straddling, held}},
+		{"the worst view drawn last", []View{held, straddling}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, err := OpenLocal(root, darkInks())
+			if err != nil {
+				t.Fatalf("OpenLocal: %v", err)
+			}
+			var worst float64 = 1
+			for i, v := range c.views {
+				if _, err := p.Image(context.Background(), v); err != nil {
+					t.Fatalf("Image %d: %v", i, err)
+				}
+				if got := p.Coverage(); got < worst {
+					worst = got
+				}
+			}
+			if worst >= 1 {
+				t.Fatal("precondition: neither view was partially covered, so this test proves nothing about which one is kept")
+			}
+			if got := p.Coverage(); got != worst {
+				t.Errorf("Coverage() = %.3f after drawing both views, want the worst of them, %.3f", got, worst)
+			}
+		})
 	}
 }

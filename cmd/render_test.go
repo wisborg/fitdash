@@ -21,6 +21,7 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/fittest"
+	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/mvt"
 	"github.com/wisborg/osmbase/osmbasetest"
 	"github.com/wisborg/osmbase/slice"
@@ -3093,6 +3094,17 @@ func TestWriteBasemapSummary_SaysWhatActuallyHappened(t *testing.T) {
 // render -- and nothing here comes from a real recording.
 func localBasemapFixtureStore(t *testing.T) string {
 	t.Helper()
+	// The ground the fittest course is generated over, so a render from this
+	// store is fully covered.
+	return localBasemapFixtureStoreOver(t, slice.Bounds{West: 98.75, South: 12.33, East: 98.78, North: 12.36})
+}
+
+// localBasemapFixtureStoreOver is localBasemapFixtureStore over ground the
+// caller names, for the one case the default cannot reach: a store that opens
+// cleanly, names somebody to credit, and holds nothing whatever for the route
+// being rendered.
+func localBasemapFixtureStoreOver(t *testing.T, over slice.Bounds) string {
+	t.Helper()
 	root := filepath.Join(t.TempDir(), "osmbase")
 
 	tile, err := osmbasetest.BuildTile(osmbasetest.TileSpec{Layers: []osmbasetest.LayerSpec{{
@@ -3123,7 +3135,7 @@ func localBasemapFixtureStore(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("adding the fixture source: %v", err)
 	}
-	cells, err := store.CellsFor(slice.Bounds{West: 98.75, South: 12.33, East: 98.78, North: 12.36})
+	cells, err := store.CellsFor(over)
 	if err != nil {
 		t.Fatalf("finding the fixture cells: %v", err)
 	}
@@ -3427,5 +3439,148 @@ func TestRenderContextAndSummaryAgreeAboutTheDim(t *testing.T) {
 					ctx.BasemapDim, in.basemapDim, got)
 			}
 		})
+	}
+}
+
+// straddlingView is a view half over ground the store at root holds and half
+// over ground it does not, at the size a route panel would ask for.
+//
+// Derived from the store's own cell geometry rather than from coordinates
+// written down here. A cell is a tile at the store's cell zoom, so where its
+// edge falls is a fact about a zoom this test does not choose; a hardcoded
+// bounds that straddles today would quietly stop straddling -- and the test
+// would quietly stop testing anything -- if that zoom ever changed.
+func straddlingView(t *testing.T, root string) tilemap.View {
+	t.Helper()
+	store, err := slice.Open(root)
+	if err != nil {
+		t.Fatalf("opening the fixture store: %v", err)
+	}
+	cells, err := store.CellsFor(slice.Bounds{West: 98.76, South: 12.34, East: 98.76, North: 12.34})
+	if err != nil {
+		t.Fatalf("finding the fixture cell: %v", err)
+	}
+	if len(cells) != 1 {
+		t.Fatalf("a degenerate bounds covers %d cells, want exactly 1", len(cells))
+	}
+	w, s, e, n, err := mercator.TileBounds(store.CellZoom(), cells[0].X, cells[0].Y)
+	if err != nil {
+		t.Fatalf("TileBounds: %v", err)
+	}
+	inset := (e - w) / 4
+	return tilemap.View{
+		West: w + 2*inset, East: e + 2*inset,
+		South: s + inset, North: n - inset,
+		Width: 480, Height: 320,
+	}
+}
+
+// TestWriteBasemapSummary_LocalSaysHowMuchOfTheAreaTheStoreActuallyHeld
+// covers the one line in this summary that nothing reached before.
+//
+// A local render that is only PARTLY covered is not a failure: the map draws,
+// with the gaps hatched, and "drew" is true, so every existing local test --
+// all of which use a store holding the whole route -- goes down the same
+// branch and prints the same unconditional "nothing was sent to anybody". The
+// partial wording sat behind a condition no test made true, which is the
+// state a line is in just before somebody deletes it as dead.
+//
+// It matters because hatching is ambiguous in a way words are not. A viewer
+// looking at a hatched corner has no way to tell "you did not fetch this
+// area" from "the renderer broke", and those call for opposite responses:
+// fetch a wider area, or report a bug.
+//
+// What this pins is that the summary asks the provider and prints what it
+// says. That the provider's answer is the worst view of the render rather
+// than a convenient one is a separate property, held by
+// TestLocal_CoverageKeepsTheWORSTViewDrawnRatherThanTheLatestOrTheBest in
+// internal/tilemap. Neither test is worth much without the other: this one
+// would pass over a provider that reported the best view, and that one would
+// pass even if this line never printed.
+func TestWriteBasemapSummary_LocalSaysHowMuchOfTheAreaTheStoreActuallyHeld(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	root := localBasemapFixtureStore(t)
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()))
+	if err != nil {
+		t.Fatalf("OpenLocal: %v", err)
+	}
+	renderOpts = renderOptions{basemap: tilemap.LocalProvider, basemapDim: 0}
+	r, in := basemapSummaryRender(t, provider)
+
+	// The render above drew a route the store holds in full. This is the
+	// frame that runs off the edge of what was fetched -- the reason the
+	// figure is not 100% -- and it is drawn through the same provider the
+	// summary is about to ask.
+	if _, err := provider.Image(context.Background(), straddlingView(t, root)); err != nil {
+		t.Fatalf("drawing a view the store only partly holds: %v", err)
+	}
+	if c := provider.Coverage(); c >= 1 {
+		t.Fatalf("precondition: coverage is %v, so the view did not straddle the edge of the store and this test proves nothing", c)
+	}
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetErr(&buf)
+	writeBasemapSummary(cmd, r, in)
+
+	out := buf.String()
+	for _, want := range []string{"50% of the map area is in the store", "the rest is hatched", "nothing was sent to anybody"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary is missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestWriteBasemapSummary_ALocalFailureDoesNotSendTheUserToLookAtTheirNetwork
+// is about sending somebody to debug the wrong thing.
+//
+// When no map is drawn the summary explains why, and the default explanation
+// -- "imagery could not be fetched" -- is true of the Thunderforest backend
+// and false of this one. The local backend opens no socket. Told a fetch
+// failed, a user checks their connection, their key and the service's status
+// page, and every one of those is fine; what actually happened is that they
+// fetched a smaller area than they rendered, and the fix is a fetch command
+// they were just steered away from.
+//
+// The store here is deliberately a WORKING one: it opens, it names somebody
+// to credit, it holds real tiles. It simply holds them somewhere else. That
+// is the realistic shape of this failure -- a store filled for last week's
+// route -- and it is the shape that makes the wrong sentence plausible enough
+// to be believed.
+//
+// Confirmed by mutation: deleting the backend check and letting the default
+// stand passed the whole suite before this existed.
+func TestWriteBasemapSummary_ALocalFailureDoesNotSendTheUserToLookAtTheirNetwork(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+
+	// Far from the ground the fixture course is generated over, and not
+	// anywhere: a synthetic bounds, moved in longitude only so it stays at a
+	// latitude the projection treats the same way.
+	elsewhere := slice.Bounds{West: 68.75, South: 12.33, East: 68.78, North: 12.36}
+	root := localBasemapFixtureStoreOver(t, elsewhere)
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()))
+	if err != nil {
+		t.Fatalf("OpenLocal: %v", err)
+	}
+	renderOpts = renderOptions{basemap: tilemap.LocalProvider, basemapDim: 0}
+
+	r, in := basemapSummaryRender(t, provider)
+	if drew, _ := r.Basemap(); drew {
+		t.Fatal("precondition: the panel drew a map from a store holding nothing for this route, so this test proves nothing")
+	}
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetErr(&buf)
+	writeBasemapSummary(cmd, r, in)
+
+	out := buf.String()
+	if !strings.Contains(out, "could not be drawn from your store") {
+		t.Errorf("summary does not say the store is what came up short; got:\n%s", out)
+	}
+	for _, absent := range []string{"fetched", "thunderforest", "sent to"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("summary says %q, which describes a network the local backend never touches; got:\n%s", absent, out)
+		}
 	}
 }
