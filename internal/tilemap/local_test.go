@@ -2,11 +2,14 @@ package tilemap
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"image/color"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/mvt"
@@ -418,5 +421,218 @@ func TestLocal_CoverageKeepsTheWORSTViewDrawnRatherThanTheLatestOrTheBest(t *tes
 				t.Errorf("Coverage() = %.3f after drawing both views, want the worst of them, %.3f", got, worst)
 			}
 		})
+	}
+}
+
+// TestOpenLocal_RefusesAStoreWhoseCreditIsNothingButWhitespace is the ODbL
+// refusal at the only input that can tell the two implementations of it
+// apart.
+//
+// The refusal must be judged on the credit a FRAME can carry, not on the
+// bytes the manifest happens to hold, and the existing empty-string test
+// cannot distinguish those: "" is empty either way. A manifest whose
+// attribution is a tab and a newline is not empty as a string, converts to
+// nothing a viewer could read, and is exactly what a store built by a script
+// that filled the field from an absent value looks like. Checking the raw
+// string accepts it and draws a map crediting nobody -- an obligation
+// breached in the one place nothing in the output would show it.
+//
+// Confirmed by mutation: refusing on m.Attribution == "" rather than on the
+// converted credit passed the whole suite before this existed.
+func TestOpenLocal_RefusesAStoreWhoseCreditIsNothingButWhitespace(t *testing.T) {
+	const blank = " \t\n  "
+	root := localFixtureStore(t, fixtureLat, fixtureLon, blank)
+	_, err := OpenLocal(root, darkInks())
+	if err == nil {
+		t.Fatal("a store whose attribution is only whitespace was accepted; the render would credit nobody")
+	}
+	if !strings.Contains(err.Error(), "attribution") {
+		t.Errorf("error does not say what is missing: %v", err)
+	}
+}
+
+// twoSourceStore builds a store holding map data from TWO sources and returns
+// its root along with the ID of the one written most recently.
+//
+// The timestamps are rewritten on disk rather than taken from the clock,
+// because what is under test is a comparison and a clock cannot be asked for
+// two readings a known distance apart. Rewriting the manifest is fair game
+// here: it is a documented JSON file that this package already reads back
+// through the same accessor.
+//
+// newestSortsFirst chooses WHICH of the two is made the newer one. A source's
+// ID is a hash of its name, so the caller cannot pick the order directly; the
+// arrangement is made by looking at the IDs after the fact and assigning the
+// later timestamp to the end the caller asked for.
+func twoSourceStore(t *testing.T, newestSortsFirst bool) (root, newest string) {
+	t.Helper()
+	root = localFixtureStore(t, fixtureLat, fixtureLon, fixtureCredit)
+
+	tile, err := osmbasetest.BuildTile(osmbasetest.TileSpec{Layers: []osmbasetest.LayerSpec{{
+		Name: "earth",
+		Features: []osmbasetest.FeatureSpec{{
+			Type: mvt.GeomPolygon,
+			Geometry: mvt.Geometry{Polygons: []mvt.Polygon{{
+				Exterior: mvt.Ring{{X: 0, Y: 0}, {X: 4096, Y: 0}, {X: 4096, Y: 4096}, {X: 0, Y: 4096}},
+			}}},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("building the fixture tile: %v", err)
+	}
+	store, err := slice.Open(root)
+	if err != nil {
+		t.Fatalf("opening the fixture store: %v", err)
+	}
+	second, err := store.AddSource(slice.SourceDesc{
+		Source:          "second.pmtiles",
+		Build:           "fixture",
+		Schema:          "protomaps/basemap v4",
+		Attribution:     fixtureCredit,
+		TileType:        "mvt",
+		TileCompression: slice.CompressionNone,
+		SourceZoom:      slice.ZoomRange{Min: 0, Max: 15},
+	})
+	if err != nil {
+		t.Fatalf("adding the second source: %v", err)
+	}
+	cells, err := store.CellsFor(slice.Bounds{
+		West: fixtureLon - 0.01, South: fixtureLat - 0.01,
+		East: fixtureLon + 0.01, North: fixtureLat + 0.01,
+	})
+	if err != nil {
+		t.Fatalf("finding the fixture cells: %v", err)
+	}
+	for _, c := range cells {
+		z := slice.ZoomRange{Min: store.CellZoom(), Max: store.CellZoom()}
+		if _, err := second.Fill(context.Background(), oneTileArchive{tile}, c, z); err != nil {
+			t.Fatalf("filling cell %s of the second source: %v", c, err)
+		}
+	}
+
+	sources, err := store.Sources()
+	if err != nil {
+		t.Fatalf("Sources: %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("store holds %d sources, want 2", len(sources))
+	}
+	// Sources comes back sorted by ID, so sources[0] is the end that sorts
+	// first and sources[1] the end that sorts last.
+	older, newer := sources[1], sources[0]
+	if !newestSortsFirst {
+		older, newer = sources[0], sources[1]
+	}
+	base := time.Date(2020, 3, 4, 5, 6, 7, 0, time.UTC)
+	setUpdated(t, root, older.ID, base)
+	setUpdated(t, root, newer.ID, base.Add(time.Hour))
+	return root, newer.ID
+}
+
+// setUpdated rewrites one source manifest's updated timestamp in place,
+// leaving every other field as it was written.
+func setUpdated(t *testing.T, root, id string, at time.Time) {
+	t.Helper()
+	path := filepath.Join(root, id, "manifest.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	m["updated"] = at.Format(time.RFC3339Nano)
+	b, err = json.Marshal(m)
+	if err != nil {
+		t.Fatalf("encoding %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+}
+
+// TestNewestSource_PicksTheNewestWhicheverWayTheIDsSort is about drawing
+// last week's map over this week's route.
+//
+// A store can hold more than one source -- a second fetch from a different
+// build writes a second one beside the first -- and the render has to choose.
+// Choosing the oldest is not a crash and not a blank frame: it is a complete,
+// convincing map of the right place, built from data that has since been
+// replaced, and nothing on screen says so.
+//
+// Both arrangements are asserted because a source's ID is a hash and the
+// comparison is not the only thing that could decide the answer. With the
+// newest sorting first, "picks the oldest" and "picks whichever sorts last"
+// both fail; with it sorting last, "picks the oldest" and "picks whichever
+// sorts first" both fail. One arrangement alone leaves one of those alive.
+//
+// Confirmed by mutation: reversing the comparison passed the whole suite.
+func TestNewestSource_PicksTheNewestWhicheverWayTheIDsSort(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		first bool
+	}{
+		{"the newest source sorts first by ID", true},
+		{"the newest source sorts last by ID", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root, want := twoSourceStore(t, c.first)
+			store, err := slice.Open(root)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			m, err := newestSource(store, root)
+			if err != nil {
+				t.Fatalf("newestSource: %v", err)
+			}
+			if m.ID != want {
+				t.Errorf("newestSource chose %s, want the most recently written %s", m.ID, want)
+			}
+		})
+	}
+}
+
+// TestNewestSource_ChoosesTheSameWayEveryRunWhenTheTimestampsTie pins the
+// half of the choice the timestamps cannot make.
+//
+// Two sources written in the same second are a real outcome of one scripted
+// fetch, and at that point the comparison decides nothing. What must NOT
+// happen is that the answer depends on the order the filesystem handed the
+// directories back: a render that picks one source today and the other
+// tomorrow, from an unchanged store, is a bug nobody can reproduce on
+// purpose. The tie falls to the lower ID, which is stable because Sources
+// returns them sorted -- an upstream guarantee this asserts rather than
+// assumes, since it is load-bearing here and nothing local would catch its
+// removal.
+func TestNewestSource_ChoosesTheSameWayEveryRunWhenTheTimestampsTie(t *testing.T) {
+	root, _ := twoSourceStore(t, true)
+	store, err := slice.Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	sources, err := store.Sources()
+	if err != nil {
+		t.Fatalf("Sources: %v", err)
+	}
+	if !(sources[0].ID < sources[1].ID) {
+		t.Fatalf("Sources returned %s before %s: the tie-break below rests on this order", sources[0].ID, sources[1].ID)
+	}
+	tied := time.Date(2021, 7, 8, 9, 10, 11, 0, time.UTC)
+	for _, m := range sources {
+		setUpdated(t, root, m.ID, tied)
+	}
+	for i := range 5 {
+		fresh, err := slice.Open(root)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		m, err := newestSource(fresh, root)
+		if err != nil {
+			t.Fatalf("newestSource: %v", err)
+		}
+		if m.ID != sources[0].ID {
+			t.Fatalf("call %d chose %s, want the lower ID %s: a tie has to resolve the same way every run", i, m.ID, sources[0].ID)
+		}
 	}
 }
