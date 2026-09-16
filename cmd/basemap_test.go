@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/wisborg/output"
 
 	"github.com/wisborg/fitdash/internal/panel"
+	"github.com/wisborg/fitdash/internal/route"
 	"github.com/wisborg/fitdash/internal/tilemap"
 )
 
@@ -465,4 +467,129 @@ func redirectUserCache(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+}
+
+// TestActivityBounds_ReadsEveryFIXRatherThanTheThinnedOutline is the
+// difference between the area a route occupies and the area its DRAWING
+// occupies, and they are not the same area.
+//
+// route.FromTrack exists to thin a track down to what a few hundred pixels
+// can show, and it thins by uniform stride: whether a fix survives depends on
+// its index and nothing else. A detour that reaches two kilometres further
+// east than anything around it is one fix, it sits at an arbitrary index, and
+// the outline drops it without visible harm -- at 500 points across a screen
+// it was never going to be its own pixel.
+//
+// A fetch reading that thinned list would fetch a box that stops short of
+// where the activity actually went, and the failure surfaces much later and
+// somewhere else: a render whose route runs off the edge of the map at one
+// end, with a fetch that reported success. So this asks for every sample, and
+// the test is built so the outline demonstrably does not contain the extreme
+// it is checking for.
+//
+// The dropped index is computed from FromTrack itself rather than assumed.
+// The stride formula is not this package's to know, and an index picked by
+// hand would stop being a dropped one -- silently, leaving a passing test
+// that proves nothing -- if it ever changed.
+func TestActivityBounds_ReadsEveryFixRatherThanTheThinnedOutline(t *testing.T) {
+	start := time.Date(2026, 3, 1, 6, 0, 0, 0, time.UTC)
+	const count = 3000
+	track := &fitactivity.Track{}
+	for i := range count {
+		track.Samples = append(track.Samples, fitactivity.Sample{
+			Time:   start.Add(time.Duration(i) * time.Second),
+			HasGPS: true,
+			Lat:    fetchLat + float64(i)*0.00001,
+			Lon:    fetchLon + float64(i)*0.00001,
+		})
+	}
+
+	// Which sample indices the outline keeps, identified by timestamp because
+	// each sample has its own and thinning carries it through.
+	kept := map[time.Time]bool{}
+	for _, p := range route.FromTrack(track, route.DefaultMaxPoints) {
+		kept[p.Time] = true
+	}
+	detour := -1
+	for i, s := range track.Samples {
+		if !kept[s.Time] {
+			detour = i
+			break
+		}
+	}
+	if detour < 0 {
+		t.Fatalf("the outline kept all %d fixes, so nothing here is dropped and this test proves nothing", count)
+	}
+
+	// The one fix that reached furthest east, at an index the outline drops.
+	east := fetchLon + 0.05
+	track.Samples[detour].Lon = east
+
+	if outline := route.FromTrack(track, route.DefaultMaxPoints); slices.ContainsFunc(outline, func(p route.Point) bool { return p.Lon == east }) {
+		t.Fatal("precondition: the outline kept the detour after all, so a box drawn from it would not fall short")
+	}
+
+	b, err := activityBounds(track, 0)
+	if err != nil {
+		t.Fatalf("activityBounds: %v", err)
+	}
+	if b.East < east {
+		t.Errorf("the area stops at %.5f, short of the fix at %.5f: the map would end before the route does", b.East, east)
+	}
+}
+
+// TestActivityBounds_AnActivityThatNeverMovedIsRefusedOrPaddedIntoAnArea
+// covers the activity with no width: every fix at the same point, which is a
+// watch that locked once and then sat on a bench.
+//
+// Both halves are the same decision seen from either side of --pad, and
+// neither is allowed to be an accident. Without a pad there is no area to
+// fetch, and the refusal has to happen HERE, where the message can say what
+// to type: the same box handed down to the planner comes back as an error
+// about zoom or extent from three layers below, describing a shape rather
+// than the activity that produced it. With a pad there is an area -- the
+// ground around the point -- and refusing it would be wrong, since somebody
+// fetching a map around a fixed position is doing something sensible.
+//
+// The padded size is measured rather than merely checked as non-empty, since
+// "widened by something" and "widened by the amount asked for" are different
+// claims and only the second is useful.
+func TestActivityBounds_AnActivityThatNeverMovedIsRefusedOrPaddedIntoAnArea(t *testing.T) {
+	start := time.Date(2026, 3, 1, 6, 0, 0, 0, time.UTC)
+	track := &fitactivity.Track{}
+	for i := range 10 {
+		track.Samples = append(track.Samples, fitactivity.Sample{
+			Time:   start.Add(time.Duration(i) * time.Second),
+			HasGPS: true,
+			Lat:    fetchLat,
+			Lon:    fetchLon,
+		})
+	}
+
+	t.Run("without a pad it is refused, saying what to type", func(t *testing.T) {
+		_, err := activityBounds(track, 0)
+		if err == nil {
+			t.Fatal("an activity whose every fix is at one point produced an area")
+		}
+		if !strings.Contains(err.Error(), "--pad") {
+			t.Errorf("the refusal does not name the flag that fixes it: %v", err)
+		}
+	})
+
+	t.Run("with a pad it becomes the ground around the point", func(t *testing.T) {
+		const padKM float64 = 2
+		b, err := activityBounds(track, padKM)
+		if err != nil {
+			t.Fatalf("activityBounds: %v", err)
+		}
+		w, h := acquire.ExtentKM(b)
+		for _, c := range []struct {
+			axis string
+			got  float64
+		}{{"width", w}, {"height", h}} {
+			if want := 2 * padKM; math.Abs(c.got-want) > 0.01*want {
+				t.Errorf("%s is %.3f km, want %.3f km -- twice the %g km pad on either side of the point", c.axis, c.got, want, padKM)
+			}
+		}
+	})
 }
