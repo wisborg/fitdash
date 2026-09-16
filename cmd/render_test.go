@@ -20,6 +20,9 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/fittest"
+	"github.com/wisborg/osmbase/mvt"
+	"github.com/wisborg/osmbase/osmbasetest"
+	"github.com/wisborg/osmbase/slice"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/panel"
@@ -961,7 +964,7 @@ func TestResolveBasemap_NoStyleFetchesNothing(t *testing.T) {
 			var buf bytes.Buffer
 			c := &cobra.Command{}
 			c.SetErr(&buf)
-			p, err := resolveBasemap(c)
+			p, err := resolveBasemap(c, panel.DarkTheme())
 			if err != nil {
 				t.Fatalf("resolveBasemap: %v", err)
 			}
@@ -986,7 +989,7 @@ func TestResolveBasemap_KeyFileWithNoStyleWarns(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	p, err := resolveBasemap(c)
+	p, err := resolveBasemap(c, panel.DarkTheme())
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -1007,7 +1010,7 @@ func TestResolveBasemap_RefusesAnUnknownStyle(t *testing.T) {
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	_, err := resolveBasemap(c)
+	_, err := resolveBasemap(c, panel.DarkTheme())
 	if err == nil {
 		t.Fatal("an unknown --basemap style was accepted")
 	}
@@ -1025,7 +1028,7 @@ func TestResolveBasemap_RequiresAKeyFile(t *testing.T) {
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	_, err := resolveBasemap(c)
+	_, err := resolveBasemap(c, panel.DarkTheme())
 	if err == nil {
 		t.Fatal("--basemap with no --basemap-key-file was accepted")
 	}
@@ -1047,7 +1050,7 @@ func TestResolveBasemap_ValidStyleAndKeyResolveAThunderforestProvider(t *testing
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetErr(&buf)
-	p, err := resolveBasemap(c)
+	p, err := resolveBasemap(c, panel.DarkTheme())
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -1076,7 +1079,7 @@ func TestResolveBasemap_WrapsInACacheUnlessDisabled(t *testing.T) {
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	p, err := resolveBasemap(c)
+	p, err := resolveBasemap(c, panel.DarkTheme())
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -1107,7 +1110,7 @@ func TestResolveBasemap_WorldReadableKeyWarnsButStillResolves(t *testing.T) {
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetErr(&buf)
-	p, err := resolveBasemap(c)
+	p, err := resolveBasemap(c, panel.DarkTheme())
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -1129,7 +1132,7 @@ func TestResolveBasemap_MissingKeyFileFails(t *testing.T) {
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	_, err := resolveBasemap(c)
+	_, err := resolveBasemap(c, panel.DarkTheme())
 	if err == nil {
 		t.Fatal("a missing key file was accepted")
 	}
@@ -2871,7 +2874,7 @@ func basemapSummaryRender(t *testing.T, provider tilemap.Provider) (*render.Rend
 	if err != nil {
 		t.Fatalf("render.New: %v", err)
 	}
-	return r, renderInputs{track: track, tl: tl, basemap: provider}
+	return r, renderInputs{track: track, tl: tl, basemap: provider, basemapDim: renderOpts.basemapDim}
 }
 
 // basemapSummaryRenderWithHighlights is basemapSummaryRender plus a
@@ -2916,7 +2919,7 @@ func basemapSummaryRenderWithHighlights(t *testing.T, provider tilemap.Provider,
 	if err != nil {
 		t.Fatalf("render.New: %v", err)
 	}
-	return r, renderInputs{track: track, tl: tl, basemap: provider}
+	return r, renderInputs{track: track, tl: tl, basemap: provider, basemapDim: renderOpts.basemapDim}
 }
 
 // zoomFailsProvider serves the whole-course view and refuses the zoomed one,
@@ -3075,5 +3078,265 @@ func TestWriteBasemapSummary_SaysWhatActuallyHappened(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- --basemap local ---------------------------------------------------
+
+// localBasemapFixtureStore builds an osmbase store on disk holding map data
+// over the ground fittest's synthetic activities run across, and returns its
+// root.
+//
+// The coordinates are fittest's own (12.345678, 98.765432, running due
+// north), so the store covers exactly the course the summary fixtures below
+// render -- and nothing here comes from a real recording.
+func localBasemapFixtureStore(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "osmbase")
+
+	tile, err := osmbasetest.BuildTile(osmbasetest.TileSpec{Layers: []osmbasetest.LayerSpec{{
+		Name: "earth",
+		Features: []osmbasetest.FeatureSpec{{
+			Type: mvt.GeomPolygon,
+			Geometry: mvt.Geometry{Polygons: []mvt.Polygon{{
+				Exterior: mvt.Ring{{X: 0, Y: 0}, {X: 4096, Y: 0}, {X: 4096, Y: 4096}, {X: 0, Y: 4096}},
+			}}},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("building the fixture tile: %v", err)
+	}
+	store, err := slice.Create(root, slice.Config{})
+	if err != nil {
+		t.Fatalf("creating the fixture store: %v", err)
+	}
+	src, err := store.AddSource(slice.SourceDesc{
+		Source:          "synthetic.pmtiles",
+		Build:           "fixture",
+		Schema:          "protomaps/basemap v4",
+		Attribution:     "Map data © OpenStreetMap contributors (synthetic fixture)",
+		TileType:        "mvt",
+		TileCompression: slice.CompressionNone,
+		SourceZoom:      slice.ZoomRange{Min: 0, Max: 15},
+	})
+	if err != nil {
+		t.Fatalf("adding the fixture source: %v", err)
+	}
+	cells, err := store.CellsFor(slice.Bounds{West: 98.75, South: 12.33, East: 98.78, North: 12.36})
+	if err != nil {
+		t.Fatalf("finding the fixture cells: %v", err)
+	}
+	for _, c := range cells {
+		z := slice.ZoomRange{Min: store.CellZoom(), Max: store.CellZoom()}
+		if _, err := src.Fill(context.Background(), fixtureArchive{tile}, c, z); err != nil {
+			t.Fatalf("filling cell %s: %v", c, err)
+		}
+	}
+	return root
+}
+
+// fixtureArchive answers every coordinate with one tile, so a fill writes a
+// real, decodable tile wherever it is pointed.
+type fixtureArchive struct{ data []byte }
+
+func (a fixtureArchive) RawTile(uint8, uint32, uint32) ([]byte, bool, error) {
+	return a.data, true, nil
+}
+
+// TestMapInksFor_EveryShippedThemeCanCarryTheMapDerivedFromIt is what makes
+// --basemap-dim 0 defensible for the local backend, and it is deliberately
+// over the themes fitdash actually ships rather than over colours spelled
+// out in the test: the claim is about what a user gets by typing --theme
+// light, so changing a theme's Dim ink has to be able to break this.
+func TestMapInksFor_EveryShippedThemeCanCarryTheMapDerivedFromIt(t *testing.T) {
+	for _, theme := range panel.Themes() {
+		t.Run(theme.Name, func(t *testing.T) {
+			if err := mapInksFor(theme).CheckContrast(); err != nil {
+				t.Errorf("the map derived for --theme %s cannot carry it, so the route would be hard to read and no wash is being applied:\n%v", theme.Name, err)
+			}
+		})
+	}
+}
+
+// TestResolveBasemapDim_LocalStartsUnwashedAndThunderforestKeepsItsDefault
+// pins the asymmetry AND the way it is implemented.
+//
+// The wash exists because third-party imagery is busy, mid-toned and chosen
+// by somebody else; a map drawn from the user's own theme has nothing to
+// correct for. But the flag's DECLARED default stays 0.65, because lowering
+// it to make the local case work would silently change every Thunderforest
+// render that never passed the flag -- so the difference has to come from
+// asking whether the user typed it, which is what the "typed" cases here
+// check by setting the flag through the flag set rather than the struct.
+func TestResolveBasemapDim_LocalStartsUnwashedAndThunderforestKeepsItsDefault(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+
+	cases := []struct {
+		name    string
+		basemap string
+		typed   string
+		want    float64
+	}{
+		{"local, flag untouched", tilemap.LocalProvider, "", 0},
+		{"local, dim asked for anyway", tilemap.LocalProvider, "0.4", 0.4},
+		{"local, 0.65 asked for explicitly", tilemap.LocalProvider, "0.65", 0.65},
+		{"thunderforest, flag untouched", "outdoors", "", 0.65},
+		{"thunderforest, dim asked for", "outdoors", "0.2", 0.2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			renderOpts = renderOptions{}
+			cmd := &cobra.Command{}
+			bindRenderFlags(cmd)
+			renderOpts.basemap = c.basemap
+			if c.typed != "" {
+				if err := cmd.Flags().Set("basemap-dim", c.typed); err != nil {
+					t.Fatalf("setting --basemap-dim: %v", err)
+				}
+			}
+			if got := resolveBasemapDim(cmd); got != c.want {
+				t.Errorf("resolveBasemapDim = %v, want %v", got, c.want)
+			}
+			// The DECLARED default never moves, whatever the backend: a help
+			// text that says one number while the program uses another is
+			// worse than either number.
+			if got := cmd.Flags().Lookup("basemap-dim").DefValue; got != "0.65" {
+				t.Errorf("--basemap-dim's declared default is %q, want \"0.65\"", got)
+			}
+		})
+	}
+}
+
+// TestResolveBasemap_LocalIsNeverWrappedInTheImageCache is the trap this
+// backend is one `if` away from falling into: resolveBasemap wraps what it
+// builds in tilemap.Cached by default, and wrapping this would put a cache
+// keyed on the view and its pixel size over a tile store deliberately keyed
+// on neither, keep megabytes of PNG for a picture redrawn from disk in
+// milliseconds, and hang a thirty-day expiry on a slice the user downloaded
+// on purpose -- which expires into a fetch this backend cannot perform.
+//
+// --basemap-cache is pointed at a real directory here precisely so the test
+// fails if the wrap ever reaches this path.
+func TestResolveBasemap_LocalIsNeverWrappedInTheImageCache(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	cache := t.TempDir()
+	store := localBasemapFixtureStore(t)
+
+	// Driven through the flag set rather than by assigning to renderOpts,
+	// because the warning below turns on whether --basemap-cache was TYPED
+	// and that is a fact only the flag set holds.
+	c := &cobra.Command{}
+	bindRenderFlags(c)
+	for _, f := range []struct{ name, value string }{
+		{"basemap", tilemap.LocalProvider}, {"basemap-store", store}, {"basemap-cache", cache},
+	} {
+		if err := c.Flags().Set(f.name, f.value); err != nil {
+			t.Fatalf("setting --%s: %v", f.name, err)
+		}
+	}
+	var buf bytes.Buffer
+	c.SetErr(&buf)
+	p, err := resolveBasemap(c, panel.DarkTheme())
+	if err != nil {
+		t.Fatalf("resolveBasemap: %v", err)
+	}
+	if _, wrapped := p.(*tilemap.Cached); wrapped {
+		t.Fatal("the local provider was wrapped in tilemap.Cached")
+	}
+	local, ok := p.(*tilemap.Local)
+	if !ok {
+		t.Fatalf("resolveBasemap returned %T, want *tilemap.Local", p)
+	}
+	if local.Root() != store {
+		t.Errorf("provider draws from %q, want the store named by --basemap-store %q", local.Root(), store)
+	}
+	if entries, err := os.ReadDir(cache); err != nil || len(entries) != 0 {
+		t.Errorf("the image cache directory was touched: %v, %d entries", err, len(entries))
+	}
+	if !strings.Contains(buf.String(), "--basemap-cache is not used") {
+		t.Errorf("nothing said about the ignored --basemap-cache; got %q", buf.String())
+	}
+}
+
+// TestResolveBasemap_LocalNeedsNoKeyAndSaysSoIfGivenOne pins that the local
+// backend requires nothing of the user beyond data they already hold -- and
+// that a key file passed alongside it is reported rather than quietly
+// accepted, since a user who supplied one believes they are paying for
+// something.
+func TestResolveBasemap_LocalNeedsNoKeyAndSaysSoIfGivenOne(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{
+		basemap:        tilemap.LocalProvider,
+		basemapStore:   localBasemapFixtureStore(t),
+		basemapKeyFile: resolveBasemapTestKeyFile(t),
+	}
+
+	c := &cobra.Command{}
+	var buf bytes.Buffer
+	c.SetErr(&buf)
+	p, err := resolveBasemap(c, panel.DarkTheme())
+	if err != nil {
+		t.Fatalf("resolveBasemap: %v", err)
+	}
+	if _, ok := p.(*tilemap.Local); !ok {
+		t.Fatalf("resolveBasemap returned %T, want *tilemap.Local", p)
+	}
+	if !strings.Contains(buf.String(), "--basemap-key-file is not used") {
+		t.Errorf("nothing said about the unused key file; got %q", buf.String())
+	}
+}
+
+// TestResolveBasemap_LocalWithNoStoreIsARefusalRatherThanAPlainRender keeps
+// a mistyped --basemap-store from resolving to "no basemap": that outcome is
+// indistinguishable from a render nobody asked for a map in, and the user
+// would have no way to learn which they got.
+func TestResolveBasemap_LocalWithNoStoreIsARefusalRatherThanAPlainRender(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	missing := filepath.Join(t.TempDir(), "typo")
+	renderOpts = renderOptions{basemap: tilemap.LocalProvider, basemapStore: missing}
+
+	c := &cobra.Command{}
+	c.SetErr(&bytes.Buffer{})
+	_, err := resolveBasemap(c, panel.DarkTheme())
+	if err == nil {
+		t.Fatal("--basemap local with no store resolved silently")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error does not name the directory that is not there: %v", err)
+	}
+}
+
+// TestWriteBasemapSummary_LocalSaysNothingWasSentAndNamesTheStore is the
+// other half of the privacy notice, and the reason *Local implements
+// tilemap.Reporter at all. The summary's default reading of a provider is
+// that it went to the network -- a plain provider does not implement
+// Reporter -- so a local render that said nothing here would be reported as
+// having sent the area of somebody's activity to a third party, which is
+// false in the one line a user reads to find out whether that happened.
+func TestWriteBasemapSummary_LocalSaysNothingWasSentAndNamesTheStore(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	root := localBasemapFixtureStore(t)
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()))
+	if err != nil {
+		t.Fatalf("OpenLocal: %v", err)
+	}
+	renderOpts = renderOptions{basemap: tilemap.LocalProvider, basemapDim: 0}
+
+	r, in := basemapSummaryRender(t, provider)
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetErr(&buf)
+	writeBasemapSummary(cmd, r, in)
+
+	out := buf.String()
+	for _, want := range []string{"basemap:", root, "nothing was sent"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary is missing %q; got:\n%s", want, out)
+		}
+	}
+	for _, absent := range []string{"thunderforest", "could not be", "served from your cache"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("summary says %q, which is not true of a local render; got:\n%s", absent, out)
+		}
 	}
 }

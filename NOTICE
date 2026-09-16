@@ -32,6 +32,14 @@ repository.
   fitactivity (github.com/wisborg/fitactivity)
                              Copyright 2026 Jesper Wisborg Krogh.  The FIT
                              decoding and activity models, shared with videofx.
+  osmbase (github.com/wisborg/osmbase)
+                             Copyright 2026 Jesper Wisborg Krogh.  Reads
+                             OpenStreetMap vector tiles from a local store and
+                             draws them, which is what --basemap local renders
+                             from.  It is the SOFTWARE that is licensed here;
+                             the map data a user puts in that store carries its
+                             own licence, and the section on map data below is
+                             where that obligation is recorded.
   output (github.com/wisborg/output)
                              Copyright 2026 Jesper Wisborg Krogh
   Cobra (github.com/spf13/cobra)
@@ -154,6 +162,26 @@ and therefore what has to satisfy them.
   OpenStreetMap data         (c) OpenStreetMap contributors, licensed under the
                              Open Database License (ODbL) 1.0.  The credit
                              above satisfies its attribution requirement.
+
+  Local map data             --basemap local draws the map here, from
+  (--basemap local)          OpenStreetMap vector tiles the user has already
+                             obtained and keeps on their own machine.  Nothing
+                             is sent anywhere and no key or account is
+                             involved.  The DATA still carries its licence: a
+                             rendered map is a Produced Work under the ODbL,
+                             which requires attribution (share-alike does not
+                             reach it), so fitdash draws the credit into every
+                             frame that shows the map.
+
+                             That credit is read from the store's own manifest,
+                             which records what the data was built from.  It is
+                             deliberately not a constant in this program:
+                             a slice built from a different source carries a
+                             different credit, and a string compiled in here
+                             would go on printing the old one.  fitdash refuses
+                             to draw from a store that records no credit at
+                             all, rather than rendering a Produced Work it
+                             cannot attribute.
 
 The tile servers operated by the OpenStreetMap Foundation are NOT used and
 must not be: their usage policy forbids fetching tiles other than those a

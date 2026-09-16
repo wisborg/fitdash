@@ -40,6 +40,7 @@ type renderOptions struct {
 	basemapKeyFile      string
 	basemapDim          float64
 	basemapCache        string
+	basemapStore        string
 	power               string
 	layout              string
 	bottomBand          string
@@ -221,21 +222,29 @@ func bindRenderFlags(c *cobra.Command) {
 		"what checking a highlight's entrance or exit transition needs, since --frame-at cannot land a frame a fixed distance from a boundary once the render runs at more than one rate")
 	f.BoolVar(&renderOpts.quiet, "quiet", false, "suppress the progress line and the summary")
 	f.StringVar(&renderOpts.basemap, "basemap", "none",
-		"draw the route over map imagery from Thunderforest instead of on clean background: \"none\" (default) or a style "+
-			"("+strings.Join(tilemap.ThunderforestStyles, ", ")+"). Requires --basemap-key-file. \"outdoors\" and "+
-			"\"landscape\" draw contours, paths and trail furniture, which is what a run or a ride actually happened on; "+
-			"the others are general-purpose. NOTE that this sends the area of your activity to a third party -- see "+
-			"--basemap-key-file -- and that a fetch failure is never fatal: the render continues with the plain outline "+
-			"and the summary says so")
+		"draw the route over a map instead of on clean background: \"none\" (default), \""+tilemap.LocalProvider+"\", or a "+
+			"Thunderforest style ("+strings.Join(tilemap.ThunderforestStyles, ", ")+"). \""+tilemap.LocalProvider+"\" draws "+
+			"the map here, from OpenStreetMap vector tiles already on your own disk -- see --basemap-store -- and sends "+
+			"nothing to anybody. A Thunderforest style requires --basemap-key-file and NOTE that it sends the area of your "+
+			"activity to a third party; \"outdoors\" and \"landscape\" draw contours, paths and trail furniture, which is "+
+			"what a run or a ride actually happened on, and the others are general-purpose. Either way a map that cannot be "+
+			"obtained is never fatal: the render continues with the plain outline and the summary says so")
 	f.StringVar(&renderOpts.basemapKeyFile, "basemap-key-file", "",
 		"path to a file holding your own Thunderforest API key, required by --basemap. fitdash ships no key and has no "+
 			"account of its own; get one at thunderforest.com. The file may be the bare key, or a JSON or YAML mapping "+
 			"of provider name to key (\"thunderforest: ...\", or \"key: ...\" for a file holding only one). The key is "+
 			"read once, never logged, never written into the video, and redacted out of every error")
 	f.Float64Var(&renderOpts.basemapDim, "basemap-dim", 0.65,
-		"how far --basemap imagery is washed toward the background, 0 (full strength) to 1 (invisible). Map imagery is "+
-			"busy and mid-toned, and the route line, the covered prefix and the position dot all have to read against "+
-			"it; the default pushes the map back to being context rather than content")
+		"how far --basemap imagery is washed toward the background, 0 (full strength) to 1 (invisible). Third-party map "+
+			"imagery is busy and mid-toned, and the route line, the covered prefix and the position dot all have to read "+
+			"against it; the default pushes the map back to being context rather than content. The default is 0 under "+
+			"--basemap "+tilemap.LocalProvider+", where every ink of the map is derived from your own theme and checked "+
+			"against it, so there is nothing to correct for -- pass the flag to wash it back anyway")
+	f.StringVar(&renderOpts.basemapStore, "basemap-store", "",
+		"directory holding the OpenStreetMap vector tiles --basemap "+tilemap.LocalProvider+" draws from (default: the "+
+			"osmbase folder under your user cache directory, which is shared between programs rather than private to "+
+			"fitdash -- download an area once and anything else using the same library renders from it). The store is "+
+			"never written to by a render and never fetched into by one: data gets there because you asked for it")
 	f.StringVar(&renderOpts.basemapCache, "basemap-cache", "",
 		"directory to keep fetched --basemap imagery in (default: a fitdash folder under your user cache directory). "+
 			"Tuning a --highlight means rendering the same activity repeatedly, and without a cache every run re-fetches "+
@@ -244,8 +253,8 @@ func bindRenderFlags(c *cobra.Command) {
 	f.BoolVar(&renderOpts.dryRun, "dry-run", false,
 		"resolve everything and print the summary, but write no video and no frames -- the fast way to check "+
 			"a --label or --highlight lands where you meant before paying for an encode, and to read off where "+
-			"each file of a merged activity starts. Resolving everything INCLUDES fetching --basemap imagery, so a "+
-			"dry run with a basemap does reach the network and does fill the image cache; that is deliberate -- a bad "+
+			"each file of a merged activity starts. Resolving everything INCLUDES obtaining the --basemap, so a dry "+
+			"run with a Thunderforest style does reach the network and does fill the image cache; that is deliberate -- a bad "+
 			"key or an unreachable service is worth learning in a second rather than after an encode -- and the "+
 			"summary reports it either way")
 	f.StringVar(&renderOpts.layout, "layout", panel.LayoutAuto,
@@ -463,15 +472,16 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// model already built rather than each building their own copy of it --
 	// see panel.Context.Elevation's own doc comment.
 	elevTuning, elevSource := resolveElevationTuning(track)
-	basemap, err := resolveBasemap(cmd)
+	basemap, err := resolveBasemap(cmd, theme)
 	if err != nil {
 		return err
 	}
+	basemapDim := resolveBasemapDim(cmd)
 
 	rctx := &panel.Context{
 		Track:               track,
 		Basemap:             basemap,
-		BasemapDim:          renderOpts.basemapDim,
+		BasemapDim:          basemapDim,
 		Report:              inspect.Build(track),
 		Elevation:           panel.BuildElevation(track, elevTuning),
 		Timer:               timer,
@@ -513,7 +523,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 
 	in := renderInputs{
-		track: track, sources: sources, basemap: basemap, tl: timeline, w: w, h: h,
+		track: track, sources: sources, basemap: basemap, basemapDim: basemapDim, tl: timeline, w: w, h: h,
 		layoutName: layout.Name, theme: theme, smoothing: smoothing,
 		highlights: highlights, labels: labels,
 		elevation: rctx.Elevation, elevationSource: elevSource,
@@ -551,9 +561,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 // writeRenderSummary -- the three functions with no such test and no
 // business being called with anything but runRender's own resolved values.
 type renderInputs struct {
-	track      *fitactivity.Track
-	sources    []activitySource
-	basemap    tilemap.Provider
+	track   *fitactivity.Track
+	sources []activitySource
+	basemap tilemap.Provider
+	// basemapDim is the RESOLVED wash, which is not renderOpts.basemapDim:
+	// the flag's declared default belongs to the third-party backend and the
+	// local one takes 0 unless the flag was typed. See resolveBasemapDim.
+	basemapDim float64
 	tl         panel.Timeline
 	w, h       int
 	layoutName string
@@ -827,15 +841,26 @@ func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses st
 	}
 }
 
-// resolveBasemap turns --basemap and --basemap-key-file into a provider, or
-// nil when no basemap was asked for.
+// resolveBasemap turns --basemap and the flags that configure it into a
+// provider, or nil when no basemap was asked for.
+//
+// Two backends, and they share nothing below tilemap.Provider. "local" draws
+// the map here from vector tiles the user already holds; a Thunderforest
+// style fetches finished imagery from a service. Having both is the point: a
+// user who would rather not keep a data slice on disk keeps the option, and a
+// user who would rather send nothing keeps that one.
 //
 // The key is read HERE, once, from a path the user named -- fitdash ships no
 // key, has no account, and never looks anywhere it was not pointed. What comes
 // back is a tilemap.Key, which redacts itself in every printing verb and in
 // every serialisation, so the value cannot reach a log, an error or the
 // --format json output by accident.
-func resolveBasemap(cmd *cobra.Command) (tilemap.Provider, error) {
+//
+// theme is taken rather than read from renderOpts because the local backend's
+// map is drawn in colours DERIVED from it -- see tilemap.MapInks -- and the
+// theme has already been resolved by the caller. A second resolution here
+// would be a second chance to disagree with the one the panels draw with.
+func resolveBasemap(cmd *cobra.Command, theme panel.Theme) (tilemap.Provider, error) {
 	style := renderOpts.basemap
 	if style == "" || style == basemapOff {
 		if renderOpts.basemapKeyFile != "" {
@@ -844,14 +869,24 @@ func resolveBasemap(cmd *cobra.Command) (tilemap.Provider, error) {
 			// is not one.
 			fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-key-file given without --basemap; no map imagery was fetched\n")
 		}
+		if cmd.Flags().Changed("basemap-store") {
+			fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-store given without --basemap %s; no map was drawn\n", tilemap.LocalProvider)
+		}
 		return nil, nil
 	}
+	if style == tilemap.LocalProvider {
+		return resolveLocalBasemap(cmd, theme)
+	}
 	if !slices.Contains(tilemap.ThunderforestStyles, style) {
-		return nil, fmt.Errorf("render: --basemap %q is invalid; use %s or %s",
-			style, basemapOff, strings.Join(tilemap.ThunderforestStyles, ", "))
+		return nil, fmt.Errorf("render: --basemap %q is invalid; use %s, %s or %s",
+			style, basemapOff, tilemap.LocalProvider, strings.Join(tilemap.ThunderforestStyles, ", "))
 	}
 	if renderOpts.basemapKeyFile == "" {
-		return nil, fmt.Errorf("render: --basemap %s needs --basemap-key-file: fitdash ships no map service key, so you supply your own", style)
+		return nil, fmt.Errorf("render: --basemap %s needs --basemap-key-file: fitdash ships no map service key, so you supply your own. --basemap %s needs no key and no account, and draws from map data on your own disk instead", style, tilemap.LocalProvider)
+	}
+	if cmd.Flags().Changed("basemap-store") {
+		fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-store is only read by --basemap %s; %s imagery comes from the service and is kept in --basemap-cache\n",
+			tilemap.LocalProvider, tilemap.ThunderforestProvider)
 	}
 	if err := tilemap.CheckKeyFilePermissions(renderOpts.basemapKeyFile); err != nil {
 		// A warning, not a refusal: the file is the user's and the
@@ -867,6 +902,105 @@ func resolveBasemap(cmd *cobra.Command) (tilemap.Provider, error) {
 		provider = &tilemap.Cached{Provider: provider, Dir: dir}
 	}
 	return provider, nil
+}
+
+// resolveLocalBasemap builds the provider that draws from a local osmbase
+// store.
+//
+// NOT wrapped in tilemap.Cached, and that is the whole reason this is its own
+// function rather than another branch inside resolveBasemap: the wrap below
+// is one `if` away from applying to everything this function builds, and
+// applying it here would put a cache keyed on the view and its pixel size on
+// top of a tile store deliberately keyed on neither, store megabytes of PNG
+// for a picture regenerable from bytes already on disk, and hang a thirty-day
+// expiry on a slice the user downloaded on purpose -- after which the entry
+// expires into a network fetch this backend cannot perform. See
+// tilemap.OpenLocal.
+func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme) (tilemap.Provider, error) {
+	if renderOpts.basemapKeyFile != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-key-file is not used by --basemap %s, which needs no key and reaches no service\n", tilemap.LocalProvider)
+	}
+	if cmd.Flags().Changed("basemap-cache") {
+		fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-cache is not used by --basemap %s: the tile store IS the cache, and caching the drawn image on top of it would keep a second copy of something redrawn from disk in milliseconds\n", tilemap.LocalProvider)
+	}
+
+	inks := mapInksFor(theme)
+	// Warned about rather than refused, and the distinction is what the check
+	// can and cannot know. A failure means some map ink comes within WCAG's
+	// 3:1 of some ink drawn over it SOMEWHERE on the map -- not that the
+	// route is invisible on this route's actual ground, which depends on
+	// whether the activity crosses that ink at all. Refusing would make a
+	// legibility threshold load-bearing for a feature the user asked for by
+	// name; saying nothing would leave them comparing a hard-to-read route
+	// against what they expected and finding nothing wrong with it.
+	if err := inks.CheckContrast(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the %s theme's own colours do not separate cleanly from the map drawn for them; the route may be hard to read in places\n  %v\n", theme.Name, err)
+	}
+
+	store, err := localStoreDir()
+	if err != nil {
+		return nil, err
+	}
+	provider, err := tilemap.OpenLocal(store, inks)
+	if err != nil {
+		return nil, fmt.Errorf("render: --basemap %s: %w", tilemap.LocalProvider, err)
+	}
+	return provider, nil
+}
+
+// mapInksFor is the one place a fitdash theme becomes the overlay the local
+// basemap is drawn to fit.
+//
+// The mapping is exactly what the route panel draws over the imagery: the
+// un-covered outline in Dim, the covered prefix in Foreground, the position
+// dot in Accent, a highlighted stretch in Highlight. Writing it once, here,
+// is what keeps the colours the map is CHECKED against the colours that are
+// actually put on top of it -- a second spelling somewhere else would be a
+// check that passes for a picture nobody draws.
+func mapInksFor(theme panel.Theme) tilemap.MapInks {
+	return tilemap.MapInks{
+		Background: theme.Background,
+		Foreground: theme.Foreground,
+		Dim:        theme.Dim,
+		Accent:     theme.Accent,
+		Highlight:  theme.Highlight,
+	}
+}
+
+// localStoreDir resolves --basemap-store, defaulting to the store osmbase
+// shares between programs.
+func localStoreDir() (string, error) {
+	if renderOpts.basemapStore != "" {
+		return renderOpts.basemapStore, nil
+	}
+	dir, err := tilemap.DefaultStoreDir()
+	if err != nil {
+		return "", fmt.Errorf("render: --basemap %s: %w", tilemap.LocalProvider, err)
+	}
+	return dir, nil
+}
+
+// resolveBasemapDim is how far the map is washed toward the background, which
+// depends on which backend drew it.
+//
+// The DECLARED default stays 0.65 and this asks whether the user typed the
+// flag, rather than the flag's default moving with the backend. Lowering the
+// declared default would quietly change every existing Thunderforest render,
+// which is the one thing a new backend must not do -- and a flag whose help
+// text says one number while the program uses another is worse than either.
+//
+// Why 0 for the local backend: the wash exists because third-party imagery is
+// busy, mid-toned and coloured by somebody else, so it has to be pushed back
+// to being context. A map drawn from the user's own theme is already context
+// by construction -- every ink of it is placed inside the luminance band that
+// theme's own overlay colours leave free, and tilemap.MapInks.CheckContrast is
+// what says so. Washing it further would only make it harder to read for no
+// separation gained.
+func resolveBasemapDim(cmd *cobra.Command) float64 {
+	if renderOpts.basemap == tilemap.LocalProvider && !cmd.Flags().Changed("basemap-dim") {
+		return 0
+	}
+	return renderOpts.basemapDim
 }
 
 // basemapCacheDir resolves --basemap-cache, or "" for no caching.
@@ -1056,21 +1190,40 @@ func writeBasemapSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs
 	out := cmd.ErrOrStderr()
 	drew, note := r.Basemap()
 	if !drew {
-		fmt.Fprintf(out, "basemap: %s imagery could not be fetched; the route is drawn on plain background\n", renderOpts.basemap)
+		// "could not be fetched" would be a false account of the local
+		// backend, which fetches nothing: what failed there is a store that
+		// holds no tiles for this route, and a user told their fetch failed
+		// would go looking at their network.
+		how := "imagery could not be fetched"
+		if _, ok := in.basemap.(*tilemap.Local); ok {
+			how = "map data could not be drawn from your store"
+		}
+		fmt.Fprintf(out, "basemap: %s %s; the route is drawn on plain background\n", renderOpts.basemap, how)
 		if note != "" {
 			fmt.Fprintf(out, "  %s\n", note)
 		}
 		return
 	}
 	// Only claim the route was sent when it actually was. A run served
-	// entirely from cache sent nothing, and a privacy notice that fires
-	// anyway is one a user learns to skip past.
+	// entirely from cache sent nothing, and so did a run drawn from a local
+	// store -- and a privacy notice that fires anyway is one a user learns to
+	// skip past, which is the one line here that must not become noise.
 	origin := "served from your cache; nothing was sent this run"
 	if f, ok := in.basemap.(tilemap.Reporter); !ok || f.Fetched() {
 		origin = "the area of this activity was sent to thunderforest.com"
 	}
-	fmt.Fprintf(out, "basemap: %s %s, dimmed %.0f%% -- %s\n",
-		tilemap.ThunderforestProvider, renderOpts.basemap, renderOpts.basemapDim*100, origin)
+	source := tilemap.ThunderforestProvider + " " + renderOpts.basemap
+	if l, ok := in.basemap.(*tilemap.Local); ok {
+		source = "drawn here from " + l.Root()
+		origin = "nothing was sent to anybody"
+		if c := l.Coverage(); c < 1 {
+			// Said in words because the picture already says it in hatching,
+			// and a viewer who did not fetch the whole area has no other way
+			// to tell a hatched gap from a rendering fault.
+			origin = fmt.Sprintf("%.0f%% of the map area is in the store, the rest is hatched; nothing was sent to anybody", c*100)
+		}
+	}
+	fmt.Fprintf(out, "basemap: %s, dimmed %.0f%% -- %s\n", source, in.basemapDim*100, origin)
 	if note != "" {
 		fmt.Fprintf(out, "  %s\n", note)
 	}
