@@ -228,7 +228,7 @@ func runBasemapFetch(cmd *cobra.Command, args []string) error {
 		return writeFetchReport(out, rep, plan)
 	}
 	if archive.Remote() && !basemapFetchOpts.yes {
-		ok, err := confirmFetch(cmd, plan, archive)
+		ok, err := confirmFetch(cmd, plan, archive.Name())
 		if err != nil {
 			return err
 		}
@@ -495,9 +495,13 @@ func writeFetchPlan(w io.Writer, rep fetchReport, p *acquire.Plan) {
 // reached this prompt did not mean to download anything, and a program that
 // took silence for consent here would be doing the one thing this command is
 // careful not to.
-func confirmFetch(cmd *cobra.Command, p *acquire.Plan, a *tilemap.Archive) (bool, error) {
+// It takes the archive's NAME rather than the archive, because the name is
+// all it needs and a function that asks for more than it uses is one a test
+// has to fake -- which is how this came to be called with a zero-value
+// archive whose methods later grew a pointer to dereference.
+func confirmFetch(cmd *cobra.Command, p *acquire.Plan, archive string) (bool, error) {
 	w := cmd.ErrOrStderr()
-	fmt.Fprintf(w, "\nThis contacts %s and downloads %s.\n", hostOf(a.Name()), humanBytes(p.Transfer))
+	fmt.Fprintf(w, "\nThis contacts %s and downloads %s.\n", hostOf(archive), humanBytes(p.Transfer))
 	fmt.Fprintf(w, "It tells that host which cells you asked for, once. Rendering afterwards contacts nobody.\n")
 	fmt.Fprintf(w, "Continue? [y/N] ")
 

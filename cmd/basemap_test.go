@@ -284,14 +284,22 @@ func TestConfirmFetch_TreatsSilenceAndAnythingButYesAsNo(t *testing.T) {
 		{"n\n", false}, {"\n", false}, {"", false}, {"no\n", false}, {"maybe\n", false},
 	} {
 		cmd := &cobra.Command{}
-		cmd.SetErr(io.Discard)
+		var prompt strings.Builder
+		cmd.SetErr(&prompt)
 		cmd.SetIn(strings.NewReader(c.answer))
-		got, err := confirmFetch(cmd, &acquire.Plan{}, &tilemap.Archive{})
+		got, err := confirmFetch(cmd, &acquire.Plan{}, "https://example.test/planet.pmtiles")
 		if err != nil {
 			t.Fatalf("confirmFetch(%q): %v", c.answer, err)
 		}
 		if got != c.want {
 			t.Errorf("confirmFetch(%q) = %v, want %v", c.answer, got, c.want)
+		}
+		// The prompt has to name the host being contacted. It is the one
+		// piece of information the answer depends on, and a prompt that asked
+		// "Continue?" without saying with whom would be asking for consent to
+		// something unstated.
+		if !strings.Contains(prompt.String(), "example.test") {
+			t.Errorf("the prompt does not name the host it would contact:\n%s", prompt.String())
 		}
 	}
 }
