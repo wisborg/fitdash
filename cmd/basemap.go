@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -107,6 +108,21 @@ func init() {
 	f.BoolVar(&basemapFetchOpts.yes, "yes", false,
 		"do not ask before downloading. The confirmation exists because this is the one command that sends anything "+
 			"anywhere; skip it in a script that has already made that decision")
+
+	// Registered on the ROOT render command as well, because that is where
+	// the other half of this decision now lives: a render offers to fetch
+	// what it finds missing, and a script that has already made that decision
+	// needs the same way to say so. One name for one question, rather than a
+	// second flag meaning the same thing in a different command.
+	root.Flags().StringVar(&basemapFetchOpts.source, "basemap-source", "",
+		"the map archive a render's offered fetch copies from: an https URL, or the path to a local .pmtiles file, "+
+			"which reaches no network at all (default: "+tilemap.DefaultArchive+"). It is --source under \"fitdash "+
+			"basemap fetch\", and it exists here so that somebody holding their own archive is not sent back to a "+
+			"second command to use it")
+	root.Flags().BoolVar(&basemapFetchOpts.yes, "yes", false,
+		"do not ask before downloading map data. A render with --basemap "+tilemap.LocalProvider+" offers to fetch "+
+			"the part of the route your store is missing; this answers yes in advance, for a script that has already "+
+			"made that decision")
 
 	basemapCmd.AddCommand(basemapFetchCmd)
 	root.AddCommand(basemapCmd)
@@ -616,4 +632,222 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
+}
+
+// autoFetchPadKM is how far beyond the activity an offered fetch reaches.
+//
+// The same default --pad carries, and for the same reason: the route is drawn
+// inside a panel with its own margins and a zoomed --highlight reaches
+// further still, so a box tight around the fixes leaves the map stopping
+// short of the frame. It is not a render flag because a render that needed
+// tuning here wants "fitdash basemap fetch", where every knob already is;
+// this exists to save the common case a second command, not to reproduce one.
+const autoFetchPadKM = 2
+
+// offerToFillTheStore asks whether to download the map data this render is
+// about to find missing, and downloads it if the answer is yes.
+//
+// # Why the render asks at all
+//
+// Drawing from a local store took two commands: fetch the area, then render
+// it. The second one is the one people run, and the first is the one they
+// forget -- so the common outcome was a render that refused, or drew a route
+// over a hole, and a user who then had to go and read about a command they
+// did not know existed. The information needed to fix it was all here.
+//
+// # Why it asks rather than just doing it
+//
+// Because of what a fetch is. This repository's rule is that contacting a map
+// service is data exfiltration: it tells a third party where the user was,
+// and it must be opt-in, visible and off by default. A render that silently
+// downloaded would be exactly the thing that rule forbids, arrived at by
+// convenience. So the network trip keeps its consent, and what is removed is
+// only the need to know which command to type.
+//
+// # Why the question comes before anything is read
+//
+// Planning a fetch is itself a request to the host, and it carries the same
+// information the download does: which squares of the map this activity
+// covers. Asking after planning would be asking permission for something
+// already done. StoreShortfall therefore answers from the disk alone, and the
+// prompt names the host and the area before a socket is opened.
+//
+// The cost of what is downloaded is NOT known at that point, and saying so is
+// better than a second prompt: the plan is printed before the transfer starts
+// and the progress bar reports against it, so an answer that turns out to be
+// expensive is visible while it happens rather than only afterwards.
+//
+// A no, a closed stdin, or a pipeline is not an error. The render carries on
+// exactly as it did before this existed -- refusing, or drawing what the
+// store does hold -- because a user who declined a download still asked for a
+// video.
+func offerToFillTheStore(cmd *cobra.Command, root string, track *fitactivity.Track) {
+	errw := cmd.ErrOrStderr()
+
+	area, err := activityBounds(track, autoFetchPadKM)
+	if err != nil {
+		// No GPS, or every fix at one point. There is no ground to fetch and
+		// the render's own report will say so more precisely than this could.
+		return
+	}
+	// Asked about the ground the activity is ON, not the padded box a fetch
+	// would take. The pad exists so a fetch grabs the margin the panel draws
+	// around the route; it is the wrong question for deciding whether to
+	// interrupt somebody, because a store filled for exactly this route
+	// covers every pixel the render draws and is still short of the padded
+	// box. Measured that way, a render that would have come out perfectly
+	// asks to download more -- and a prompt that fires on runs it has nothing
+	// to do with is one people learn to dismiss without reading, which costs
+	// more than the margin is worth.
+	//
+	// A degenerate activity -- every fix at one point -- has no unpadded box
+	// at all, so the padded one stands in for it there.
+	asked := area
+	if tight, err := activityBounds(track, 0); err == nil {
+		asked = tight
+	}
+	short, err := tilemap.StoreShortfall(root, asked)
+	if err != nil || short.Complete() {
+		return
+	}
+
+	w, h := acquire.ExtentKM(area)
+	fmt.Fprintf(errw, "\nbasemap: this activity covers %.0f x %.0f km", w, h)
+	if short.Empty {
+		fmt.Fprintf(errw, ", and %s holds no map data yet.\n", root)
+	} else {
+		fmt.Fprintf(errw, ", and %s holds %d of the %d areas it crosses.\n", root, short.Held, short.Cells)
+	}
+	if short.CanFallBack() {
+		// Said because the render is about to report FULL coverage over this
+		// and the user would have no way to reconcile the two. Coverage
+		// counts tiles drawn, not the detail in them, so a view filled by
+		// overzooming one shallow tile reads as 100% and looks like a smear.
+		fmt.Fprintf(errw, "         What is missing will be drawn by stretching shallower tiles, which\n")
+		fmt.Fprintf(errw, "         still reports as fully covered but carries less detail than this ground has.\n")
+	}
+	source := basemapFetchOpts.source
+	if source == "" {
+		source = tilemap.DefaultArchive
+	}
+	fmt.Fprintf(errw, "         Fetching the rest contacts %s, which learns which\n", hostOf(source))
+	fmt.Fprintf(errw, "         parts of the map you asked about. Afterwards, rendering contacts nobody.\n")
+
+	if !basemapFetchOpts.yes {
+		if !stdinIsATerminal(cmd) {
+			// Nobody is there to answer. Reading anyway would be correct only
+			// if stdin were certain to end, and it is not: a render started
+			// from a script or a job runner inherits a pipe that may stay
+			// open for the life of the parent, and the read blocks forever.
+			// A video that never finishes is a worse outcome than one drawn
+			// without a map, and it is the harder one to diagnose -- there is
+			// no output to look at.
+			fmt.Fprintf(errw, "         nothing is attached to answer, so nothing was fetched; pass --yes, or run \"fitdash basemap fetch ACTIVITY.fit\"\n")
+			return
+		}
+		fmt.Fprintf(errw, "Fetch it now? [y/N] ")
+		line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if err != nil && line == "" {
+			fmt.Fprintf(errw, "\n         no answer, so nothing was fetched; run \"fitdash basemap fetch ACTIVITY.fit\" when you want it\n")
+			return
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+		default:
+			fmt.Fprintf(errw, "\n         not fetched; run \"fitdash basemap fetch ACTIVITY.fit\" when you want it\n")
+			return
+		}
+	}
+
+	if err := fillStore(cmd, root, area); err != nil {
+		// Reported, not returned. The user asked for a video; a download that
+		// failed is a reason to draw a worse map, not a reason to produce
+		// nothing. The render's own basemap summary says what got drawn.
+		fmt.Fprintf(errw, "basemap: %v\n", err)
+		fmt.Fprintf(errw, "         carrying on without it\n")
+	}
+}
+
+// fillStore carries out the fetch offerToFillTheStore just got consent for.
+//
+// It is the same sequence "fitdash basemap fetch" runs -- open the archive,
+// read the credit, plan, add the source, fetch with a progress bar -- and the
+// differences are that the area comes from the render rather than from flags,
+// and that the confirmation already happened further up. There is exactly one
+// consent decision per run and it was taken before anything was read.
+//
+// The plan is reported as one line rather than through writeFetchPlan. That
+// function renders a fetchReport, whose padding figure and flag-derived
+// fields belong to a command whose flags were never registered in this
+// process; printing it here would state a --pad the user never passed.
+func fillStore(cmd *cobra.Command, root string, area slice.Bounds) error {
+	errw := cmd.ErrOrStderr()
+
+	archive, err := openFetchArchive(errw)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	// Read before the plan, because it is the cheapest reason to stop: a
+	// store fitdash cannot credit is one it refuses to draw from, and
+	// finding that out after the download is finding it out too late.
+	credit, err := archive.Attribution()
+	if err != nil {
+		return err
+	}
+
+	store, src, cellZoom := openStoreForPlanning(root, archive)
+	plan, err := archive.Plan(fetchContext(cmd), src, area, cellZoom, acquire.AutoZoom)
+	if err != nil {
+		return err
+	}
+	if plan.Empty() {
+		// Reachable: the shortfall is measured in whole cells, and a cell can
+		// be incomplete in zooms this fetch was never going to take.
+		fmt.Fprintf(errw, "basemap: nothing more to fetch for this activity\n")
+		return nil
+	}
+	fmt.Fprintf(errw, "basemap: %d of %d areas, zooms %d to %d, %d tiles, %s to download\n",
+		plan.CellsToFetch, len(plan.Cells), plan.Zoom.Min, plan.Zoom.Max, plan.Tiles, humanBytes(plan.Transfer))
+
+	if store == nil {
+		if store, err = slice.Create(root, slice.Config{}); err != nil {
+			return fmt.Errorf("creating the map store at %s: %w", root, err)
+		}
+	}
+	if src, err = archive.AddTo(store, credit); err != nil {
+		return err
+	}
+
+	// The trace and the bar cannot share a stream; see openFetchArchive.
+	archive.Silence()
+	display, bar := newFetchBar(errw, plan)
+	res, err := archive.Fetch(fetchContext(cmd), plan, src, func(pr acquire.Progress) {
+		bar.Set(pr.DoneTransfer)
+	})
+	bar.Done()
+	display.Stop()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(errw, "basemap: fetched %d tiles, %s, crediting %s\n",
+		res.Written, humanBytes(res.Transfer), osm.PlainCredit(credit))
+	return nil
+}
+
+// stdinIsATerminal reports whether there is somebody there to answer a
+// prompt.
+//
+// A reader that is not the process's own stdin -- a test's -- is treated as
+// answerable, because it ends when it ends and the caller chose it
+// deliberately. The check is only about the real thing, where the difference
+// between "a person is typing" and "a pipe that may never close" cannot be
+// discovered by reading.
+func stdinIsATerminal(cmd *cobra.Command) bool {
+	f, ok := cmd.InOrStdin().(*os.File)
+	if !ok {
+		return true
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }

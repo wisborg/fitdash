@@ -254,3 +254,93 @@ var (
 	_ Provider = (*Local)(nil)
 	_ Reporter = (*Local)(nil)
 )
+
+// Shortfall is what a store lacks for an area.
+type Shortfall struct {
+	// Empty is a store that is not there at all, or holds no map data yet.
+	// Distinguished from a partial one because the sentence a user needs is
+	// different: one of them is "you have not fetched anything", the other is
+	// "you fetched somewhere else".
+	Empty bool
+
+	// Cells is how many of the store's fetch units the area touches and Held
+	// how many of those hold a finished fetch. Both are zero for an empty
+	// store, which has no cell zoom to count in.
+	Cells, Held int
+
+	// Overview is how many tiles ABOVE the cell zoom the area calls for, and
+	// OverviewHeld how many are there.
+	//
+	// They are the difference between "there is nothing to draw" and "there
+	// is something to draw, blurrily". A store holding the overview but not
+	// the cells renders every pixel -- by overzooming a shallower tile, which
+	// is sharp-looking and short on detail -- and reports full coverage while
+	// doing it. Without this, a shortfall of "0 of 1 areas" would be told to
+	// somebody whose map is about to come out fine, which is the way to teach
+	// them to ignore the message.
+	Overview, OverviewHeld int
+}
+
+// CanFallBack reports whether the store holds any tile the renderer could
+// overzoom to fill the gaps.
+//
+// It is not a claim about quality. One tile at zoom 1 satisfies this, and a
+// view drawn from it is a coloured shape rather than a map -- which is
+// exactly why the distinction is worth reporting: the renderer will report
+// full coverage either way, because coverage counts tiles drawn and not the
+// detail in them. A user seeing "100% covered" over a smear needs the offer
+// to have told them which it was going to be.
+func (s Shortfall) CanFallBack() bool {
+	return !s.Empty && (s.Held > 0 || s.OverviewHeld > 0)
+}
+
+// Complete reports whether the store already holds the whole area.
+func (s Shortfall) Complete() bool { return !s.Empty && s.Cells > 0 && s.Held == s.Cells }
+
+// StoreShortfall reports what the store at root lacks for b, WITHOUT touching
+// the network.
+//
+// That constraint is the whole design of this function, not an optimisation.
+// The question it answers -- should the user be offered a download? -- has to
+// be settled before anything reaches a host, because planning a fetch is
+// itself a request that tells that host which part of the map was asked
+// about. A check that had to plan in order to decide whether to ask
+// permission would have already done the thing it was asking permission for.
+//
+// Everything needed is on disk: the store records which cells hold a finished
+// fetch, and the area is arithmetic. An unreadable store is reported as empty
+// rather than as an error, because the remedy is the same -- fetch into it --
+// and refusing a render over it would be worse than offering to fill it.
+func StoreShortfall(root string, b slice.Bounds) (Shortfall, error) {
+	store, err := slice.Open(root)
+	if err != nil {
+		return Shortfall{Empty: true}, nil
+	}
+	sources, err := store.Sources()
+	if err != nil {
+		return Shortfall{}, fmt.Errorf("tilemap: reading the local map store %s: %w", root, err)
+	}
+	if len(sources) == 0 {
+		return Shortfall{Empty: true}, nil
+	}
+	m, err := newestSource(store, root)
+	if err != nil {
+		return Shortfall{}, err
+	}
+	src, err := store.Source(m.ID)
+	if err != nil {
+		return Shortfall{}, fmt.Errorf("tilemap: opening source %s of the local map store: %w", m.ID, err)
+	}
+	cov, err := src.Coverage(b)
+	if err != nil {
+		return Shortfall{}, fmt.Errorf("tilemap: measuring what %s holds for this activity: %w", root, err)
+	}
+	// Partial cells count as not held. A partial cell is one an interrupted
+	// fetch left tiles in without finishing, so it draws with holes -- which
+	// is the state this offer exists to get the user out of, not a state to
+	// report as covered.
+	return Shortfall{
+		Cells: cov.Cells, Held: cov.Complete,
+		Overview: cov.OverviewWanted, OverviewHeld: cov.OverviewHeld,
+	}, nil
+}

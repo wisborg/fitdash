@@ -656,3 +656,262 @@ func TestRunBasemapFetch_NamesWhoTheMapDataIsOwedTo(t *testing.T) {
 		}
 	}
 }
+
+// TestOfferToFillTheStore_AsksBeforeAnythingIsReadAndFetchesOnYes is the
+// end-to-end of the offer, over a LOCAL archive so the test reaches no
+// network -- which is also the flag's own reason for existing.
+//
+// The three answers are separate cases rather than one loop because they are
+// three different promises. No means nothing is written. Silence -- a
+// pipeline, a closed stdin -- must behave as no rather than as consent, which
+// is the same rule the fetch command's own prompt follows and the one that
+// matters most here, since a render is a thing people run from scripts. Yes
+// means the store ends up holding the area, which is the only one of the
+// three that proves the offer is wired to a real fetch rather than to a
+// message.
+func TestOfferToFillTheStore_AsksBeforeAnythingIsReadAndFetchesOnYes(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		answer  string
+		yesFlag bool
+		filled  bool
+	}{
+		{"no leaves the store alone", "n\n", false, false},
+		{"silence is not consent", "", false, false},
+		{"yes fills it", "y\n", false, true},
+		{"--yes skips the question", "", true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			defer func(o basemapFetchOptions) { basemapFetchOpts = o }(basemapFetchOpts)
+			dir := t.TempDir()
+			fit := writeFetchActivity(t, dir)
+			store := filepath.Join(dir, "store")
+			basemapFetchOpts = basemapFetchOptions{
+				source: buildFetchArchive(t, dir),
+				yes:    c.yesFlag,
+				// The render never registers the fetch command's flags, so
+				// this stands in for the max-zoom default a real run gets.
+				maxZoom: acquire.AutoZoom,
+			}
+
+			track, err := fitactivity.Decode(fit)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			var errw strings.Builder
+			cmd := &cobra.Command{}
+			cmd.SetErr(&errw)
+			cmd.SetIn(strings.NewReader(c.answer))
+
+			offerToFillTheStore(cmd, store, track)
+
+			out := errw.String()
+			// Whatever the answer, the question has to have named the host
+			// and the area before a socket could have been opened. A prompt
+			// that said only "fetch?" would be asking for consent to an
+			// unstated thing.
+			for _, want := range []string{"km", "holds no map data"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("the offer never says %q:\n%s", want, out)
+				}
+			}
+
+			_, err = os.Stat(store)
+			switch {
+			case c.filled && err != nil:
+				t.Fatalf("after %q the store was not created: %v\n%s", c.name, err, out)
+			case !c.filled && err == nil:
+				t.Fatalf("after %q the store exists; declining must write nothing\n%s", c.name, out)
+			case !c.filled:
+				return
+			}
+
+			// Filled means filled for THIS activity: a store that exists but
+			// holds the wrong ground would pass a mere existence check and
+			// still draw nothing.
+			area, err := activityBounds(track, autoFetchPadKM)
+			if err != nil {
+				t.Fatalf("activityBounds: %v", err)
+			}
+			short, err := tilemap.StoreShortfall(store, area)
+			if err != nil {
+				t.Fatalf("StoreShortfall: %v", err)
+			}
+			if !short.Complete() {
+				t.Errorf("after fetching, the store still holds %d of %d areas (empty=%v)\n%s",
+					short.Held, short.Cells, short.Empty, out)
+			}
+		})
+	}
+}
+
+// TestOfferToFillTheStore_SaysNothingWhenTheStoreAlreadyHasIt keeps the offer
+// out of the way of the runs it has nothing to do with.
+//
+// A render whose store already covers the route must not print a privacy
+// notice, ask a question, or open a socket. A prompt that appeared on every
+// run would be one people learn to answer without reading, which is the exact
+// failure mode the rest of this design is trying to avoid.
+func TestOfferToFillTheStore_SaysNothingWhenTheStoreAlreadyHasIt(t *testing.T) {
+	defer func(o basemapFetchOptions) { basemapFetchOpts = o }(basemapFetchOpts)
+	dir := t.TempDir()
+	fit := writeFetchActivity(t, dir)
+	store := filepath.Join(dir, "store")
+	basemapFetchOpts = basemapFetchOptions{source: buildFetchArchive(t, dir), yes: true, maxZoom: acquire.AutoZoom}
+
+	track, err := fitactivity.Decode(fit)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	first := &cobra.Command{}
+	first.SetErr(io.Discard)
+	first.SetIn(strings.NewReader(""))
+	offerToFillTheStore(first, store, track)
+
+	// Second run over the now-filled store: the source is pointed at a path
+	// that does not exist, so any attempt to read an archive fails loudly
+	// rather than passing by luck.
+	basemapFetchOpts.source = filepath.Join(dir, "not-there.pmtiles")
+	var errw strings.Builder
+	second := &cobra.Command{}
+	second.SetErr(&errw)
+	second.SetIn(strings.NewReader(""))
+	offerToFillTheStore(second, store, track)
+
+	if out := errw.String(); out != "" {
+		t.Errorf("a render over a store that already covers the route said:\n%s", out)
+	}
+}
+
+// TestOfferToFillTheStore_DoesNotBlockOnAPipeNobodyWillWriteTo is a bug this
+// found by being run rather than by being reasoned about.
+//
+// The prompt read stdin and treated end-of-input as no, which is right for a
+// terminal and for a closed stream. It is wrong for the case in between: a
+// render started from a script or a job runner inherits a pipe that may stay
+// open for the life of the parent and never deliver anything. The read blocks
+// there forever, and the symptom is a render that produces no output and no
+// error -- the hardest kind of failure to diagnose, because there is nothing
+// to look at.
+//
+// So the question is only asked when something could answer it. The fixture
+// is a real os.Pipe rather than a stub, because the distinction being tested
+// is one only a real file handle has: a strings.Reader ends, and would pass
+// this test without the fix.
+func TestOfferToFillTheStore_DoesNotBlockOnAPipeNobodyWillWriteTo(t *testing.T) {
+	defer func(o basemapFetchOptions) { basemapFetchOpts = o }(basemapFetchOpts)
+	dir := t.TempDir()
+	fit := writeFetchActivity(t, dir)
+	store := filepath.Join(dir, "store")
+	basemapFetchOpts = basemapFetchOptions{source: buildFetchArchive(t, dir), maxZoom: acquire.AutoZoom}
+
+	track, err := fitactivity.Decode(fit)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	// Deliberately left open for the whole test: that IS the condition.
+	defer w.Close()
+	defer r.Close()
+
+	var errw strings.Builder
+	cmd := &cobra.Command{}
+	cmd.SetErr(&errw)
+	cmd.SetIn(r)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		offerToFillTheStore(cmd, store, track)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the offer is still waiting for an answer from a pipe nobody will write to; a render started from a script would never finish")
+	}
+
+	out := errw.String()
+	if !strings.Contains(out, "--yes") {
+		t.Errorf("declining for want of an answer does not say how to say yes in advance:\n%s", out)
+	}
+	if _, err := os.Stat(store); err == nil {
+		t.Errorf("a store was written without anybody consenting to it\n%s", out)
+	}
+}
+
+// TestOfferToFillTheStore_WarnsThatAStretchedMapStillReportsAsCovered closes
+// a gap between two true statements that contradict each other on screen.
+//
+// A store that lacks an area at depth but holds any shallower tile over it
+// does not fail. The renderer fills the view by stretching what it has and
+// reports FULL coverage, because coverage counts tiles drawn and not the
+// detail in them -- so the user reads "100% covered" under a coloured smear.
+// Seen on a real store: zero of one areas held, one of twelve shallow tiles
+// held, and a render that announced full coverage.
+//
+// The assertion is an either/or rather than a skip, so the test says
+// something whichever way the fixture falls: the sentence appears exactly
+// when there is a stretched render to warn about.
+func TestOfferToFillTheStore_WarnsThatAStretchedMapStillReportsAsCovered(t *testing.T) {
+	defer func(o basemapFetchOptions) { basemapFetchOpts = o }(basemapFetchOpts)
+	dir := t.TempDir()
+	store := filepath.Join(dir, "store")
+	basemapFetchOpts = basemapFetchOptions{source: buildFetchArchive(t, dir), yes: true, maxZoom: acquire.AutoZoom}
+
+	// Seed the store from one activity, then ask about ground a long way from
+	// it: non-empty, incomplete for the area asked about, which is the only
+	// arrangement in which the warning is either right or wrong.
+	track, err := fitactivity.Decode(writeFetchActivity(t, dir))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	seed := &cobra.Command{}
+	seed.SetErr(io.Discard)
+	seed.SetIn(strings.NewReader(""))
+	offerToFillTheStore(seed, store, track)
+
+	far := shiftTrack(track, -30)
+	area, err := activityBounds(far, autoFetchPadKM)
+	if err != nil {
+		t.Fatalf("activityBounds: %v", err)
+	}
+	short, err := tilemap.StoreShortfall(store, area)
+	if err != nil {
+		t.Fatalf("StoreShortfall: %v", err)
+	}
+	if short.Complete() || short.Empty {
+		t.Fatalf("precondition: the far area reports %+v; this test needs a store that is neither empty nor complete for it", short)
+	}
+
+	basemapFetchOpts.yes = false
+	var errw strings.Builder
+	cmd := &cobra.Command{}
+	cmd.SetErr(&errw)
+	cmd.SetIn(strings.NewReader("n\n"))
+	offerToFillTheStore(cmd, store, far)
+
+	const warning = "stretching shallower tiles"
+	said := strings.Contains(errw.String(), warning)
+	if want := short.CanFallBack(); said != want {
+		t.Errorf("the offer %s say %q, but the store %s a shallower tile to stretch (%+v):\n%s",
+			map[bool]string{true: "does", false: "does not"}[said], warning,
+			map[bool]string{true: "has", false: "has no"}[want], short, errw.String())
+	}
+}
+
+// shiftTrack moves every fix west by degrees, for a fixture that needs ground
+// a store was not filled for. Longitude only: a shift in latitude would cross
+// into a different band of the projection and change the cell arithmetic
+// being tested.
+func shiftTrack(track *fitactivity.Track, degrees float64) *fitactivity.Track {
+	out := &fitactivity.Track{Samples: append([]fitactivity.Sample(nil), track.Samples...)}
+	for i := range out.Samples {
+		if out.Samples[i].HasGPS {
+			out.Samples[i].Lon += degrees
+		}
+	}
+	return out
+}

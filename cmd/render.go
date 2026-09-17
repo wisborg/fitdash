@@ -472,7 +472,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// model already built rather than each building their own copy of it --
 	// see panel.Context.Elevation's own doc comment.
 	elevTuning, elevSource := resolveElevationTuning(track)
-	basemap, err := resolveBasemap(cmd, theme)
+	basemap, err := resolveBasemap(cmd, theme, track)
 	if err != nil {
 		return err
 	}
@@ -860,7 +860,7 @@ func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses st
 // map is drawn in colours DERIVED from it -- see tilemap.MapInks -- and the
 // theme has already been resolved by the caller. A second resolution here
 // would be a second chance to disagree with the one the panels draw with.
-func resolveBasemap(cmd *cobra.Command, theme panel.Theme) (tilemap.Provider, error) {
+func resolveBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Track) (tilemap.Provider, error) {
 	style := renderOpts.basemap
 	if style == "" || style == basemapOff {
 		if renderOpts.basemapKeyFile != "" {
@@ -875,7 +875,7 @@ func resolveBasemap(cmd *cobra.Command, theme panel.Theme) (tilemap.Provider, er
 		return nil, nil
 	}
 	if style == tilemap.LocalProvider {
-		return resolveLocalBasemap(cmd, theme)
+		return resolveLocalBasemap(cmd, theme, track)
 	}
 	if !slices.Contains(tilemap.ThunderforestStyles, style) {
 		return nil, fmt.Errorf("render: --basemap %q is invalid; use %s, %s or %s",
@@ -916,7 +916,7 @@ func resolveBasemap(cmd *cobra.Command, theme panel.Theme) (tilemap.Provider, er
 // expiry on a slice the user downloaded on purpose -- after which the entry
 // expires into a network fetch this backend cannot perform. See
 // tilemap.OpenLocal.
-func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme) (tilemap.Provider, error) {
+func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Track) (tilemap.Provider, error) {
 	if renderOpts.basemapKeyFile != "" {
 		fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-key-file is not used by --basemap %s, which needs no key and reaches no service\n", tilemap.LocalProvider)
 	}
@@ -941,6 +941,12 @@ func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme) (tilemap.Provide
 	if err != nil {
 		return nil, err
 	}
+	// Before opening it, not after: OpenLocal refuses a store with no map
+	// data in it, so an offer made afterwards would never reach the case it
+	// most exists for -- the first render on a machine that has never
+	// fetched. See offerToFillTheStore.
+	offerToFillTheStore(cmd, store, track)
+
 	provider, err := tilemap.OpenLocal(store, inks)
 	if err != nil {
 		return nil, fmt.Errorf("render: --basemap %s: %w", tilemap.LocalProvider, err)
