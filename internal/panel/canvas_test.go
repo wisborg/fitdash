@@ -564,3 +564,65 @@ func TestCanvasImage_SourceAtTheDestinationSizeIsCopiedExactly(t *testing.T) {
 		}
 	}
 }
+
+// TestNightTheme_IsDarkExceptForWhatItMeansToDiffer keeps the two themes from
+// drifting apart in the ways they are not supposed to differ.
+//
+// night exists to change the MAP, and it was written as DarkTheme with fields
+// overridden rather than as a second copy of the same inks for exactly this
+// reason: two hand-written copies drift the first time one is adjusted, and
+// the drift is invisible -- nobody renders both themes side by side to notice
+// that an accent moved in one of them.
+//
+// Dim is a deliberate exception and is asserted as one. A linework basemap is
+// capped in brightness by the dimmest overlay ink it has to stay 3:1 clear
+// of, so night's Dim is lifted to give the map room: measured, that takes the
+// road ink from 1.26:1 against the background to 1.77:1. It is the one place
+// the dashboard pays for the map, and writing it down here is what stops it
+// being tidied away later as an inconsistency.
+func TestNightTheme_IsDarkExceptForWhatItMeansToDiffer(t *testing.T) {
+	dark, night := DarkTheme(), NightTheme()
+
+	if night.Name != "night" {
+		t.Errorf("Name = %q, want night", night.Name)
+	}
+	if night.Map != MapLinework {
+		t.Error("night does not draw a linework map, which is the only reason it exists")
+	}
+	if dark.Map != MapFilled {
+		t.Error("dark has stopped drawing a filled map; the zero value must be what every theme predating MapStyle drew")
+	}
+	if night.Dim == dark.Dim {
+		t.Error("night's Dim equals dark's: the lift is what gives the linework room to be seen, and without it the map is capped at 1.26:1")
+	}
+
+	for _, c := range []struct {
+		role       string
+		dark, nite color.Color
+	}{
+		{"Background", dark.Background, night.Background},
+		{"Foreground", dark.Foreground, night.Foreground},
+		{"Accent", dark.Accent, night.Accent},
+		{"Absent", dark.Absent, night.Absent},
+		{"Highlight", dark.Highlight, night.Highlight},
+	} {
+		if c.dark != c.nite {
+			t.Errorf("%s differs between dark and night (%v vs %v); night is the dark dashboard with a different map, and every ink it does not deliberately change must come from dark",
+				c.role, c.dark, c.nite)
+		}
+	}
+}
+
+// TestThemes_NightIsSelectable pins that a theme which exists can be asked
+// for. A theme missing from Themes is invisible to --theme and to every test
+// that sweeps the shipped palettes, which is the quiet way a new one arrives
+// untested.
+func TestThemes_NightIsSelectable(t *testing.T) {
+	got, err := SelectTheme("night")
+	if err != nil {
+		t.Fatalf("SelectTheme(night): %v", err)
+	}
+	if got.Map != MapLinework {
+		t.Error("SelectTheme returned a night theme that does not carry the linework map")
+	}
+}

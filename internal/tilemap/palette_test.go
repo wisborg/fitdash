@@ -5,6 +5,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	osm "github.com/wisborg/osmbase/render"
 )
 
 // lightInks is the other polarity: a near-white background with a near-black
@@ -551,5 +553,56 @@ func TestMapInks_TheMapStaysContextEvenWhenTheOverlayWouldAllowItToShout(t *test
 				t.Errorf("the map derived for these inks cannot carry them:\n%v", err)
 			}
 		})
+	}
+}
+
+// TestLocalPalette_LineworkOmitsTheFillsAndKeepsTheLines is the derivation
+// half of the linework style.
+//
+// Two palettes from the SAME inks, differing only in the Linework flag, must
+// differ only in which roles are omitted -- not in the colours. That is the
+// property worth pinning, because the alternative implementation is the
+// tempting one: hide the fills by assigning them the background colour. It
+// produces the same picture and it is wrong, because osmbase refuses a
+// palette whose roles have collapsed into the background -- that being what a
+// derivation gone wrong looks like -- and a hidden role and a collapsed one
+// are the same colour. The declaration is what separates them.
+func TestLocalPalette_LineworkOmitsTheFillsAndKeepsTheLines(t *testing.T) {
+	filled, err := darkInks().localPalette()
+	if err != nil {
+		t.Fatalf("localPalette: %v", err)
+	}
+	lineInks := darkInks()
+	lineInks.Linework = true
+	line, err := lineInks.localPalette()
+	if err != nil {
+		t.Fatalf("localPalette: %v", err)
+	}
+
+	for _, c := range []struct {
+		role         osm.Role
+		name         string
+		wantOmitted  bool
+		whyItMatters string
+	}{
+		{osm.RoleLand, "land", true, "the base surface is a fill"},
+		{osm.RoleGreen, "green", true, "landcover and park are fills"},
+		{osm.RoleBuilt, "built", true, "the built-up surface and the building footprints are fills"},
+		{osm.RoleWater, "water", false, "water is the strongest orientation cue after the roads"},
+		{osm.RoleRoad, "road", false, "the roads ARE the linework"},
+		{osm.RoleInk, "ink", false, "ink carries the railways as well as the boundaries"},
+	} {
+		if got := line.Omits(c.role); got != c.wantOmitted {
+			t.Errorf("linework omits %s = %v, want %v: %s", c.name, got, c.wantOmitted, c.whyItMatters)
+		}
+		if filled.Omits(c.role) {
+			t.Errorf("the filled palette omits %s; it draws every role", c.name)
+		}
+	}
+
+	// Same inks in, same colours out. Only the omission differs.
+	line.Omitted = filled.Omitted
+	if line != filled {
+		t.Errorf("the linework palette's COLOURS differ from the filled one's:\n linework %+v\n filled   %+v\nthe flag selects which roles are drawn, not what they are drawn in", line, filled)
 	}
 }

@@ -64,7 +64,40 @@ type Theme struct {
 	// conflating them would make the current position indistinguishable from
 	// a configured one.
 	Highlight color.Color
+
+	// Map is how a local basemap drawn for this theme is styled.
+	//
+	// It sits on Theme rather than beside it because a map is part of the
+	// dashboard's look: the two are seen at once and a theme that did not own
+	// the choice would let them be combined into pairs nobody designed. The
+	// zero value is MapFilled, which is what every theme predating this field
+	// drew.
+	//
+	// It says nothing about COLOUR -- the map's inks are still derived from
+	// the four above, so a theme cannot hand the map a palette that its own
+	// overlay would disappear into. This picks which roles are drawn, not
+	// what they are drawn in.
+	Map MapStyle
 }
+
+// MapStyle selects which roles a derived basemap draws.
+type MapStyle int
+
+const (
+	// MapFilled draws every role: the landuse and landcover surfaces, water,
+	// buildings, and the linework over them. A map that reads as a map.
+	MapFilled MapStyle = iota
+
+	// MapLinework drops the landuse fills and keeps the lines -- roads, rail
+	// and boundaries -- with water as the only filled feature.
+	//
+	// The fills are what make a basemap read as a map and they are also the
+	// loudest thing on it. Under a route they say almost nothing about where
+	// the activity went, while arriving as large flat regions that dominate
+	// the frame. Water stays because it is the strongest orientation cue
+	// after the roads and is rarely dense enough to be noisy.
+	MapLinework
+)
 
 // DefaultTheme is the palette used when none is chosen.
 func DefaultTheme() Theme { return DarkTheme() }
@@ -103,7 +136,22 @@ func LightTheme() Theme {
 }
 
 // Themes are the palettes --theme can choose, in the order they are offered.
-func Themes() []Theme { return []Theme{DarkTheme(), LightTheme()} }
+func Themes() []Theme { return []Theme{DarkTheme(), LightTheme(), NightTheme()} }
+
+// NightTheme is the dark dashboard with its basemap drawn as linework.
+//
+// It is DarkTheme with one field changed, and deliberately so: the dashboard
+// itself is not what differs between them, and two hand-written copies of the
+// same six inks would drift the first time one of them was adjusted. Anything
+// that should differ beyond the map belongs in this function, where the diff
+// against DarkTheme is the whole description of the theme.
+func NightTheme() Theme {
+	t := DarkTheme()
+	t.Name = "night"
+	t.Map = MapLinework
+	t.Dim = color.RGBA{0x8A, 0x8A, 0x96, 0xFF}
+	return t
+}
 
 // SelectTheme returns the named palette.
 //

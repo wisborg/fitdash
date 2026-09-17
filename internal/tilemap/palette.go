@@ -34,7 +34,31 @@ type MapInks struct {
 	Accent color.Color
 	// Highlight marks a stretch of the foreground as special.
 	Highlight color.Color
+
+	// Linework drops the landuse and building fills from the derived map,
+	// leaving the lines -- roads, rail and boundaries -- with water as the
+	// only filled feature.
+	//
+	// It selects which roles are drawn and not what they are drawn in. The
+	// inks are still derived from the four colours above and still checked
+	// against them, so this cannot produce a map the overlay disappears into;
+	// it can only produce one with less on it.
+	Linework bool
 }
+
+// lineworkOmits are the roles a linework map leaves out.
+//
+// Land, landcover and the built-up surface are the fills. Buildings go with
+// them, since the buildings layer draws in the same role -- which is right:
+// at the zooms an activity is rendered at, building footprints are the
+// densest fill on the map and the least informative about a route.
+//
+// Water is NOT here. It is the strongest orientation cue after the roads, it
+// is rarely dense enough to be noisy, and a linework map that drops it turns
+// a coastal or riverside route into an unplaceable squiggle. Ink is not here
+// either: it carries the railways as well as the boundaries, and a railway is
+// linework by any reading of the word.
+var lineworkOmits = osm.Roles(osm.RoleLand, osm.RoleGreen, osm.RoleBuilt)
 
 // mapRole is one ink of the derived map: the hue it is drawn in, and how
 // loud it is allowed to be relative to the rest of the map.
@@ -220,6 +244,14 @@ func (i MapInks) localPalette() (osm.Palette, error) {
 			quiet, binding, loud, binding)
 	}
 	p := osm.Palette{Background: rgba(i.Background), NoData: noDataDark}
+	if i.Linework {
+		// Declared rather than achieved by colour. osmbase refuses a palette
+		// whose roles have collapsed into the background, because that is
+		// what a derivation gone wrong looks like -- and a hidden role and a
+		// collapsed one are the same colour. Saying which roles are left out
+		// is what separates them; see osmbase's Palette.Omitted.
+		p.Omitted = lineworkOmits
+	}
 	if light {
 		// The map lies BELOW the overlay inks, and so does the hatch. Taken
 		// from the branch band() actually used rather than re-derived from

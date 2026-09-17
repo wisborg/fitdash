@@ -22,6 +22,10 @@ github.com/wisborg/fitactivity v0.6.0 h1:ZfeuPw/F8ii8YClWr980/R5gE6Zb144HYOqn1kb
 github.com/wisborg/fitactivity v0.6.0/go.mod h1:kGTRZjcYlV//SWgrLst0C2ArEEI5H9evTLQ/MZkbKTc=
 github.com/wisborg/osmbase v0.3.0 h1:8G0m6Y3bYjKrTwahkiZeS1OLSQ9gCj76ZHTX19WZeLo=
 github.com/wisborg/osmbase v0.3.0/go.mod h1:udI2sJHIOXyxAKC7c7AS6Z6IgejtzCALCbJOoN3odNg=
+github.com/wisborg/osmbase v0.4.0 h1:YCfoM58qsXwtNFJGb35Fxq0HAUJX9pGwCuQslJeTDjg=
+github.com/wisborg/osmbase v0.4.0/go.mod h1:udI2sJHIOXyxAKC7c7AS6Z6IgejtzCALCbJOoN3odNg=
+github.com/wisborg/osmbase v0.5.0 h1:yAgvEZiIdPWc6pXsR8fiCdiYHPB/838AAzmIf4J3jUk=
+github.com/wisborg/osmbase v0.5.0/go.mod h1:udI2sJHIOXyxAKC7c7AS6Z6IgejtzCALCbJOoN3odNg=
 github.com/wisborg/output v0.3.0 h1:3wlu6OGgANGu+JSTikhse8LiHxaLPyNnTOqavWPH4B4=
 github.com/wisborg/output v0.3.0/go.mod h1:m794j//Iv9G8HvwtVJZ7ugPIOfzHNPbIh5q61HV6AEU=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
