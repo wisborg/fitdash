@@ -636,3 +636,75 @@ func TestNewestSource_ChoosesTheSameWayEveryRunWhenTheTimestampsTie(t *testing.T
 		}
 	}
 }
+
+// TestLocal_OverzoomedKeepsTheWORSTViewAndCoverageCannotSeeIt is the number
+// that stops the summary telling a flattering lie.
+//
+// The two views below are drawn from the SAME one-cell store and both come
+// back fully covered. One is drawn at the zoom its tiles were stored at and
+// is honest pixel for pixel; the other asks for four times the detail and
+// gets it by stretching the same tiles. Coverage cannot tell them apart -- it
+// counts tiles drawn, not the detail in them -- so a render reporting only
+// coverage says 100% over both, and the second is a coloured shape with none
+// of the ground's features in it.
+//
+// That is not hypothetical. Measured against a real store: covered 1.000,
+// overzoomed 1.000, and a summary line claiming a clean draw.
+//
+// Both orders are asserted for the same reason Coverage's test asserts both:
+// one order alone cannot separate "keeps the worst" from "keeps the first" or
+// "keeps the last". Note the direction is opposite to Coverage -- this
+// fraction is bad when HIGH -- which is exactly the kind of thing that gets
+// copied wrong from the line above it.
+func TestLocal_OverzoomedKeepsTheWorstViewAndCoverageCannotSeeIt(t *testing.T) {
+	root, cell := oneCellFixtureStore(t, fixtureLat, fixtureLon)
+	whole := func(px int) View {
+		return View{
+			West: cell.West, East: cell.East,
+			South: cell.South, North: cell.North,
+			Width: px, Height: px,
+		}
+	}
+	// At the stored tiles' own scale nothing is stretched; asking for four
+	// times the pixels over the same ground stretches all of it.
+	sharp, stretched := whole(256), whole(1024)
+
+	for _, c := range []struct {
+		name  string
+		views []View
+	}{
+		{"the stretched view drawn first", []View{stretched, sharp}},
+		{"the stretched view drawn last", []View{sharp, stretched}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, err := OpenLocal(root, darkInks())
+			if err != nil {
+				t.Fatalf("OpenLocal: %v", err)
+			}
+			for i, v := range c.views {
+				if _, err := p.Image(context.Background(), v); err != nil {
+					t.Fatalf("Image %d: %v", i, err)
+				}
+			}
+			if got := p.Coverage(); got != 1 {
+				t.Fatalf("precondition: coverage is %v, so this pair does not isolate overzoom from coverage", got)
+			}
+			if got := p.Overzoomed(); got != 1 {
+				t.Errorf("Overzoomed() = %.3f after drawing a fully stretched view and a sharp one, want the worst of them, 1", got)
+			}
+		})
+	}
+
+	// And the sharp view alone must report nothing, or the figure would be
+	// noise on every render rather than a signal on the ones that need it.
+	p, err := OpenLocal(root, darkInks())
+	if err != nil {
+		t.Fatalf("OpenLocal: %v", err)
+	}
+	if _, err := p.Image(context.Background(), sharp); err != nil {
+		t.Fatalf("Image: %v", err)
+	}
+	if got := p.Overzoomed(); got != 0 {
+		t.Errorf("Overzoomed() = %.3f over tiles drawn at their own zoom, want 0", got)
+	}
+}

@@ -60,6 +60,10 @@ type Local struct {
 	// 1 when nothing has been drawn yet. A render asks for several views and
 	// the honest thing to report is the worst of them, not the last.
 	covered float64
+	// overzoomed is the largest overzoomed fraction any view came back with,
+	// and 0 when nothing has been drawn yet. The opposite direction to
+	// covered above: this one is bad when it is high.
+	overzoomed float64
 }
 
 // OpenLocal opens the store at root and returns a Provider that draws from
@@ -209,6 +213,13 @@ func (l *Local) Image(ctx context.Context, v View) (image.Image, error) {
 	if res.Covered < l.covered {
 		l.covered = res.Covered
 	}
+	// The WORST of each, and they run in opposite directions: coverage is a
+	// fraction that should be high, overzoom a fraction that should be low.
+	// Keeping the extreme of each is what stops one good view in the middle
+	// of a route reporting away a bad one at its start.
+	if res.Overzoomed > l.overzoomed {
+		l.overzoomed = res.Overzoomed
+	}
 	l.mu.Unlock()
 	return res.Image, nil
 }
@@ -222,6 +233,22 @@ func (l *Local) Coverage() float64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.covered
+}
+
+// Overzoomed is the largest fraction of any drawn view that had to be
+// stretched from a tile shallower than the view asked for, and 0 before
+// anything has been drawn.
+//
+// It is reported separately from Coverage because it is the failure Coverage
+// cannot see. A view with no tile at all is hatched and counts as uncovered;
+// a view whose tiles exist only further up the pyramid is drawn completely,
+// counts as fully covered, and comes out as a coloured shape with none of the
+// detail the ground has. Without this, the summary's only honest-looking
+// number says 100% over a smear.
+func (l *Local) Overzoomed() float64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.overzoomed
 }
 
 // Attribution is the credit the store's own manifest records.

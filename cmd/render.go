@@ -1225,11 +1225,31 @@ func writeBasemapSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs
 	if l, ok := in.basemap.(*tilemap.Local); ok {
 		source = "drawn here from " + l.Root()
 		origin = "nothing was sent to anybody"
+		// Two different ways a local map falls short, reported together
+		// because a render can suffer both and because they are invisible in
+		// opposite ways.
+		var caveats []string
 		if c := l.Coverage(); c < 1 {
 			// Said in words because the picture already says it in hatching,
 			// and a viewer who did not fetch the whole area has no other way
 			// to tell a hatched gap from a rendering fault.
-			origin = fmt.Sprintf("%.0f%% of the map area is in the store, the rest is hatched; nothing was sent to anybody", c*100)
+			caveats = append(caveats, fmt.Sprintf("%.0f%% of the map area is in the store, the rest is hatched", c*100))
+		}
+		// The one the other number cannot show. A view whose tiles exist only
+		// further up the pyramid is drawn COMPLETELY and counts as fully
+		// covered, so without this the summary's only figure says 100% over a
+		// coloured shape with none of the ground's detail in it. Measured at
+		// 100% covered and 100% stretched on a real store, which is the pair
+		// that makes the old line a false account of the picture.
+		//
+		// Printed only when it would round to a visible figure: a line
+		// reading "0% was stretched" is noise, and the percentage is what the
+		// reader acts on.
+		if o := l.Overzoomed(); math.Round(o*100) >= 1 {
+			caveats = append(caveats, fmt.Sprintf("%.0f%% was stretched from shallower tiles, which looks sharp but holds less detail -- fetch this area to sharpen it", o*100))
+		}
+		if len(caveats) > 0 {
+			origin = strings.Join(caveats, "; ") + "; nothing was sent to anybody"
 		}
 	} else {
 		source = tilemap.ThunderforestProvider + " " + renderOpts.basemap

@@ -3584,3 +3584,44 @@ func TestWriteBasemapSummary_ALocalFailureDoesNotSendTheUserToLookAtTheirNetwork
 		}
 	}
 }
+
+// TestWriteBasemapSummary_SaysWhenTheMapWasStretchedRatherThanDrawn is the
+// correction to a line that was quietly false.
+//
+// A local render whose store lacks the area at depth does not fail. The
+// renderer fills every view by stretching a shallower tile, coverage counts
+// tiles drawn rather than the detail in them, and the summary said "nothing
+// was sent to anybody" with no other qualification -- a clean account of a
+// picture that is a coloured shape. Measured on a real store: 100% covered,
+// 100% stretched, and a summary implying a proper map.
+//
+// The two figures are reported together when both apply, because they are
+// different failures that a render can suffer at once and that hide in
+// opposite ways: a hatched gap is visible and unexplained, a stretched tile
+// is explained by nothing because it looks fine.
+func TestWriteBasemapSummary_SaysWhenTheMapWasStretchedRatherThanDrawn(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	root := localBasemapFixtureStore(t)
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()))
+	if err != nil {
+		t.Fatalf("OpenLocal: %v", err)
+	}
+	renderOpts = renderOptions{basemap: tilemap.LocalProvider, basemapDim: 0}
+	r, in := basemapSummaryRender(t, provider)
+
+	if provider.Overzoomed() == 0 {
+		t.Fatalf("precondition: the fixture render stretched nothing, so this test proves nothing")
+	}
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetErr(&buf)
+	writeBasemapSummary(cmd, r, in)
+
+	out := buf.String()
+	for _, want := range []string{"stretched from shallower tiles", "holds less detail", "nothing was sent to anybody"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary is missing %q; got:\n%s", want, out)
+		}
+	}
+}
