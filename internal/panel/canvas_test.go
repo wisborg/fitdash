@@ -626,3 +626,26 @@ func TestThemes_NightIsSelectable(t *testing.T) {
 		t.Error("SelectTheme returned a night theme that does not carry the linework map")
 	}
 }
+
+// TestDefaultTheme_IsNight pins the default as a fact rather than leaving it
+// to whichever theme a reader assumes.
+//
+// It is asserted through DefaultTheme AND through the map it carries, because
+// the reason night is the default is the map: the two dashboards are near
+// enough identical, so what the default really chooses is which basemap
+// somebody gets without asking. A change that kept the name and dropped the
+// linework would satisfy half of this and miss the point of it.
+func TestDefaultTheme_IsNight(t *testing.T) {
+	d := DefaultTheme()
+	if d.Name != "night" {
+		t.Errorf("DefaultTheme is %q, want night", d.Name)
+	}
+	if d.Map != MapLinework {
+		t.Error("the default theme does not draw a linework map, which is the reason it is the default")
+	}
+	// And it must be one of the themes --theme can name, or the default is a
+	// palette the user cannot ask for by name or get back to.
+	if _, err := SelectTheme(d.Name); err != nil {
+		t.Errorf("the default theme is not selectable by name: %v", err)
+	}
+}

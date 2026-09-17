@@ -284,10 +284,11 @@ func bindRenderFlags(c *cobra.Command) {
 			"naming how much activity time went missing there, and the summary reports the total. Pairs naturally "+
 			"with --clock active, which is not implied: neither flag turns the other on")
 	f.StringVar(&renderOpts.theme, "theme", panel.DefaultTheme().Name,
-		"colour palette -- \"dark\" (default), \"light\", or \"night\": the dark dashboard with a basemap drawn as linework, "+
-			"which drops the landuse fills and keeps the roads, railways and boundaries with water as the only filled "+
-			"feature. It only changes what --basemap "+tilemap.LocalProvider+" draws; a render without a basemap looks "+
-			"the same as \"dark\" except for slightly lighter chrome")
+		"colour palette -- \"night\" (default), \"dark\" or \"light\". night and dark are the same dashboard; they differ in "+
+			"the basemap --basemap "+tilemap.LocalProvider+" draws for them. night draws it as linework: the roads, railways "+
+			"and boundaries over black, with water as the only filled feature. dark fills the landuse surfaces as well, which "+
+			"is more map and more of it competing with the route. Without a basemap the two differ only in slightly lighter "+
+			"chrome under night")
 	f.StringVar(&renderOpts.gaugeStyle, "gauge-style", panel.GaugeStyleNamePlain,
 		"how the fluctuating gauges -- heart rate, pace, power, cadence -- show their reading: \"plain\" (default: the number "+
 			"alone), \"track\" (adds a scale beneath it, marked at the current value, with both ends labelled), or \"dial\" "+

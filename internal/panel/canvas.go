@@ -100,7 +100,16 @@ const (
 )
 
 // DefaultTheme is the palette used when none is chosen.
-func DefaultTheme() Theme { return DarkTheme() }
+//
+// night rather than dark. The two dashboards are near enough identical --
+// night lifts Dim and nothing else -- so what this chooses is really which
+// basemap a user gets without asking for one, and the linework map is the
+// better default for the thing being drawn. A route is the subject of the
+// frame; landuse fills are the loudest thing on a filled map and the least
+// informative about where somebody ran.
+//
+// dark keeps the filled map and is one flag away.
+func DefaultTheme() Theme { return NightTheme() }
 
 // DarkTheme is a dark dashboard with a warm accent.
 func DarkTheme() Theme {
@@ -136,9 +145,10 @@ func LightTheme() Theme {
 }
 
 // Themes are the palettes --theme can choose, in the order they are offered.
-func Themes() []Theme { return []Theme{DarkTheme(), LightTheme(), NightTheme()} }
+func Themes() []Theme { return []Theme{NightTheme(), DarkTheme(), LightTheme()} }
 
-// NightTheme is the dark dashboard with its basemap drawn as linework.
+// NightTheme is the dark dashboard with its basemap drawn as linework, and is
+// the default -- see DefaultTheme.
 //
 // It is DarkTheme with one field changed, and deliberately so: the dashboard
 // itself is not what differs between them, and two hand-written copies of the
