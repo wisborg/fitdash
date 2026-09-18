@@ -228,7 +228,7 @@ func TestRunBasemapFetch_FillsAStoreTheRenderCanDrawFrom(t *testing.T) {
 	// Real inks, not a zero MapInks. The zero value has nil colours in every
 	// field, which is not a palette this program can ever build -- and passing
 	// it here tested the store round trip through a code path no render takes.
-	p, err := tilemap.OpenLocal(store, mapInksFor(panel.DefaultTheme()))
+	p, err := tilemap.OpenLocal(store, mapInksFor(panel.DefaultTheme()), nil)
 	if err != nil {
 		t.Fatalf("the render cannot open the store this command just filled: %v", err)
 	}

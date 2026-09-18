@@ -128,7 +128,7 @@ func fixtureView(lat, lon float64) View {
 // are the same defect here and both have to fail.
 func TestLocal_FetchedIsFalseSoNoRunIsReportedAsHavingSentAnything(t *testing.T) {
 	root := localFixtureStore(t, fixtureLat, fixtureLon, fixtureCredit)
-	p, err := OpenLocal(root, darkInks())
+	p, err := OpenLocal(root, darkInks(), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestLocal_FetchedIsFalseSoNoRunIsReportedAsHavingSentAnything(t *testing.T)
 // (98.765432,12.345678) lands on ground the store has nothing for.
 func TestLocal_DrawsTheGroundItWasAskedAboutAndRefusesGroundItHasNone(t *testing.T) {
 	root := localFixtureStore(t, fixtureLat, fixtureLon, fixtureCredit)
-	p, err := OpenLocal(root, darkInks())
+	p, err := OpenLocal(root, darkInks(), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestLocal_DrawsTheGroundItWasAskedAboutAndRefusesGroundItHasNone(t *testing
 func TestLocal_AttributionIsReadFromTheStoreRatherThanWrittenDownHere(t *testing.T) {
 	const other = "Map data © Somebody Else, under some other licence"
 	root := localFixtureStore(t, fixtureLat, fixtureLon, other)
-	p, err := OpenLocal(root, darkInks())
+	p, err := OpenLocal(root, darkInks(), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestLocal_AttributionIsReadFromTheStoreRatherThanWrittenDownHere(t *testing
 // are the two wrong answers.
 func TestOpenLocal_RefusesAStoreThatNamesNobodyToCredit(t *testing.T) {
 	root := localFixtureStore(t, fixtureLat, fixtureLon, "")
-	_, err := OpenLocal(root, darkInks())
+	_, err := OpenLocal(root, darkInks(), nil)
 	if err == nil {
 		t.Fatal("a store with no attribution was accepted")
 	}
@@ -232,7 +232,7 @@ func TestOpenLocal_RefusesAStoreThatNamesNobodyToCredit(t *testing.T) {
 // think to if the render simply comes out plain.
 func TestOpenLocal_SaysSoWhenThereIsNoStoreOrNoDataInIt(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nothing-here")
-	if _, err := OpenLocal(missing, darkInks()); err == nil {
+	if _, err := OpenLocal(missing, darkInks(), nil); err == nil {
 		t.Error("a store directory that does not exist was accepted")
 	} else if !strings.Contains(err.Error(), missing) {
 		t.Errorf("error does not name the directory: %v", err)
@@ -242,7 +242,7 @@ func TestOpenLocal_SaysSoWhenThereIsNoStoreOrNoDataInIt(t *testing.T) {
 	if _, err := slice.Create(empty, slice.Config{}); err != nil {
 		t.Fatalf("creating an empty store: %v", err)
 	}
-	_, err := OpenLocal(empty, darkInks())
+	_, err := OpenLocal(empty, darkInks(), nil)
 	if err == nil {
 		t.Fatal("a store holding no map data was accepted")
 	}
@@ -256,7 +256,7 @@ func TestOpenLocal_SaysSoWhenThereIsNoStoreOrNoDataInIt(t *testing.T) {
 // of the assertion is that the name distinguishes two stores anyway rather
 // than collapsing every local render onto one key.
 func TestLocal_NameIdentifiesTheSourceItDrawsFrom(t *testing.T) {
-	p, err := OpenLocal(localFixtureStore(t, fixtureLat, fixtureLon, fixtureCredit), darkInks())
+	p, err := OpenLocal(localFixtureStore(t, fixtureLat, fixtureLon, fixtureCredit), darkInks(), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestLocal_AnHTMLAttributionBecomesTextTheFrameCanCarry(t *testing.T) {
 	const markup = `<a href="https://example.test/copyright" target="_blank">&copy; OpenStreetMap contributors</a>`
 	const want = "© OpenStreetMap contributors"
 
-	p, err := OpenLocal(localFixtureStore(t, fixtureLat, fixtureLon, markup), darkInks())
+	p, err := OpenLocal(localFixtureStore(t, fixtureLat, fixtureLon, markup), darkInks(), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestLocal_CoverageKeepsTheWORSTViewDrawnRatherThanTheLatestOrTheBest(t *tes
 		{"the worst view drawn last", []View{held, straddling}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			p, err := OpenLocal(root, darkInks())
+			p, err := OpenLocal(root, darkInks(), nil)
 			if err != nil {
 				t.Fatalf("OpenLocal: %v", err)
 			}
@@ -442,7 +442,7 @@ func TestLocal_CoverageKeepsTheWORSTViewDrawnRatherThanTheLatestOrTheBest(t *tes
 func TestOpenLocal_RefusesAStoreWhoseCreditIsNothingButWhitespace(t *testing.T) {
 	const blank = " \t\n  "
 	root := localFixtureStore(t, fixtureLat, fixtureLon, blank)
-	_, err := OpenLocal(root, darkInks())
+	_, err := OpenLocal(root, darkInks(), nil)
 	if err == nil {
 		t.Fatal("a store whose attribution is only whitespace was accepted; the render would credit nobody")
 	}
@@ -677,7 +677,7 @@ func TestLocal_OverzoomedKeepsTheWorstViewAndCoverageCannotSeeIt(t *testing.T) {
 		{"the stretched view drawn last", []View{sharp, stretched}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			p, err := OpenLocal(root, darkInks())
+			p, err := OpenLocal(root, darkInks(), nil)
 			if err != nil {
 				t.Fatalf("OpenLocal: %v", err)
 			}
@@ -697,7 +697,7 @@ func TestLocal_OverzoomedKeepsTheWorstViewAndCoverageCannotSeeIt(t *testing.T) {
 
 	// And the sharp view alone must report nothing, or the figure would be
 	// noise on every render rather than a signal on the ones that need it.
-	p, err := OpenLocal(root, darkInks())
+	p, err := OpenLocal(root, darkInks(), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}

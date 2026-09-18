@@ -3,6 +3,7 @@ package tilemap
 import (
 	"context"
 	"fmt"
+	"golang.org/x/image/font"
 	"image"
 	"sync"
 
@@ -103,7 +104,7 @@ type Local struct {
 // meaning two different things depending on who asked for it. See
 // render.PlainCredit in osmbase, which both this and osmbase's own render
 // command call so the obligation is discharged one way.
-func OpenLocal(root string, inks MapInks) (*Local, error) {
+func OpenLocal(root string, inks MapInks, labels font.Face) (*Local, error) {
 	store, err := slice.Open(root)
 	if err != nil {
 		// Opening, never creating. A render cannot fill a store -- filling is
@@ -142,6 +143,11 @@ func OpenLocal(root string, inks MapInks) (*Local, error) {
 		Style:       osm.BasemapStyle(),
 		Palette:     palette,
 		Attribution: credit,
+		// A nil face draws no labels, which is the right answer rather than a
+		// degraded one: osmbase ships no font of its own, so the alternative
+		// to the caller's face is a second typeface inside a frame that
+		// already has one. A caller with no font did not ask for text.
+		LabelFace: labels,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: preparing to draw from the local map store %s: %w", root, err)

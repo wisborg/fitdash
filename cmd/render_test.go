@@ -966,7 +966,7 @@ func TestResolveBasemap_NoStyleFetchesNothing(t *testing.T) {
 			var buf bytes.Buffer
 			c := &cobra.Command{}
 			c.SetErr(&buf)
-			p, err := resolveBasemap(c, panel.DarkTheme(), nil)
+			p, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 			if err != nil {
 				t.Fatalf("resolveBasemap: %v", err)
 			}
@@ -991,7 +991,7 @@ func TestResolveBasemap_KeyFileWithNoStyleWarns(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	p, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	p, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -1012,7 +1012,7 @@ func TestResolveBasemap_RefusesAnUnknownStyle(t *testing.T) {
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	_, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	_, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err == nil {
 		t.Fatal("an unknown --basemap style was accepted")
 	}
@@ -1030,7 +1030,7 @@ func TestResolveBasemap_RequiresAKeyFile(t *testing.T) {
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	_, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	_, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err == nil {
 		t.Fatal("--basemap with no --basemap-key-file was accepted")
 	}
@@ -1052,7 +1052,7 @@ func TestResolveBasemap_ValidStyleAndKeyResolveAThunderforestProvider(t *testing
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetErr(&buf)
-	p, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	p, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -1081,7 +1081,7 @@ func TestResolveBasemap_WrapsInACacheUnlessDisabled(t *testing.T) {
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	p, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	p, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -1112,7 +1112,7 @@ func TestResolveBasemap_WorldReadableKeyWarnsButStillResolves(t *testing.T) {
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetErr(&buf)
-	p, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	p, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -1134,7 +1134,7 @@ func TestResolveBasemap_MissingKeyFileFails(t *testing.T) {
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	_, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	_, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err == nil {
 		t.Fatal("a missing key file was accepted")
 	}
@@ -3249,7 +3249,7 @@ func TestResolveBasemap_LocalIsNeverWrappedInTheImageCache(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	c.SetErr(&buf)
-	p, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	p, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -3287,7 +3287,7 @@ func TestResolveBasemap_LocalNeedsNoKeyAndSaysSoIfGivenOne(t *testing.T) {
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetErr(&buf)
-	p, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	p, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err != nil {
 		t.Fatalf("resolveBasemap: %v", err)
 	}
@@ -3310,7 +3310,7 @@ func TestResolveBasemap_LocalWithNoStoreIsARefusalRatherThanAPlainRender(t *test
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
-	_, err := resolveBasemap(c, panel.DarkTheme(), nil)
+	_, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err == nil {
 		t.Fatal("--basemap local with no store resolved silently")
 	}
@@ -3329,7 +3329,7 @@ func TestResolveBasemap_LocalWithNoStoreIsARefusalRatherThanAPlainRender(t *test
 func TestWriteBasemapSummary_LocalSaysNothingWasSentAndNamesTheStore(t *testing.T) {
 	defer func(o renderOptions) { renderOpts = o }(renderOpts)
 	root := localBasemapFixtureStore(t)
-	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()))
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -3500,7 +3500,7 @@ func straddlingView(t *testing.T, root string) tilemap.View {
 func TestWriteBasemapSummary_LocalSaysHowMuchOfTheAreaTheStoreActuallyHeld(t *testing.T) {
 	defer func(o renderOptions) { renderOpts = o }(renderOpts)
 	root := localBasemapFixtureStore(t)
-	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()))
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -3558,7 +3558,7 @@ func TestWriteBasemapSummary_ALocalFailureDoesNotSendTheUserToLookAtTheirNetwork
 	// latitude the projection treats the same way.
 	elsewhere := slice.Bounds{West: 68.75, South: 12.33, East: 68.78, North: 12.36}
 	root := localBasemapFixtureStoreOver(t, elsewhere)
-	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()))
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -3602,7 +3602,7 @@ func TestWriteBasemapSummary_ALocalFailureDoesNotSendTheUserToLookAtTheirNetwork
 func TestWriteBasemapSummary_SaysWhenTheMapWasStretchedRatherThanDrawn(t *testing.T) {
 	defer func(o renderOptions) { renderOpts = o }(renderOpts)
 	root := localBasemapFixtureStore(t)
-	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()))
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}

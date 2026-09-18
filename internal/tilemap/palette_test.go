@@ -606,3 +606,44 @@ func TestLocalPalette_LineworkOmitsTheFillsAndKeepsTheLines(t *testing.T) {
 		t.Errorf("the linework palette's COLOURS differ from the filled one's:\n linework %+v\n filled   %+v\nthe flag selects which roles are drawn, not what they are drawn in", line, filled)
 	}
 }
+
+// TestLabelInk_ClearsTheFloorTheMapInksAreCappedBelow is the one derivation
+// in this file that deliberately escapes the band.
+//
+// Every other map ink is placed inside a luminance band whose loud end is
+// capped by the dimmest overlay colour, because areas and lines have to stay
+// behind what is drawn over them. A label is text: it is held to a FLOOR
+// instead, and that floor sits ABOVE the band's ceiling. Deriving it through
+// the band -- the obvious thing to do, since every other role goes that way --
+// would place names among the fills and make them unreadable by construction,
+// and it would look entirely consistent with the code around it.
+//
+// Asserted for both polarities because the arithmetic inverts: on a light
+// theme the label has to be DARKER than its background to gain contrast, and
+// a version that only ever added luminance would pass on dark and produce
+// near-white names on near-white paper.
+func TestLabelInk_ClearsTheFloorTheMapInksAreCappedBelow(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		inks MapInks
+	}{
+		{"dark background", darkInks()},
+		{"light background", lightInks()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, err := c.inks.localPalette()
+			if err != nil {
+				t.Fatalf("localPalette: %v", err)
+			}
+			got := osm.ContrastRatio(p.Label, p.Background)
+			if got < osm.MinLabelRatio {
+				t.Errorf("Label is %.2f:1 against the background, below the %.1f a reader needs for small text", got, osm.MinLabelRatio)
+			}
+			// And above the map it sits on, or the names would be lost among
+			// the linework they are meant to explain.
+			if road := osm.ContrastRatio(p.Road, p.Background); got <= road {
+				t.Errorf("Label is %.2f:1 and Road is %.2f:1: a name no louder than the roads is not a label", got, road)
+			}
+		})
+	}
+}

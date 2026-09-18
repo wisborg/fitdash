@@ -627,6 +627,17 @@ func (c *Canvas) Text(s string, x, y, ax, ay, px float64, col color.Color) error
 // influencing what is drawn, which is exactly the kind of thing the static
 // layer cannot see: chrome laid out against one size while the value drawn
 // over it used another.
+// Face returns a font face at a pixel size, for a caller that draws text
+// itself rather than through this package.
+//
+// The basemap is the case this exists for. osmbase draws map labels and takes
+// the face from its consumer rather than shipping one, precisely so that the
+// names on the map are set in the same typeface as the numbers beside them --
+// a map labelled in some other font reads as a second picture pasted into the
+// frame. Exported for that, and kept narrow: a caller gets a face and nothing
+// about how the cache holds it.
+func (c *FaceCache) Face(px float64) (font.Face, error) { return c.face(px) }
+
 func (c *FaceCache) Measure(s string, px float64) (w, h float64, err error) {
 	face, err := c.face(px)
 	if err != nil {

@@ -258,6 +258,7 @@ func (i MapInks) localPalette() (osm.Palette, error) {
 		// quiet > loud, which is also true of a collapsed dark band.
 		p.NoData = noDataLight
 	}
+	p.Label = i.labelInk(quiet, light)
 	for _, r := range mapRoles {
 		// Three steps, in this order. Luminance first, because that is what
 		// every contrast guarantee in this file is written in; then chroma,
@@ -274,6 +275,53 @@ func (i MapInks) localPalette() (osm.Palette, error) {
 		r.set(&p, nearestStorable(ink, target, maxRoleChroma))
 	}
 	return p, nil
+}
+
+// labelRatio is how far a map label stands from the background, as a contrast
+// ratio.
+//
+// osmbase's MinLabelRatio is 4.5, the floor below which small text stops
+// being readable. This aims above it rather than at it, for two reasons that
+// pull the same way. The ratio is computed against the background the map is
+// PAINTED on, while a label is often read against a road or a water body that
+// is already a little brighter, so the effective contrast at the glyph is
+// lower than the number says. And the derivation lands on eight-bit channels,
+// so a target sitting exactly on a threshold can round to the wrong side of
+// it.
+//
+// It is not pushed higher than this. A label brighter than the route drawn
+// over it would turn the map's names into the loudest thing in the frame,
+// which is the failure the whole contrast apparatus exists to prevent -- just
+// with text instead of a landuse fill.
+const labelRatio = 6.0
+
+// labelInk is the colour map labels are drawn in.
+//
+// Derived apart from the six roles in mapRoles, and that separation is the
+// point rather than an inconvenience. Those are placed inside a band whose
+// loud end is capped by the dimmest overlay ink, because they are areas and
+// lines that must stay behind what is drawn over them. A label is text: it
+// has to be read, it is held to a FLOOR rather than a ceiling, and that floor
+// sits above the band's ceiling. Deriving it through the band would place it
+// among the fills and make it unreadable by construction.
+//
+// The hue comes from the theme's Dim ink, which is the dashboard's own colour
+// for "present, but not what the eye should land on" -- the same thing a
+// place name is. Only the luminance is replaced.
+func (i MapInks) labelInk(quiet float64, light bool) color.RGBA {
+	// Solved from the WCAG ratio rather than searched for: with the
+	// background's luminance known, the luminance that sits at a given ratio
+	// from it is one rearrangement away. The polarity comes from the caller
+	// rather than being re-derived here, for the same reason band returns it
+	// -- see band's own comment on what a collapsed dark band does to a test
+	// for "is this a light theme".
+	target := labelRatio*(quiet+0.05) - 0.05
+	if light {
+		target = (quiet+0.05)/labelRatio - 0.05
+	}
+	target = math.Min(math.Max(target, 0), 1)
+	ink := atChroma(atLuminance(rgba(i.Dim), target), maxRoleChroma)
+	return nearestStorable(ink, target, maxRoleChroma)
 }
 
 // band is the luminance interval the map's inks may occupy, from the end
