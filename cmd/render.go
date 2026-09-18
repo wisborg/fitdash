@@ -477,7 +477,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// model already built rather than each building their own copy of it --
 	// see panel.Context.Elevation's own doc comment.
 	elevTuning, elevSource := resolveElevationTuning(track)
-	basemap, err := resolveBasemap(cmd, theme, track, basemapLabelFace(cmd, fonts, h))
+	basemap, err := resolveBasemap(cmd, theme, track, basemapLabelFaces(cmd, fonts, h))
 	if err != nil {
 		return err
 	}
@@ -865,7 +865,7 @@ func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses st
 // map is drawn in colours DERIVED from it -- see tilemap.MapInks -- and the
 // theme has already been resolved by the caller. A second resolution here
 // would be a second chance to disagree with the one the panels draw with.
-func resolveBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Track, labels font.Face) (tilemap.Provider, error) {
+func resolveBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Track, labels tilemap.LabelFaces) (tilemap.Provider, error) {
 	style := renderOpts.basemap
 	if style == "" || style == basemapOff {
 		if renderOpts.basemapKeyFile != "" {
@@ -921,7 +921,7 @@ func resolveBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Tr
 // expiry on a slice the user downloaded on purpose -- after which the entry
 // expires into a network fetch this backend cannot perform. See
 // tilemap.OpenLocal.
-func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Track, labels font.Face) (tilemap.Provider, error) {
+func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Track, labels tilemap.LabelFaces) (tilemap.Provider, error) {
 	if renderOpts.basemapKeyFile != "" {
 		fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-key-file is not used by --basemap %s, which needs no key and reaches no service\n", tilemap.LocalProvider)
 	}
@@ -973,27 +973,49 @@ func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivi
 // names relative to the sheet.
 const basemapLabelHeight = 0.013
 
-// basemapLabelFace is the face the basemap draws its place names in.
+// basemapLabelFaces is how the basemap sizes its names.
 //
-// It comes from the dashboard's own cache, so the map is lettered in the same
-// typeface as everything else in the frame. That is the whole reason osmbase
-// takes a face instead of shipping one: a map labelled in a different font
-// reads as a second picture pasted into the render rather than as part of it.
+// Faces come from the dashboard's own cache, so the map is lettered in the
+// same typeface as everything else in the frame. That is the whole reason
+// osmbase takes a face instead of shipping one: a map labelled in a different
+// font reads as a second picture pasted into the render rather than as part
+// of it.
+//
+// A function rather than one face, because osmbase sets a place name larger
+// than a street name and asks the caller for each size -- it parses no fonts
+// itself. Without this a map draws every name at one size, which is what
+// fitdash did before and is the thing that made "Horsens" indistinguishable
+// from "Schüttesvej".
 //
 // A failure here is not fatal and is reported rather than returned. The face
 // is for NAMES on a background map; losing it costs the labels, and refusing
 // to render a video because a font size would not build would be losing the
 // picture over its captions.
-func basemapLabelFace(cmd *cobra.Command, fonts *panel.FaceCache, frameH int) font.Face {
+func basemapLabelFaces(cmd *cobra.Command, fonts *panel.FaceCache, frameH int) tilemap.LabelFaces {
 	if fonts == nil {
 		return nil
 	}
-	face, err := fonts.Face(float64(frameH) * basemapLabelHeight)
-	if err != nil {
+	// Resolved once, here, rather than left to fail later: a font size that
+	// will not build is a problem with this render's configuration and the
+	// place to say so is before the frames start, not on the first frame that
+	// happens to contain a place name.
+	if _, err := fonts.Face(float64(frameH) * basemapLabelHeight); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the basemap will be drawn without place names: %v\n", err)
 		return nil
 	}
-	return face
+	return func(scale float64) font.Face {
+		if scale == 0 {
+			scale = 1
+		}
+		face, err := fonts.Face(float64(frameH) * basemapLabelHeight * scale)
+		if err != nil {
+			// One size failing is not a reason to lose every label: the
+			// caller falls back to the base face, which has already been
+			// shown to build.
+			return nil
+		}
+		return face
+	}
 }
 
 // mapInksFor is the one place a fitdash theme becomes the overlay the local

@@ -1,15 +1,21 @@
 package tilemap
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
 	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/gomono"
+	"golang.org/x/image/font/opentype"
 
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/mvt"
@@ -707,4 +713,151 @@ func TestLocal_OverzoomedKeepsTheWorstViewAndCoverageCannotSeeIt(t *testing.T) {
 	if got := p.Overzoomed(); got != 0 {
 		t.Errorf("Overzoomed() = %.3f over tiles drawn at their own zoom, want 0", got)
 	}
+}
+
+// namedPlaceStore builds a store whose tiles carry a named place, so that a
+// render through it actually draws a label.
+//
+// The ordinary fixture is one earth polygon and produces no names at all,
+// which is why every label assertion before this one had to be made in
+// osmbase. A label is only interesting HERE once it has travelled through
+// this package's palette, its face plumbing and its renderer options.
+func namedPlaceStore(t *testing.T, lat, lon float64, name string) (root string, cell slice.Bounds) {
+	t.Helper()
+	root = filepath.Join(t.TempDir(), "store")
+
+	tile, err := osmbasetest.BuildTile(osmbasetest.TileSpec{Layers: []osmbasetest.LayerSpec{
+		{
+			Name: "earth",
+			Features: []osmbasetest.FeatureSpec{{
+				Type: mvt.GeomPolygon,
+				Geometry: mvt.Geometry{Polygons: []mvt.Polygon{{
+					Exterior: mvt.Ring{{X: 0, Y: 0}, {X: 4096, Y: 0}, {X: 4096, Y: 4096}, {X: 0, Y: 4096}},
+				}}},
+			}},
+		},
+		{
+			Name: "places",
+			Features: []osmbasetest.FeatureSpec{{
+				Type: mvt.GeomPoint,
+				Tags: []osmbasetest.Tag{
+					{Key: "name", Value: mvt.StringValue(name)},
+					{Key: "kind", Value: mvt.StringValue("locality")},
+					{Key: "min_zoom", Value: mvt.SintValue(0)},
+				},
+				Geometry: mvt.Geometry{Points: []mvt.Point{{X: 2048, Y: 2048}}},
+			}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("building the fixture tile: %v", err)
+	}
+
+	store, err := slice.Create(root, slice.Config{})
+	if err != nil {
+		t.Fatalf("creating the fixture store: %v", err)
+	}
+	src, err := store.AddSource(slice.SourceDesc{
+		Source: "synthetic.pmtiles", Build: "fixture",
+		Schema: "protomaps/basemap v4", Attribution: fixtureCredit,
+		TileType: "mvt", TileCompression: slice.CompressionNone,
+		SourceZoom: slice.ZoomRange{Min: 0, Max: 15},
+	})
+	if err != nil {
+		t.Fatalf("adding the fixture source: %v", err)
+	}
+	cellZoom := store.CellZoom()
+	cells, err := store.CellsFor(slice.Bounds{West: lon, South: lat, East: lon, North: lat})
+	if err != nil {
+		t.Fatalf("finding the fixture cell: %v", err)
+	}
+	if len(cells) != 1 {
+		t.Fatalf("a degenerate bounds covers %d cells, want 1", len(cells))
+	}
+	if _, err := src.Fill(context.Background(), oneTileArchive{tile}, cells[0],
+		slice.ZoomRange{Min: cellZoom, Max: cellZoom}); err != nil {
+		t.Fatalf("filling cell %s: %v", cells[0], err)
+	}
+	w, sth, e, n, err := mercator.TileBounds(cellZoom, cells[0].X, cells[0].Y)
+	if err != nil {
+		t.Fatalf("TileBounds: %v", err)
+	}
+	// The place sits at the TILE's centre, because that is where the fixture
+	// put it. The view has to be the cell, or the only label in the fixture
+	// falls outside the picture and both renders come back identical for the
+	// wrong reason.
+	return root, slice.Bounds{West: w, South: sth, East: e, North: n}
+}
+
+// TestOpenLocal_PassesTheWholeFaceResolverAndNotJustOneFace is the bug that
+// shipped, caught by the only thing that could catch it.
+//
+// osmbase asks for a base face AND a resolver for the other sizes. fitdash
+// supplied only the base, so every label fell back to it: the size hierarchy
+// existed in the library, was tagged in a release, and drew nothing different
+// -- "Horsens" came out the same size as the lane beside it, and every unit
+// test passed, because the wiring is invisible to anything short of a
+// rendered picture.
+//
+// So this renders one. Two maps from the same store differing only in whether
+// the scales resolve to different sizes must not be the same bytes.
+func TestOpenLocal_PassesTheWholeFaceResolverAndNotJustOneFace(t *testing.T) {
+	root, cell := namedPlaceStore(t, fixtureLat, fixtureLon, "Hornsby")
+	view := View{
+		West: cell.West, East: cell.East,
+		South: cell.South, North: cell.North,
+		Width: 480, Height: 320,
+	}
+
+	draw := func(faces LabelFaces) *image.RGBA {
+		t.Helper()
+		p, err := OpenLocal(root, darkInks(), faces)
+		if err != nil {
+			t.Fatalf("OpenLocal: %v", err)
+		}
+		img, err := p.Image(context.Background(), view)
+		if err != nil {
+			t.Fatalf("Image: %v", err)
+		}
+		rgba, ok := img.(*image.RGBA)
+		if !ok {
+			t.Fatalf("Image returned %T, want *image.RGBA", img)
+		}
+		return rgba
+	}
+
+	fonts, err := panelFaces()
+	if err != nil {
+		t.Fatalf("building faces: %v", err)
+	}
+	// One size whatever is asked for -- what fitdash did before the resolver
+	// was threaded through.
+	flat := draw(func(float64) font.Face { return fonts(14) })
+	// The real thing: a place rule's scale resolves to a larger face.
+	sized := draw(func(scale float64) font.Face {
+		if scale == 0 {
+			scale = 1
+		}
+		return fonts(14 * scale)
+	})
+
+	if bytes.Equal(flat.Pix, sized.Pix) {
+		t.Error("a map drawn with one size for every rule is byte-identical to one drawn with a size hierarchy: LabelFaceFor is not reaching the renderer, so place names come out the size of street names")
+	}
+}
+
+// panelFaces builds faces the way the dashboard does, without importing the
+// package that imports this one.
+func panelFaces() (func(px float64) font.Face, error) {
+	f, err := opentype.Parse(gomono.TTF)
+	if err != nil {
+		return nil, err
+	}
+	return func(px float64) font.Face {
+		face, err := opentype.NewFace(f, &opentype.FaceOptions{Size: px, DPI: 72, Hinting: font.HintingFull})
+		if err != nil {
+			return nil
+		}
+		return face
+	}, nil
 }

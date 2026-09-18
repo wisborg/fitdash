@@ -21,6 +21,8 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/fittest"
+	"golang.org/x/image/font"
+
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/mvt"
 	"github.com/wisborg/osmbase/osmbasetest"
@@ -3623,5 +3625,84 @@ func TestWriteBasemapSummary_SaysWhenTheMapWasStretchedRatherThanDrawn(t *testin
 		if !strings.Contains(out, want) {
 			t.Errorf("summary is missing %q; got:\n%s", want, out)
 		}
+	}
+}
+
+// TestBasemapLabelFaces_SizesFollowTheScaleAndTheFrame is the half of the
+// label hierarchy that lives here.
+//
+// osmbase sets a place name larger than a street name by asking the CONSUMER
+// for each size -- it parses no fonts, so that a consumer's map is lettered in
+// the consumer's own typeface rather than a second one the library chose.
+// Supplying only a single face is legal and is what fitdash did at first: the
+// renderer falls back to it for every rule, and "Horsens" comes out
+// indistinguishable from "Schüttesvej" on a map where one is a town and the
+// other a lane.
+//
+// Both properties are asserted because each alone can hold while the other is
+// broken. A resolver ignoring its scale gives one size at every resolution; a
+// resolver ignoring the frame gives a hierarchy that is right at 1080p and
+// half the size it should be at 4K.
+func TestBasemapLabelFaces_SizesFollowTheScaleAndTheFrame(t *testing.T) {
+	fonts, err := panel.NewFaceCache()
+	if err != nil {
+		t.Fatalf("NewFaceCache: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetErr(io.Discard)
+
+	const (
+		hd  = 1080
+		uhd = 2160
+	)
+	faces := basemapLabelFaces(cmd, fonts, hd)
+	if faces == nil {
+		t.Fatal("no faces were resolved, so the map would draw no names at all")
+	}
+
+	height := func(f font.Face) int {
+		t.Helper()
+		if f == nil {
+			t.Fatal("a face was not built")
+		}
+		m := f.Metrics()
+		return m.Ascent.Ceil() + m.Descent.Ceil()
+	}
+
+	base, bigger := height(faces(1)), height(faces(1.5))
+	if bigger <= base {
+		t.Errorf("a 1.5 scale gives %dpx against the base %dpx: the scale is being ignored, and every name comes out one size", bigger, base)
+	}
+
+	// A zero scale is what a rule that never set one carries, and must mean
+	// "normal" rather than "no height at all".
+	if got := height(faces(0)); got != base {
+		t.Errorf("scale 0 gives %dpx, want the base %dpx: a rule with no size set must draw at normal size", got, base)
+	}
+
+	if at4K := height(basemapLabelFaces(cmd, fonts, uhd)(1)); at4K <= base {
+		t.Errorf("the base face is %dpx at 4K against %dpx at 1080p: label size must follow the frame, or a render looks like a different picture at each resolution", at4K, base)
+	}
+}
+
+// TestLabelFaces_NilResolvesToNoFaceRatherThanPanicking covers the caller that
+// has no fonts at all.
+//
+// A map without names is a reasonable outcome -- it is what every render drew
+// before labels existed. A nil dereference on the first frame that happens to
+// contain a place name is not.
+func TestLabelFaces_NilResolvesToNoFaceRatherThanPanicking(t *testing.T) {
+	var none tilemap.LabelFaces
+	cmd := &cobra.Command{}
+	cmd.SetErr(io.Discard)
+
+	// Through the exported path a caller actually uses: OpenLocal takes the
+	// resolver and must accept nothing.
+	root := localBasemapFixtureStore(t)
+	if _, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), none); err != nil {
+		t.Fatalf("OpenLocal with no label faces: %v", err)
+	}
+	if faces := basemapLabelFaces(cmd, nil, 1080); faces != nil {
+		t.Error("a nil font cache produced a resolver; there is nothing for it to resolve with")
 	}
 }

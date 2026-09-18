@@ -104,7 +104,7 @@ type Local struct {
 // meaning two different things depending on who asked for it. See
 // render.PlainCredit in osmbase, which both this and osmbase's own render
 // command call so the obligation is discharged one way.
-func OpenLocal(root string, inks MapInks, labels font.Face) (*Local, error) {
+func OpenLocal(root string, inks MapInks, labels LabelFaces) (*Local, error) {
 	store, err := slice.Open(root)
 	if err != nil {
 		// Opening, never creating. A render cannot fill a store -- filling is
@@ -143,11 +143,19 @@ func OpenLocal(root string, inks MapInks, labels font.Face) (*Local, error) {
 		Style:       osm.BasemapStyle(),
 		Palette:     palette,
 		Attribution: credit,
-		// A nil face draws no labels, which is the right answer rather than a
-		// degraded one: osmbase ships no font of its own, so the alternative
-		// to the caller's face is a second typeface inside a frame that
-		// already has one. A caller with no font did not ask for text.
-		LabelFace: labels,
+		// A nil resolver draws no labels, which is the right answer rather
+		// than a degraded one: osmbase ships no font of its own, so the
+		// alternative to the caller's face is a second typeface inside a
+		// frame that already has one. A caller with no font did not ask for
+		// text.
+		//
+		// Both fields come from the one function. osmbase asks for a base
+		// face and a resolver, and a resolver at scale 1 IS the base face --
+		// keeping them as two parameters here would be two ways to answer one
+		// question, and a chance for them to disagree about what "normal
+		// size" means.
+		LabelFace:    labels.at(1),
+		LabelFaceFor: labels.at,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: preparing to draw from the local map store %s: %w", root, err)
@@ -287,6 +295,26 @@ var (
 	_ Provider = (*Local)(nil)
 	_ Reporter = (*Local)(nil)
 )
+
+// LabelFaces turns a map label's size scale into a face.
+//
+// A function rather than a face, because osmbase sets place names larger than
+// street names and cannot build the sizes itself -- it parses no fonts,
+// deliberately, so that a consumer's map is lettered in the consumer's own
+// typeface rather than a second one the library chose. The scale is relative
+// to the consumer's normal label size; 1 is that size.
+//
+// nil draws no labels at all.
+type LabelFaces func(scale float64) font.Face
+
+// at resolves a scale, and is nil-safe so that a caller with no fonts can
+// pass nothing and get a map without names rather than a panic.
+func (f LabelFaces) at(scale float64) font.Face {
+	if f == nil {
+		return nil
+	}
+	return f(scale)
+}
 
 // Shortfall is what a store lacks for an area.
 type Shortfall struct {
