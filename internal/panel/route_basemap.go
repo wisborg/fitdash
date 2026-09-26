@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math"
 	"sync"
 	"time"
 
@@ -100,12 +101,28 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 		if !ok {
 			return nil, nil
 		}
+		// The image is asked for in WHOLE pixels and the rectangle for
+		// exactly the ground those pixels cover at the placement's scale:
+		// the box's size rounded up, and the span widened from the same top
+		// left corner to match. The image then spans precisely the rectangle
+		// it is drawn over, and overhangs the box by under a pixel on the
+		// right and bottom, which the caller clips.
+		//
+		// It used to take the rectangle at the box's fractional size and the
+		// image at that size truncated, which differ in shape by a fraction
+		// of a percent. A renderer has to reconcile the two -- osmbase up to
+		// v0.9 cropped the longer axis, v0.10 extends the shorter one -- and
+		// this stretched either result over the rectangle, so the map sat up
+		// to a pixel or two beside the route, and moved when osmbase changed
+		// its rule. Truncating also left an unmapped strip along the edge.
+		w, h := int(math.Ceil(box.W)), int(math.Ceil(box.H))
+		spanX, spanY = spanX*float64(w)/box.W, spanY*float64(h)/box.H
 		north, west := tilemap.Unproject(minX, minY)
 		south, east := tilemap.Unproject(minX+spanX, minY+spanY)
 
 		img, err := ctx.Basemap.Image(c, tilemap.View{
 			North: north, West: west, South: south, East: east,
-			Width: int(box.W), Height: int(box.H),
+			Width: w, Height: h,
 		})
 		if err != nil {
 			return nil, err
@@ -325,7 +342,11 @@ func (v *basemapView) resampled(dst, box Box) image.Image {
 	if v.scaled != nil && v.scaledAt == size {
 		return v.scaled
 	}
-	if lim := pixelRect(box).Size(); size.X <= 0 || size.Y <= 0 || size.X > lim.X || size.Y > lim.Y {
+	// One pixel of slack over the box: a view's image is asked for in whole
+	// pixels rounded up, so the view that settles filling the box can
+	// overhang it by a fraction of one and touch a pixel more. The bound is
+	// for refusing a magnified view many times the box, not that.
+	if lim := pixelRect(box).Size(); size.X <= 0 || size.Y <= 0 || size.X > lim.X+1 || size.Y > lim.Y+1 {
 		return v.img
 	}
 	v.scaled, v.scaledAt = resample(v.img, size), size
