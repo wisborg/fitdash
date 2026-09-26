@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -456,5 +457,53 @@ func TestRunRender_DryRunFramesNamesTheFilesTheSinkWouldWrite(t *testing.T) {
 	}
 	if !sort.IntsAreSorted(listed) {
 		t.Errorf("frames listed %v, want ascending -- the order the sink writes them", listed)
+	}
+}
+
+// An activity may be any format fitactivity.Read takes, told by content, and
+// several formats merge as FIT files do. The GPX here is named .xml on
+// purpose: nothing may be decided by the extension.
+func TestDecodeActivities_ReadsFormatsOtherThanFIT(t *testing.T) {
+	dir := t.TempDir()
+	fit := mergePiece(t, dir, "later.fit", mergeBase.Add(10*time.Minute))
+	gpx := filepath.Join(dir, "earlier.xml")
+	var b strings.Builder
+	b.WriteString(`<gpx version="1.1"><trk><type>running</type><trkseg>`)
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&b, `<trkpt lat="%.5f" lon="20.0"><time>%s</time></trkpt>`,
+			10+float64(i)*0.00003, mergeBase.Add(time.Duration(i)*time.Second).Format(time.RFC3339))
+	}
+	b.WriteString(`</trkseg></trk></gpx>`)
+	if err := os.WriteFile(gpx, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	track, sources, err := decodeActivities([]string{fit, gpx})
+	if err != nil {
+		t.Fatalf("decodeActivities: %v", err)
+	}
+	if len(sources) != 2 || sources[0].Path != gpx {
+		t.Errorf("sources %+v; want the GPX first, by its own start time", sources)
+	}
+	if !track.Samples[0].Time.Equal(mergeBase) || track.Samples[0].HasHeartRate {
+		t.Errorf("the first sample is %+v; want the GPX's, with no heart rate it never carried", track.Samples[0])
+	}
+}
+
+// A planned route has no times, and fitdash plays an activity by its times:
+// it is refused, with a reason a user can act on, rather than played at a
+// pace fitactivity would have had to invent.
+func TestDecodeActivities_RefusesARouteWithoutTimes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plan.gpx")
+	body := `<gpx><rte><rtept lat="10" lon="20"/><rtept lat="10.001" lon="20"/></rte></gpx>`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := decodeActivities([]string{path})
+	if !errors.Is(err, fitactivity.ErrNoTimes) {
+		t.Fatalf("decodeActivities = %v; want ErrNoTimes", err)
+	}
+	if !strings.Contains(err.Error(), "times it was recorded") {
+		t.Errorf("the refusal does not say why fitdash needs times: %v", err)
 	}
 }

@@ -271,6 +271,45 @@ func TestRunBasemapFetch_RefusesAnArchiveThatCreditsNobodyBeforeDownloading(t *t
 	}
 }
 
+// TestConfirmFetch_DoesNotBlockOnAPipeNobodyWillWriteTo is the render
+// offer's pipe bug, found again in "basemap fetch": its prompt read stdin
+// whether or not anybody could answer, so a fetch started from a script
+// whose parent held the pipe open waited for ever. A real os.Pipe, because a
+// strings.Reader ends and would pass without the fix.
+func TestConfirmFetch_DoesNotBlockOnAPipeNobodyWillWriteTo(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	defer w.Close()
+	defer r.Close()
+	var errw strings.Builder
+	cmd := &cobra.Command{}
+	cmd.SetErr(&errw)
+	cmd.SetIn(r)
+
+	type answer struct {
+		ok  bool
+		err error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		ok, err := confirmFetch(cmd, &acquire.Plan{}, "https://example.test/planet.pmtiles")
+		done <- answer{ok, err}
+	}()
+	select {
+	case a := <-done:
+		if a.ok || a.err != nil {
+			t.Errorf("confirmFetch with nobody there = %v, %v; want a plain no", a.ok, a.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("confirmFetch is still waiting on a pipe nobody will write to")
+	}
+	if !strings.Contains(errw.String(), "--yes") {
+		t.Errorf("declining for want of an answer does not say how to say yes in advance:\n%s", errw.String())
+	}
+}
+
 // TestConfirmFetch_TreatsSilenceAndAnythingButYesAsNo pins the answer to the
 // one prompt in this program that sends data somewhere. Defaulting to yes on
 // an empty line, or on a stdin that is closed because this is a pipeline,

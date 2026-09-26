@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -27,6 +28,11 @@ type activitySource struct {
 // decodeActivities decodes every path and merges them into one Track, also
 // reporting where each file begins in the merged activity.
 //
+// Each path may be FIT, GPX, TCX, KML or KMZ -- fitactivity.Read tells them
+// apart by content -- and a file carries only what its format can: GPX and KML
+// have no distance, no format but FIT has pauses. What is absent is shown as
+// absent, as it is for a FIT file missing the same.
+//
 // This decodes and merges in two steps rather than calling
 // fitactivity.DecodeAll, which does exactly this in one. The reason is the
 // offsets: DecodeAll returns only the merged Track, and a merged Track
@@ -44,7 +50,13 @@ type activitySource struct {
 func decodeActivities(paths []string) (*fitactivity.Track, []activitySource, error) {
 	tracks := make([]*fitactivity.Track, len(paths))
 	for i, p := range paths {
-		t, err := fitactivity.Decode(p)
+		t, err := fitactivity.Read(p)
+		if errors.Is(err, fitactivity.ErrNoTimes) {
+			// A planned route, or a line drawn on a map. Every frame is an
+			// instant of the activity, so a course with no instants has no
+			// frames, and fitactivity refuses to invent them.
+			return nil, nil, fmt.Errorf("%w; fitdash plays an activity at the times it was recorded, and a course without them has nothing to play", err)
+		}
 		if err != nil {
 			return nil, nil, err
 		}

@@ -27,10 +27,14 @@ type formatFlag struct{ output.Format }
 func (formatFlag) Type() string { return "format" }
 
 var root = &cobra.Command{
-	Use:   "fitdash ACTIVITY.fit [ACTIVITY.fit ...]",
+	Use:   "fitdash ACTIVITY [ACTIVITY ...]",
 	Short: "Render a recorded exercise as a dashboard video",
-	Long: `fitdash reads a Garmin FIT activity and renders it as a dashboard video:
-the metrics animate as the activity progresses.
+	Long: `fitdash reads a recorded activity and renders it as a dashboard video: the
+metrics animate as the activity progresses. An activity is a FIT, GPX, TCX,
+KML or KMZ file, told apart by what it holds rather than by its name; each
+carries what its format can -- a GPX has no distance, only a FIT has pauses --
+and what a file does not carry is shown as absent. A planned route, with no
+times to play it by, is refused.
 
 The video spans the activity's ELAPSED time, so it freezes through a pause
 rather than cutting it out. Cutting pauses would splice two instants together

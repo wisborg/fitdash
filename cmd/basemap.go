@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/osmbase/acquire"
+	"github.com/wisborg/osmbase/fetch"
 	osm "github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
 	"github.com/wisborg/output"
@@ -36,7 +36,7 @@ anything about your activity's whereabouts crosses the network.`,
 }
 
 var basemapFetchCmd = &cobra.Command{
-	Use:   "fetch ACTIVITY.fit [ACTIVITY.fit ...]",
+	Use:   "fetch ACTIVITY [ACTIVITY ...]",
 	Short: "Download the map data around an activity, once",
 	Long: `fetch copies the map around an activity onto this machine, once, so that
 "fitdash ACTIVITY.fit --basemap local" can draw it without contacting anybody.
@@ -507,10 +507,12 @@ func writeFetchPlan(w io.Writer, rep fetchReport, p *acquire.Plan) {
 
 // confirmFetch puts the decision in front of the user, once.
 //
-// A closed or empty stdin is a no rather than an error: a pipeline that
-// reached this prompt did not mean to download anything, and a program that
-// took silence for consent here would be doing the one thing this command is
-// careful not to.
+// The asking is fetch.Consent's, as the render's offer is: a closed or empty
+// stdin is a no rather than an error, since a pipeline that reached this
+// prompt did not mean to download anything, and a stdin nobody can answer is
+// not read at all. It used to be read regardless, and a fetch started from a
+// script whose parent held the pipe open waited on it for ever. With nobody
+// there, --yes is how a script says yes.
 // It takes the archive's NAME rather than the archive, because the name is
 // all it needs and a function that asks for more than it uses is one a test
 // has to fake -- which is how this came to be called with a zero-value
@@ -519,15 +521,13 @@ func confirmFetch(cmd *cobra.Command, p *acquire.Plan, archive string) (bool, er
 	w := cmd.ErrOrStderr()
 	fmt.Fprintf(w, "\nThis contacts %s and downloads %s.\n", hostOf(archive), humanBytes(p.Transfer))
 	fmt.Fprintf(w, "It tells that host which cells you asked for, once. Rendering afterwards contacts nobody.\n")
-	fmt.Fprintf(w, "Continue? [y/N] ")
 
-	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-	if err != nil && line == "" {
-		return false, nil
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
+	consent := fetch.Consent{In: cmd.InOrStdin(), Answerable: func() bool { return stdinIsATerminal(cmd) }}
+	switch consent.Ask(w, "Continue? [y/N] ") {
+	case fetch.Accepted:
 		return true, nil
+	case fetch.Unattended:
+		fmt.Fprintf(w, "Nothing is attached to answer; pass --yes to fetch without asking.\n")
 	}
 	return false, nil
 }
@@ -733,30 +733,31 @@ func offerToFillTheStore(cmd *cobra.Command, root string, track *fitactivity.Tra
 	fmt.Fprintf(errw, "         Fetching the rest contacts %s, which learns which\n", hostOf(source))
 	fmt.Fprintf(errw, "         parts of the map you asked about. Afterwards, rendering contacts nobody.\n")
 
-	if !basemapFetchOpts.yes {
-		if !stdinIsATerminal(cmd) {
-			// Nobody is there to answer. Reading anyway would be correct only
-			// if stdin were certain to end, and it is not: a render started
-			// from a script or a job runner inherits a pipe that may stay
-			// open for the life of the parent, and the read blocks forever.
-			// A video that never finishes is a worse outcome than one drawn
-			// without a map, and it is the harder one to diagnose -- there is
-			// no output to look at.
-			fmt.Fprintf(errw, "         nothing is attached to answer, so nothing was fetched; pass --yes, or run \"fitdash basemap fetch ACTIVITY.fit\"\n")
-			return
-		}
-		fmt.Fprintf(errw, "Fetch it now? [y/N] ")
-		line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-		if err != nil && line == "" {
-			fmt.Fprintf(errw, "\n         no answer, so nothing was fetched; run \"fitdash basemap fetch ACTIVITY.fit\" when you want it\n")
-			return
-		}
-		switch strings.ToLower(strings.TrimSpace(line)) {
-		case "y", "yes":
-		default:
-			fmt.Fprintf(errw, "\n         not fetched; run \"fitdash basemap fetch ACTIVITY.fit\" when you want it\n")
-			return
-		}
+	// The rule about asking is fetch.Consent's, shared with osmbase's render
+	// and every other program that draws from a store: a yes typed or given
+	// with --yes, and no question at all when nobody can answer. Nobody there
+	// matters because a render started from a script inherits a pipe that may
+	// stay open for the life of its parent, and reading it would block for
+	// ever -- a video that never finishes, with no output to diagnose, is a
+	// worse outcome than one drawn without a map. Who can answer is fitdash's
+	// own rule, stdinIsATerminal, since the input is cobra's and not
+	// necessarily the process's.
+	consent := fetch.Consent{
+		Yes:        basemapFetchOpts.yes,
+		In:         cmd.InOrStdin(),
+		Answerable: func() bool { return stdinIsATerminal(cmd) },
+	}
+	switch consent.Ask(errw, "Fetch it now? [y/N] ") {
+	case fetch.Accepted:
+	case fetch.Unattended:
+		fmt.Fprintf(errw, "         nothing is attached to answer, so nothing was fetched; pass --yes, or run \"fitdash basemap fetch ACTIVITY\"\n")
+		return
+	case fetch.NoAnswer:
+		fmt.Fprintf(errw, "\n         no answer, so nothing was fetched; run \"fitdash basemap fetch ACTIVITY\" when you want it\n")
+		return
+	default:
+		fmt.Fprintf(errw, "\n         not fetched; run \"fitdash basemap fetch ACTIVITY\" when you want it\n")
+		return
 	}
 
 	if err := fillStore(cmd, root, area); err != nil {
@@ -770,11 +771,15 @@ func offerToFillTheStore(cmd *cobra.Command, root string, track *fitactivity.Tra
 
 // fillStore carries out the fetch offerToFillTheStore just got consent for.
 //
-// It is the same sequence "fitdash basemap fetch" runs -- open the archive,
-// read the credit, plan, add the source, fetch with a progress bar -- and the
-// differences are that the area comes from the render rather than from flags,
-// and that the confirmation already happened further up. There is exactly one
-// consent decision per run and it was taken before anything was read.
+// The sequence -- create the store, register the archive under its credit,
+// plan, fetch -- is osmbase's fetch.Fill, shared with its own render; what is
+// here is fitdash's voice around it. The area comes from the render rather
+// than from flags, and the confirmation already happened further up: there
+// is exactly one consent decision per run, taken before anything was read.
+//
+// The credit is read before anything else, because it is the cheapest reason
+// to stop: a store fitdash cannot credit is one it refuses to draw from, and
+// finding that out after the download is finding it out too late.
 //
 // The plan is reported as one line rather than through writeFetchPlan. That
 // function renders a fetchReport, whose padding figure and flag-derived
@@ -788,50 +793,44 @@ func fillStore(cmd *cobra.Command, root string, area slice.Bounds) error {
 		return err
 	}
 	defer archive.Close()
-	// Read before the plan, because it is the cheapest reason to stop: a
-	// store fitdash cannot credit is one it refuses to draw from, and
-	// finding that out after the download is finding it out too late.
 	credit, err := archive.Attribution()
 	if err != nil {
 		return err
 	}
 
-	store, src, cellZoom := openStoreForPlanning(root, archive)
-	plan, err := archive.Plan(fetchContext(cmd), src, area, cellZoom, acquire.AutoZoom)
-	if err != nil {
-		return err
-	}
-	if plan.Empty() {
-		// Reachable: the shortfall is measured in whole cells, and a cell can
-		// be incomplete in zooms this fetch was never going to take.
-		fmt.Fprintf(errw, "basemap: nothing more to fetch for this activity\n")
-		return nil
-	}
-	fmt.Fprintf(errw, "basemap: %d of %d areas, zooms %d to %d, %d tiles, %s to download\n",
-		plan.CellsToFetch, len(plan.Cells), plan.Zoom.Min, plan.Zoom.Max, plan.Tiles, humanBytes(plan.Transfer))
-
-	if store == nil {
-		if store, err = slice.Create(root, slice.Config{}); err != nil {
-			return fmt.Errorf("creating the map store at %s: %w", root, err)
+	var (
+		display *progress.Display
+		bar     *progress.Bar
+		fetched bool
+	)
+	report := func(plan *acquire.Plan) {
+		if plan.Empty() {
+			// Reachable: the shortfall is measured in whole cells, and a cell
+			// can be incomplete in zooms this fetch was never going to take.
+			fmt.Fprintf(errw, "basemap: nothing more to fetch for this activity\n")
+			return
 		}
+		fmt.Fprintf(errw, "basemap: %d of %d areas, zooms %d to %d, %d tiles, %s to download\n",
+			plan.CellsToFetch, len(plan.Cells), plan.Zoom.Min, plan.Zoom.Max, plan.Tiles, humanBytes(plan.Transfer))
+		// The trace and the bar cannot share a stream; see openFetchArchive.
+		archive.Silence()
+		display, bar = newFetchBar(errw, plan)
+		fetched = true
 	}
-	if src, err = archive.AddTo(store, credit); err != nil {
-		return err
+	res, err := fetch.Fill(fetchContext(cmd), root, archive.Archive, credit,
+		acquire.Request{Bounds: area, MaxZoom: acquire.AutoZoom}, report,
+		func(pr acquire.Progress) { bar.Set(pr.DoneTransfer) })
+	if fetched {
+		bar.Done()
+		display.Stop()
 	}
-
-	// The trace and the bar cannot share a stream; see openFetchArchive.
-	archive.Silence()
-	display, bar := newFetchBar(errw, plan)
-	res, err := archive.Fetch(fetchContext(cmd), plan, src, func(pr acquire.Progress) {
-		bar.Set(pr.DoneTransfer)
-	})
-	bar.Done()
-	display.Stop()
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(errw, "basemap: fetched %d tiles, %s, crediting %s\n",
-		res.Written, humanBytes(res.Transfer), osm.PlainCredit(credit))
+	if fetched {
+		fmt.Fprintf(errw, "basemap: fetched %d tiles, %s, crediting %s\n",
+			res.Written, humanBytes(res.Transfer), osm.PlainCredit(credit))
+	}
 	return nil
 }
 

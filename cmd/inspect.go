@@ -14,7 +14,7 @@ import (
 )
 
 var inspectCmd = &cobra.Command{
-	Use:   "inspect ACTIVITY.fit [ACTIVITY.fit ...]",
+	Use:   "inspect ACTIVITY [ACTIVITY ...]",
 	Short: "Report what metrics an activity actually contains",
 	Long: `inspect reports, metric by metric, what a recorded activity contains and how
 much of it: the fraction of samples carrying each metric and the range it spans.
@@ -148,6 +148,10 @@ func inspectTable(rep inspect.Report) *table.Table {
 	// sensors' readings. Without the column the table shows the same metric
 	// twice, disagreeing with itself, and a reader has no way to tell which
 	// row is which.
+	//
+	// "std" rather than "fit": a standard field is the format's own, and the
+	// activity may be a GPX or a TCX file whose heart rate is labelled "fit"
+	// by nothing but this column.
 	add := func(m inspect.Metric, source string) {
 		lo, hi := fmt.Sprintf("%.3g", m.Min), fmt.Sprintf("%.3g", m.Max)
 		if m.Present == 0 {
@@ -156,7 +160,7 @@ func inspectTable(rep inspect.Report) *table.Table {
 		t.MustAppend(m.Name, source, m.Unit, m.Coverage(rep.Samples)*100, m.Present, lo, hi)
 	}
 	for _, m := range rep.Metrics {
-		add(m, "fit")
+		add(m, "std")
 	}
 	for _, m := range rep.DevFields {
 		add(m, "dev")
