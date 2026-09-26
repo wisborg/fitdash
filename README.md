@@ -1,9 +1,15 @@
 # fitdash
 
-Render a recorded exercise as a dashboard video: read a Garmin FIT activity, and
+Render a recorded exercise as a dashboard video: read a recorded activity, and
 produce a video in which the metrics animate as the activity progresses — the route
 drawing itself, an elevation profile with a moving playhead, pace, heart rate, power,
 cumulative climb and the gradient underfoot.
+
+The activity can be a FIT, GPX, TCX, KML or KMZ file. FIT carries the most; the
+others carry what their format can — a GPX has no distance, so no pace or
+elevation profile — and a panel whose data the file lacks is left out rather
+than drawn as zero. A planned route with no times is refused: there is nothing
+to play it by.
 
 ```
 fitdash activity.fit --video-duration 3m
