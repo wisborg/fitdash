@@ -1237,8 +1237,8 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
 	markersOnProfile := markersAbsorbedIntoProfile(r)
-	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
-	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
+	writeHighlightSummary(cmd, in.tl, in.track, ctx.Timer, in.highlights, in.smoothing, in.theme, markersOnProfile)
+	writeLabelSummary(cmd, in.tl, in.track, ctx.Timer, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
 }
 
 // writeBasemapSummary says that map imagery was fetched, from whom, and what
@@ -1700,7 +1700,7 @@ func highlightZoomNote(h panel.Highlight) string {
 	return ", zoomed"
 }
 
-func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, highlights []panel.Highlight, smoothing panel.Smoothing, theme panel.Theme, markersOnProfile bool) {
+func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, timer *fitactivity.TimerModel, highlights []panel.Highlight, smoothing panel.Smoothing, theme panel.Theme, markersOnProfile bool) {
 	if renderOpts.quiet || len(highlights) == 0 {
 		return
 	}
@@ -1774,7 +1774,7 @@ func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitacti
 				fmt.Fprintf(out, "highlight %s has no GPS fixes; it is not marked on the route\n", highlightSummaryName(h))
 			}
 		}
-		if markersOnProfile && !hasProfileDistanceSpan(track, tl.Start(), h.From, h.To) {
+		if markersOnProfile && !hasProfileDistanceSpan(track, timer, tl.Start(), h.From, h.To) {
 			fmt.Fprintf(out, "highlight %s has no distance at its bounds; it is not marked on the elevation profile\n", highlightSummaryName(h))
 		}
 	}
@@ -1794,8 +1794,8 @@ func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitacti
 //
 // false, harmlessly, when track is nil -- a caller with nothing to report
 // against, not a bug in the check.
-func hasProfileDistance(track *fitactivity.Track, start time.Time, offset time.Duration) bool {
-	_, ok := panel.TimeToDistance(track, start, offset)
+func hasProfileDistance(track *fitactivity.Track, timer *fitactivity.TimerModel, start time.Time, offset time.Duration) bool {
+	_, ok := panel.TimeToDistance(track, timer, start, offset)
 	return ok
 }
 
@@ -1804,8 +1804,8 @@ func hasProfileDistance(track *fitactivity.Track, start time.Time, offset time.D
 // the elevation profile's axis (see elevation.go's own D.1 policy -- one
 // known endpoint and one unknown is still unplaceable), so this is false the
 // moment either one is.
-func hasProfileDistanceSpan(track *fitactivity.Track, start time.Time, from, to time.Duration) bool {
-	return hasProfileDistance(track, start, from) && hasProfileDistance(track, start, to)
+func hasProfileDistanceSpan(track *fitactivity.Track, timer *fitactivity.TimerModel, start time.Time, from, to time.Duration) bool {
+	return hasProfileDistance(track, timer, start, from) && hasProfileDistance(track, timer, start, to)
 }
 
 // formatHexColor renders c the same way a user would have typed it in
@@ -2007,7 +2007,7 @@ func highlightSummaryName(h panel.Highlight) string {
 // now calls panel.TimeToDistance instead of re-deriving it: the pixel
 // geometry that decides "still touching" is sized from this render's own
 // box and lives only on the Painter that drew it.
-func writeLabelSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, labels []panel.Label, transition time.Duration, markersOnProfile bool, overlapping []int) {
+func writeLabelSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity.Track, timer *fitactivity.TimerModel, labels []panel.Label, transition time.Duration, markersOnProfile bool, overlapping []int) {
 	if renderOpts.quiet || len(labels) == 0 {
 		return
 	}
@@ -2037,7 +2037,7 @@ func writeLabelSummary(cmd *cobra.Command, tl panel.Timeline, track *fitactivity
 			fmt.Fprintf(out, "label %s is on screen for %s, shorter than twice --highlight-transition (%s); its name never reaches full opacity\n",
 				labelSummaryName(l), l.Video.Round(time.Millisecond), transition)
 		}
-		if markersOnProfile && !hasProfileDistance(track, tl.Start(), l.At) {
+		if markersOnProfile && !hasProfileDistance(track, timer, tl.Start(), l.At) {
 			fmt.Fprintf(out, "label %s has no distance at its instant; it is not marked on the elevation profile\n", labelSummaryName(l))
 		}
 		if markersOnProfile && stillTouching[i] {
@@ -2098,8 +2098,8 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	// decomposition and warnings the video path prints -- otherwise the one
 	// command built for checking a highlight would say nothing about it.
 	markersOnProfile := markersAbsorbedIntoProfile(r)
-	writeHighlightSummary(cmd, in.tl, in.track, in.highlights, in.smoothing, in.theme, markersOnProfile)
-	writeLabelSummary(cmd, in.tl, in.track, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
+	writeHighlightSummary(cmd, in.tl, in.track, ctx.Timer, in.highlights, in.smoothing, in.theme, markersOnProfile)
+	writeLabelSummary(cmd, in.tl, in.track, ctx.Timer, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
 	return nil
 }
 

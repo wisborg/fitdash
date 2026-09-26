@@ -450,15 +450,51 @@ func elevationAbsentFillAlpha(theme Theme) float64 {
 // whole mark -- that needs a "first sample carrying distance in [a,b]"
 // lookup, which is a fitactivity accessor to add on its own branch and
 // verify against every consumer, not a local walk of Track.Samples here.
-func TimeToDistance(track *fitactivity.Track, start time.Time, offset time.Duration) (float64, bool) {
+//
+// # A pause is not a dropout
+//
+// An offset inside one of timer's PAUSES resolves, to the distance at the
+// pause's start. The activity stood still there -- the watch was stopped, or
+// it is the gap between two files of a merged activity -- and no distance was
+// added through it, so the distance at any instant of it is known: it is the
+// distance it stopped at. That is the render summary's own wording ("frozen
+// through, and no distance added") made into an answer.
+//
+// It is not the rescue the paragraph above rules out. That was widening a
+// DROPOUT -- a stretch the device recorded nothing for, with no reason
+// recorded either -- where the distance is genuinely unknown and refusing is
+// the honest answer; a dropout still refuses. A pause is a stretch the timer
+// model says was stopped, which is a fact, and it needs no new accessor:
+// TimerModel.Pauses and AtWithGap are both fitactivity's already.
+//
+// Before highlights were marked on the profile's distance axis they sat on a
+// strip with a time axis, where a bound inside a pause was no trouble; moving
+// them onto distance lost every highlight starting or ending between two
+// files of a merged activity, which is where a person naturally puts one.
+//
+// timer may be nil, and then only the gap-aware lookup answers.
+func TimeToDistance(track *fitactivity.Track, timer *fitactivity.TimerModel, start time.Time, offset time.Duration) (float64, bool) {
 	if track == nil {
 		return 0, false
 	}
-	s, ok := track.AtWithGap(start.Add(offset), fitactivity.DefaultMaxGap)
-	if !ok || !s.HasDistance {
+	at := start.Add(offset)
+	if s, ok := track.AtWithGap(at, fitactivity.DefaultMaxGap); ok && s.HasDistance {
+		return s.Distance, true
+	}
+	if timer == nil {
 		return 0, false
 	}
-	return s.Distance, true
+	for _, p := range timer.Pauses() {
+		// Half-open, as TimerModel.Paused reads a pause.
+		if at.Before(p.Start) || !at.Before(p.End) {
+			continue
+		}
+		if s, ok := track.AtWithGap(p.Start, fitactivity.DefaultMaxGap); ok && s.HasDistance {
+			return s.Distance, true
+		}
+		return 0, false
+	}
+	return 0, false
 }
 
 // Prepare builds the elevation model and lays out the plot, once.
@@ -797,8 +833,8 @@ func (p *elevationPainter) buildMarks(ctx *Context) {
 	order := make([]int, 0, len(ctx.Highlights))
 	for i, h := range ctx.Highlights {
 		p.names[i] = h.Name
-		d0, ok0 := TimeToDistance(ctx.Track, start, h.From)
-		d1, ok1 := TimeToDistance(ctx.Track, start, h.To)
+		d0, ok0 := TimeToDistance(ctx.Track, ctx.Timer, start, h.From)
+		d1, ok1 := TimeToDistance(ctx.Track, ctx.Timer, start, h.To)
 		if !ok0 || !ok1 {
 			// D.1: unplaceable. p.marks[i] stays its zero value (ok:
 			// false); Static and Dynamic both skip it -- including its
@@ -871,7 +907,7 @@ func (p *elevationPainter) buildMarks(ctx *Context) {
 	tickOrig := make([]float64, 0, len(ctx.Labels))
 	for i, l := range ctx.Labels {
 		p.labelNames[i] = l.Name
-		d, ok := TimeToDistance(ctx.Track, start, l.At)
+		d, ok := TimeToDistance(ctx.Track, ctx.Timer, start, l.At)
 		if !ok {
 			// D.1, restated for a tick: unplaceable, and p.ticks[i] stays
 			// its zero value (ok: false); Static and Dynamic both skip it

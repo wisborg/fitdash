@@ -1447,14 +1447,14 @@ func TestTimeToDistance_RefusesToResolveInsideARealGap(t *testing.T) {
 
 	// Comfortably past DefaultMaxGap (3s) from both lo1 (at 1s) and hi0 (at
 	// 101s): the midpoint of the gap, 51s in.
-	if _, ok := TimeToDistance(track, start, 51*time.Second); ok {
+	if _, ok := TimeToDistance(track, nil, start, 51*time.Second); ok {
 		t.Error("TimeToDistance resolved a distance from deep inside a real gap; " +
 			"it must refuse rather than interpolate or extrapolate across one")
 	}
 
 	// Within DefaultMaxGap of the sample just before the gap (lo1 at 1s):
 	// AtWithGap snaps to that sample rather than refusing.
-	d, ok := TimeToDistance(track, start, 3*time.Second)
+	d, ok := TimeToDistance(track, nil, start, 3*time.Second)
 	if !ok {
 		t.Fatal("TimeToDistance refused a query within DefaultMaxGap of a real sample; want a snap to it")
 	}
@@ -1463,7 +1463,7 @@ func TestTimeToDistance_RefusesToResolveInsideARealGap(t *testing.T) {
 	}
 
 	// Within DefaultMaxGap of the sample just after the gap (hi0 at 101s).
-	d, ok = TimeToDistance(track, start, 99*time.Second)
+	d, ok = TimeToDistance(track, nil, start, 99*time.Second)
 	if !ok {
 		t.Fatal("TimeToDistance refused a query within DefaultMaxGap of a real sample; want a snap to it")
 	}
@@ -1480,7 +1480,7 @@ func TestTimeToDistance_OrdinaryOffsetInterpolates(t *testing.T) {
 	track, start := gappedDistanceTrack(2 * time.Second)
 	// lo1 (1s, distance 3) and hi0 (3s, distance 500) are 2s apart, inside
 	// DefaultMaxGap. The midpoint in time, 2s, interpolates to (3+500)/2.
-	d, ok := TimeToDistance(track, start, 2*time.Second)
+	d, ok := TimeToDistance(track, nil, start, 2*time.Second)
 	if !ok {
 		t.Fatal("TimeToDistance refused an offset between two samples within DefaultMaxGap of each other")
 	}
@@ -1493,7 +1493,7 @@ func TestTimeToDistance_OrdinaryOffsetInterpolates(t *testing.T) {
 // guard TimeToDistance opens with, pinned so a future refactor cannot drop
 // it and panic on a nil Track instead.
 func TestTimeToDistance_NilTrackIsUnplaceable(t *testing.T) {
-	if _, ok := TimeToDistance(nil, time.Now(), 0); ok {
+	if _, ok := TimeToDistance(nil, nil, time.Now(), 0); ok {
 		t.Error("TimeToDistance resolved a distance with no Track at all")
 	}
 }
@@ -1512,7 +1512,7 @@ func TestTimeToDistance_DropoutAtTheQueriedInstantIsUnplaceable(t *testing.T) {
 		{Time: base.Add(time.Second), HasDistance: false},
 		{Time: base.Add(2 * time.Second), HasDistance: true, Distance: 20},
 	}}
-	if _, ok := TimeToDistance(track, base, time.Second); ok {
+	if _, ok := TimeToDistance(track, nil, base, time.Second); ok {
 		t.Error("TimeToDistance resolved a distance from a sample with HasDistance false")
 	}
 }
@@ -1993,19 +1993,19 @@ func TestElevationPanel_MiddleUnresolvableHighlightIsSkippedWithoutShiftingItsNe
 		t.Errorf("marks[1] (Middle) = %+v, want the zero value -- an unplaceable mark must not carry a leftover position", p.marks[1])
 	}
 
-	d0From, ok := TimeToDistance(track, highlightEpoch, 49*time.Second)
+	d0From, ok := TimeToDistance(track, nil, highlightEpoch, 49*time.Second)
 	if !ok {
 		t.Fatal("precondition: First.From should resolve")
 	}
-	d0To, ok := TimeToDistance(track, highlightEpoch, 50*time.Second)
+	d0To, ok := TimeToDistance(track, nil, highlightEpoch, 50*time.Second)
 	if !ok {
 		t.Fatal("precondition: First.To should resolve")
 	}
-	d2From, ok := TimeToDistance(track, highlightEpoch, 70*time.Second)
+	d2From, ok := TimeToDistance(track, nil, highlightEpoch, 70*time.Second)
 	if !ok {
 		t.Fatal("precondition: Third.From should resolve")
 	}
-	d2To, ok := TimeToDistance(track, highlightEpoch, 71*time.Second)
+	d2To, ok := TimeToDistance(track, nil, highlightEpoch, 71*time.Second)
 	if !ok {
 		t.Fatal("precondition: Third.To should resolve")
 	}
@@ -2136,7 +2136,7 @@ func TestElevationPanel_RestStateMarkDrawsDimmerThanTheActiveOne(t *testing.T) {
 		t.Fatalf("marks not placed: %+v", p.marks)
 	}
 
-	d, ok := TimeToDistance(track, highlightEpoch, 10*time.Second)
+	d, ok := TimeToDistance(track, nil, highlightEpoch, 10*time.Second)
 	if !ok {
 		t.Fatal("precondition: distance at 10s should resolve")
 	}

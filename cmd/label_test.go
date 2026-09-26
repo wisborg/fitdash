@@ -370,7 +370,7 @@ func TestWriteLabelSummary_ReportsClippingToTheRendersEnd(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, tl, nil, labels, 400*time.Millisecond, false, nil)
+	writeLabelSummary(c, tl, nil, nil, labels, 400*time.Millisecond, false, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `label "Finish" clipped to 100ms so it ends at the render's last frame`) {
@@ -399,7 +399,7 @@ func TestWriteLabelSummary_ReportsEachLabelAndTruncation(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, tl, nil, labels, 400*time.Millisecond, false, nil)
+	writeLabelSummary(c, tl, nil, nil, labels, 400*time.Millisecond, false, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `labels: "A" 0:00:10 -> 1s, "B" 0:00:11 -> 3s`) {
@@ -423,7 +423,7 @@ func TestWriteLabelSummary_WarnsWhenTheSpanNeverReachesFullOpacity(t *testing.T)
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, panel.Timeline{}, nil, labels, 400*time.Millisecond, false, nil)
+	writeLabelSummary(c, panel.Timeline{}, nil, nil, labels, 400*time.Millisecond, false, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `label "Blip" is on screen for 500ms, shorter than twice --highlight-transition (400ms); its name never reaches full opacity`) {
@@ -440,7 +440,7 @@ func TestWriteLabelSummary_PrintsNothingWithNoLabels(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, panel.Timeline{}, nil, nil, 400*time.Millisecond, false, nil)
+	writeLabelSummary(c, panel.Timeline{}, nil, nil, nil, 400*time.Millisecond, false, nil)
 
 	if buf.Len() != 0 {
 		t.Errorf("writeLabelSummary with no labels wrote %q, want nothing", buf.String())
@@ -483,7 +483,7 @@ func TestWriteLabelSummary_ReportsALabelUnplaceableOnTheElevationProfile(t *test
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, tl, track, labels, 400*time.Millisecond, true, nil)
+	writeLabelSummary(c, tl, track, nil, labels, 400*time.Millisecond, true, nil)
 
 	out := buf.String()
 	if strings.Contains(out, `"Early" has no distance`) {
@@ -528,7 +528,7 @@ func TestWriteLabelSummary_ReportsLabelsStillOverlappingOnTheElevationProfile(t 
 	c := &cobra.Command{}
 	c.SetErr(&buf)
 	// Water (0) and Turn (1) are reported as overlapping; Aid (2) is not.
-	writeLabelSummary(c, tl, track, labels, 400*time.Millisecond, true, []int{0, 1})
+	writeLabelSummary(c, tl, track, nil, labels, 400*time.Millisecond, true, []int{0, 1})
 
 	out := buf.String()
 	if !strings.Contains(out, `label "Water" is too close to a neighbouring label on the elevation profile; the two are not clearly separated`) {
@@ -572,7 +572,7 @@ func TestWriteLabelSummary_OverlapSilentWhenMarkersNotAbsorbed(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeLabelSummary(c, tl, track, labels, 400*time.Millisecond, false, []int{0, 1})
+	writeLabelSummary(c, tl, track, nil, labels, 400*time.Millisecond, false, []int{0, 1})
 
 	if out := buf.String(); strings.Contains(out, "too close") {
 		t.Errorf("markersOnProfile was false, but the summary reported the overlap anyway; got:\n%s", out)

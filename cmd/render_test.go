@@ -1288,7 +1288,7 @@ func TestWriteHighlightSummary_DecomposesBaseAndHighlightsAndListsEach(t *testin
 	c := &cobra.Command{}
 	c.SetErr(&buf)
 
-	writeHighlightSummary(c, tl, nil, []panel.Highlight{highlight}, panel.Smoothing{}, panel.DefaultTheme(), false)
+	writeHighlightSummary(c, tl, nil, nil, []panel.Highlight{highlight}, panel.Smoothing{}, panel.DefaultTheme(), false)
 
 	out := buf.String()
 	if !strings.Contains(out, "0:00:30 base + 0:00:09 of highlights = 0:00:39 of video") {
@@ -1327,7 +1327,7 @@ func TestWriteHighlightSummary_WarnsOnClippedOneFrameAndPaused(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, nil, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
+	writeHighlightSummary(c, tl, nil, nil, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
 
 	out := buf.String()
 	for _, want := range []string{
@@ -1397,7 +1397,7 @@ func TestWriteHighlightSummary_ReportsResolvedColourAndContrastWarnings(t *testi
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, nil, highlights, panel.Smoothing{}, theme, false)
+	writeHighlightSummary(c, tl, nil, nil, highlights, panel.Smoothing{}, theme, false)
 
 	out := buf.String()
 	for _, want := range []string{
@@ -1488,7 +1488,7 @@ func TestWriteHighlightSummary_ReportsAnUnmarkableHighlight(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
+	writeHighlightSummary(c, tl, track, nil, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
 
 	out := buf.String()
 	if strings.Contains(out, `"Covered" has no GPS fixes`) {
@@ -1542,7 +1542,7 @@ func TestWriteHighlightSummary_ReportsAHighlightUnplaceableOnTheElevationProfile
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme(), true)
+	writeHighlightSummary(c, tl, track, nil, highlights, panel.Smoothing{}, panel.DefaultTheme(), true)
 
 	out := buf.String()
 	if strings.Contains(out, `"Covered" has no distance`) {
@@ -1585,7 +1585,7 @@ func TestWriteHighlightSummary_UnplaceableOnProfileSilentWhenMarkersNotAbsorbed(
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
+	writeHighlightSummary(c, tl, track, nil, highlights, panel.Smoothing{}, panel.DefaultTheme(), false)
 
 	if out := buf.String(); strings.Contains(out, "elevation profile") {
 		t.Errorf("markersOnProfile was false, but the summary reported an unplaceable mark on the elevation profile anyway; got:\n%s", out)
@@ -1632,7 +1632,7 @@ func TestWriteHighlightSummary_ReportsAHighlightUnplaceableWithOnlyOneEndpointMi
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, track, highlights, panel.Smoothing{}, panel.DefaultTheme(), true)
+	writeHighlightSummary(c, tl, track, nil, highlights, panel.Smoothing{}, panel.DefaultTheme(), true)
 
 	out := buf.String()
 	if !strings.Contains(out, `highlight "Partial" has no distance at its bounds; it is not marked on the elevation profile`) {
@@ -1654,7 +1654,7 @@ func TestWriteHighlightSummary_PrintsNothingWithNoHighlights(t *testing.T) {
 	var buf bytes.Buffer
 	c := &cobra.Command{}
 	c.SetErr(&buf)
-	writeHighlightSummary(c, tl, nil, nil, panel.Smoothing{}, panel.DefaultTheme(), false)
+	writeHighlightSummary(c, tl, nil, nil, nil, panel.Smoothing{}, panel.DefaultTheme(), false)
 	if buf.Len() != 0 {
 		t.Errorf("writeHighlightSummary printed something with no highlights configured: %q", buf.String())
 	}
