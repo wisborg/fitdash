@@ -1275,7 +1275,7 @@ func TestReadout_GaugeRangeTextHasNoGaugeRuleReturnsFalse(t *testing.T) {
 // (see both fields' own doc comments) -- so a readout whose value accessor
 // depends on render-wide state reports the range for whichever choice was
 // actually made, not whatever the unbound constructor would have used. A
-// running sport doubles cadence from rpm to spm (see perLegCadence); the
+// running sport doubles cadence from rpm to spm (see fitactivity.CadenceUnit); the
 // printed range must be in the doubled unit, matching what Dynamic prints
 // beside it for the same activity.
 func TestReadout_GaugeRangeTextResolvesThroughBind(t *testing.T) {

@@ -179,13 +179,13 @@ func Power() Readout {
 // revolutions and is the number a cyclist wants. For a runner it is
 // revolutions PER LEG, so the figure a runner recognises -- steps per minute --
 // is twice it. A run showing "87 rpm" where the watch said 174 spm is not
-// wrong so much as unrecognisable; videofx applies the same doubling, as do
-// Garmin and Telemetry Overlay.
+// wrong so much as unrecognisable; Garmin and Telemetry Overlay double it too.
 //
 // Which one applies depends on the sport, so it cannot be decided when the
-// panel is constructed. Unknown sports are left in rpm: reporting the recorded
-// number under its recorded unit is the answer that cannot be wrong, where
-// guessing at a doubling would silently halve or double somebody's cadence.
+// panel is constructed, and the rule is fitactivity.CadenceUnit's -- the one
+// videofx and course use -- not a copy of it here: unknown sports are left
+// in rpm, since the recorded number under its recorded unit is the answer
+// that cannot be wrong.
 func Cadence() Readout {
 	return Readout{
 		name: "cadence", label: "CADENCE", unit: "rpm", metric: inspect.MetricCadence,
@@ -194,12 +194,14 @@ func Cadence() Readout {
 		},
 		format: func(v float64) string { return fmt.Sprintf("%.0f", v) },
 		bind: func(ctx *Context, r Readout) Readout {
-			if ctx.Track == nil || !perLegCadence(ctx.Track.Sport) {
-				return r
+			sport := ""
+			if ctx.Track != nil {
+				sport = ctx.Track.Sport
 			}
-			r.unit = "spm"
+			factor, unit := fitactivity.CadenceUnit(sport)
+			r.unit = unit
 			r.value = func(s fitactivity.Sample) (float64, bool) {
-				return float64(s.Cadence) * 2, s.HasCadence
+				return float64(s.Cadence) * factor, s.HasCadence
 			}
 			return r
 		},
@@ -216,20 +218,6 @@ func Cadence() Readout {
 			return robustGaugeScale(ctx, r.value, cadenceGaugeStep)
 		},
 	}
-}
-
-// perLegCadence reports whether a sport's FIT cadence counts one leg, so the
-// figure the athlete recognises is twice it.
-//
-// The sport strings come from the FIT profile via fitactivity.Track.Sport, and
-// are matched case-insensitively because they are a device's vocabulary rather
-// than this program's.
-func perLegCadence(sport string) bool {
-	switch strings.ToLower(sport) {
-	case "running", "walking", "hiking":
-		return true
-	}
-	return false
 }
 
 // placeholder is what this readout shows with no reading behind it.
