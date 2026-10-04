@@ -21,6 +21,7 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/fittest"
+	"github.com/wisborg/fitactivity/units"
 	"golang.org/x/image/font"
 
 	"github.com/wisborg/osmbase/mercator"
@@ -637,7 +638,7 @@ func TestResolveElevationTuning_FourLevelPrecedenceAndItsSourceLabel(t *testing.
 				elevationGain:      c.gain,
 				elevationLoss:      c.loss,
 			}
-			gotOpts, gotSource := resolveElevationTuning(c.track)
+			gotOpts, gotSource := resolveElevationTuning(c.track, units.Set{Elevation: units.Metre})
 			if gotOpts != c.wantOpts {
 				t.Errorf("resolveElevationTuning(...) options = %+v, want %+v", gotOpts, c.wantOpts)
 			}

@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/units"
 	"github.com/wisborg/output/progress"
 
 	"github.com/wisborg/fitdash/internal/encode"
@@ -60,6 +61,9 @@ type renderOptions struct {
 	elevationLoss       float64
 	clock               string
 	pauses              string
+	units               string
+	unitEach            []string
+	speedReadout        string
 }
 
 // validateRenderOptions rejects flag combinations that cannot mean what they
@@ -328,11 +332,11 @@ func bindRenderFlags(c *cobra.Command) {
 			"profile, the gain/loss bars and the gradient use it. 0 (default) = auto: tuned from --elevation-gain / "+
 			"--elevation-loss, or the FIT device's own totals, or a mild default")
 	f.Float64Var(&renderOpts.elevationGain, "elevation-gain", 0,
-		"known total elevation GAIN (metres) for the activity -- the smoothing is auto-tuned so the computed total "+
+		"known total elevation GAIN (metres, or feet under --units imperial or --unit elevation=ft) for the activity -- the smoothing is auto-tuned so the computed total "+
 			"matches (GPS elevation overcounts, so a known figure is the most reliable target). 0 = use the FIT's own "+
 			"total. Paired with --elevation-loss. Ignored when --elevation-smoothing is set")
 	f.Float64Var(&renderOpts.elevationLoss, "elevation-loss", 0,
-		"known total elevation LOSS (metres) for the activity; see --elevation-gain. 0 = use the FIT's own total. "+
+		"known total elevation LOSS (metres, or feet as --elevation-gain) for the activity; see --elevation-gain. 0 = use the FIT's own total. "+
 			"Ignored when --elevation-smoothing is set")
 	f.StringArrayVar(&renderOpts.highlights, "highlight", nil,
 		"mark a stretch of the activity for its own on-screen pace and treatment (repeatable). Comma-separated "+
@@ -366,6 +370,7 @@ func bindRenderFlags(c *cobra.Command) {
 			"whose on-screen spans would overlap are not refused: the earlier one is truncated to end where the "+
 			"next begins, and it is reported. --highlight-transition governs a label's fade too. "+
 			"Example: --label 'at=12m30s,name=Lighthouse,video=3s'")
+	bindUnitFlags(f)
 }
 
 // runRender is the root command: fitdash ACTIVITY.fit.
@@ -381,6 +386,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 	powerSrc, err := parsePowerSource(renderOpts.power)
 	if err != nil {
 		return err
+	}
+	unitSet, err := parseUnits(renderOpts.units, renderOpts.unitEach)
+	if err != nil {
+		return err
+	}
+	if _, err := panel.ResolveSpeedReadout(renderOpts.speedReadout, ""); err != nil {
+		return fmt.Errorf("render: %w", err)
 	}
 	bottomBand, err := parseBottomBand(renderOpts.bottomBand)
 	if err != nil {
@@ -476,7 +488,8 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// ElevationPanel (and the panels this field exists to let land) read a
 	// model already built rather than each building their own copy of it --
 	// see panel.Context.Elevation's own doc comment.
-	elevTuning, elevSource := resolveElevationTuning(track)
+	elevTuning, elevSource := resolveElevationTuning(track, unitSet)
+	speedReadout, _ := panel.ResolveSpeedReadout(renderOpts.speedReadout, track.Sport)
 	basemap, err := resolveBasemap(cmd, theme, track, basemapLabelFaces(cmd, fonts, h))
 	if err != nil {
 		return err
@@ -506,6 +519,8 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Gauges:              gauges,
 		Clock:               clock,
 		Pauses:              pauses,
+		Units:               unitSet,
+		SpeedReadout:        speedReadout,
 	}
 	// Map imagery is fetched inside render.New, by the route panel's own
 	// Prepare, and on a route nobody has rendered before that is the longest
@@ -532,6 +547,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		layoutName: layout.Name, theme: theme, smoothing: smoothing,
 		highlights: highlights, labels: labels,
 		elevation: rctx.Elevation, elevationSource: elevSource,
+		units: rctx.Units, speedReadout: rctx.SpeedReadout,
 	}
 	if renderOpts.dryRun {
 		return runDryRun(cmd, r, activity, rctx, in)
@@ -588,6 +604,11 @@ type renderInputs struct {
 	// as this bundle.
 	elevation       *fitactivity.ElevationModel
 	elevationSource string
+
+	// units and speedReadout are rctx.Units and rctx.SpeedReadout, carried
+	// for writeUnitsSummary for elevation's reason above.
+	units        units.Set
+	speedReadout string
 }
 
 // plannedOutputPath is where a render WOULD write, with no side effect: it
@@ -786,12 +807,16 @@ const (
 // track may be nil (a render whose Decode already failed never reaches this
 // point in practice, but the function makes no assumption of its own) --
 // case 3 simply never matches a nil track, falling through to the default.
-func resolveElevationTuning(track *fitactivity.Track) (fitactivity.ElevationOptions, string) {
+//
+// --elevation-gain and --elevation-loss are read in u's elevation unit --
+// feet under imperial, for a total copied off a watch that shows feet -- and
+// handed on in metres.
+func resolveElevationTuning(track *fitactivity.Track, u units.Set) (fitactivity.ElevationOptions, string) {
 	switch {
 	case renderOpts.elevationSmoothing > 0:
 		return fitactivity.ElevationOptions{Sigma: renderOpts.elevationSmoothing}, elevationTuningSourceExplicit
 	case renderOpts.elevationGain > 0 || renderOpts.elevationLoss > 0:
-		return fitactivity.ElevationOptions{TargetGain: renderOpts.elevationGain, TargetLoss: renderOpts.elevationLoss}, elevationTuningSourceTargets
+		return fitactivity.ElevationOptions{TargetGain: u.Elevation.ToSI(renderOpts.elevationGain), TargetLoss: u.Elevation.ToSI(renderOpts.elevationLoss)}, elevationTuningSourceTargets
 	case track != nil && track.HasElevationTotals:
 		return panel.DefaultElevationTuning(track), elevationTuningSourceFile
 	default:
@@ -1236,6 +1261,9 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	writeGaugeSummary(cmd, r, ctx)
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
+	if !renderOpts.quiet {
+		writeUnitsSummary(cmd.ErrOrStderr(), in.units, in.speedReadout, in.track.Sport)
+	}
 	markersOnProfile := markersAbsorbedIntoProfile(r)
 	writeHighlightSummary(cmd, in.tl, in.track, ctx.Timer, in.highlights, in.smoothing, in.theme, markersOnProfile)
 	writeLabelSummary(cmd, in.tl, in.track, ctx.Timer, in.labels, renderOpts.highlightTransition, markersOnProfile, r.OverlappingLabels())
@@ -2093,6 +2121,9 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	writeGaugeSummary(cmd, r, ctx)
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
+	if !renderOpts.quiet {
+		writeUnitsSummary(cmd.ErrOrStderr(), in.units, in.speedReadout, in.track.Sport)
+	}
 	// The fast visual loop is where a transition actually gets looked at
 	// (see --frame-at-video), so it gets the same base/highlight
 	// decomposition and warnings the video path prints -- otherwise the one

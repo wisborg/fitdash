@@ -206,7 +206,7 @@ func TestElevationPanel_StartLabelNamesTheAxisOrigin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			box := Box{X: 0, Y: 0, W: 900, H: 260}
 			p := elevationPainterFor(t, hillTrack(tc.startD, tc.endD, 300), box, 900, 260)
-			if want := formatDistance(0); p.startLabel != want {
+			if want := formatDistance(0, metric); p.startLabel != want {
 				t.Errorf("startLabel = %q, want %q (the axis's own origin) regardless of profileStart=%v",
 					p.startLabel, want, p.profileStart)
 			}

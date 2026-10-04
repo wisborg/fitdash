@@ -214,6 +214,13 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		if ctx.Gauges != panel.GaugesBalance && panel.IsBalancePanel(p) {
 			return false
 		}
+		// --speed-readout (or the sport, under auto) chose pace or speed for
+		// the gauge column, and the other is removed here, before Accepts,
+		// unreported, for --gauges' reason: it is not missing from the
+		// activity, it was not asked for. See panel.Context.SpeedReadout.
+		if !panel.SpeedReadoutKeeps(ctx, p) {
+			return false
+		}
 		if p.Accepts(ctx) {
 			return true
 		}

@@ -5,6 +5,7 @@ import (
 	"math"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/units"
 )
 
 // ClimbPanel draws the activity's cumulative elevation gain and loss as two
@@ -113,7 +114,7 @@ func (ClimbPanel) Accepts(ctx *Context) bool { return elevationIsPlottable(ctx) 
 
 // Prepare lays out the two tracks once, from the activity's own totals.
 func (ClimbPanel) Prepare(ctx *Context, box Box) Painter {
-	p := &climbPainter{box: box}
+	p := &climbPainter{box: box, unit: ctx.units().Elevation}
 	if !elevationIsPlottable(ctx) {
 		// Accepts should have prevented this. Drawing nothing is the
 		// least-wrong option left, mirroring ElevationPanel's own identical
@@ -212,10 +213,10 @@ func (ClimbPanel) Prepare(ctx *Context, box Box) Painter {
 		if px, err := ctx.Fonts.FitSize("LOSS", labelW*0.92, p.labelPx); err == nil {
 			p.labelPx = px
 		}
-		if px, err := ctx.Fonts.FitSize(formatElevation(p.totalGain), readingW*0.92, p.readingPx); err == nil {
+		if px, err := ctx.Fonts.FitSize(formatElevation(p.totalGain, p.unit), readingW*0.92, p.readingPx); err == nil {
 			p.readingPx = px
 		}
-		if px, err := ctx.Fonts.FitSize(formatElevation(p.totalLoss), readingW*0.92, p.readingPx); err == nil {
+		if px, err := ctx.Fonts.FitSize(formatElevation(p.totalLoss, p.unit), readingW*0.92, p.readingPx); err == nil {
 			p.readingPx = px
 		}
 	}
@@ -303,6 +304,10 @@ type climbPainter struct {
 	// Dynamic must not.
 	model *fitactivity.ElevationModel
 
+	// unit is what the readings are written in, metres or feet, resolved
+	// once from Context.Units here rather than per frame.
+	unit units.Unit
+
 	profileStart, axisEnd float64
 	totalGain, totalLoss  float64
 	maxTotal              float64
@@ -387,6 +392,6 @@ func (p *climbPainter) Dynamic(c *Canvas, f Frame) {
 
 	// Left-aligned at readingX for the identical reason the placeholder branch
 	// above is: a fixed column beside the track, not the box's far edge.
-	_ = c.Text(formatElevation(gain), p.readingX, p.gainY, 0, 0.5, p.readingPx, c.Theme.Foreground)
-	_ = c.Text(formatElevation(loss), p.readingX, p.lossY, 0, 0.5, p.readingPx, c.Theme.Foreground)
+	_ = c.Text(formatElevation(gain, p.unit), p.readingX, p.gainY, 0, 0.5, p.readingPx, c.Theme.Foreground)
+	_ = c.Text(formatElevation(loss, p.unit), p.readingX, p.lossY, 0, 0.5, p.readingPx, c.Theme.Foreground)
 }

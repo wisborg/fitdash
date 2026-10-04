@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/units"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 )
@@ -969,7 +970,9 @@ const ReadoutPlaceholder = "--"
 // reading it stands in for so the panel does not jump when a runner stops.
 const PacePlaceholder = "--:--"
 
-// Distance reads cumulative distance, in kilometres.
+// Distance reads cumulative distance, in kilometres -- or in whichever
+// distance unit Context.Units chose, miles say; bindDistancePrecision makes
+// the conversion, and everything below that says kilometres means that unit.
 //
 // Always kilometres, never switching to metres below one. The unit is drawn in
 // the STATIC layer -- it does not change across a render -- so a readout that
@@ -1140,14 +1143,19 @@ func bindDistancePrecision(ctx *Context, r Readout) Readout {
 		coarse = step >= coarseDistanceStep
 	}
 
+	u := ctx.units().Distance
 	maxKm := 0.0
 	if m, ok := ctx.Report.Metric(inspect.MetricDistance); ok && m.Present > 0 {
-		maxKm = m.Max / 1000
+		maxKm = u.FromSI(m.Max)
 	}
 
 	intDigits, decimals := distanceLayout(maxKm, coarse)
 	r.template = distanceTemplateFor(intDigits, decimals)
 	r.format = func(v float64) string { return fmt.Sprintf("%.*f", decimals, v) }
+	r.unit = u.Name
+	r.value = func(s fitactivity.Sample) (float64, bool) {
+		return u.FromSI(s.Distance), s.HasDistance
+	}
 	return r
 }
 
@@ -1219,8 +1227,8 @@ const stepLengthTemplate = "888"
 // into disagreeing about what the panel is actually capable of printing.
 const paceTemplate = "88:88"
 
-// maxPaceSeconds is the greatest seconds-per-kilometre paceTemplate has room
-// for, read off the template's own shape rather than restated as a number of
+// maxPaceSeconds is the greatest seconds-per-kilometre (or per mile)
+// paceTemplate has room for, read off the template's own shape rather than restated as a number of
 // its own: however many digit places sit before the colon (two, for
 // "88:88") bound the minutes at all-nines, and the seconds column -- always
 // a mod-60 remainder, so always two digits and under sixty -- adds 59. For
@@ -1240,14 +1248,17 @@ func maxPaceSeconds(template string) int {
 	return maxMinutes*60 + 59
 }
 
-// minPaceSpeed is the slowest speed, in m/s, whose pace still fits
-// paceTemplate: 1000 metres divided by the template's own ceiling. Below it
-// the reciprocal needs more minutes than the template reserves digits for.
-func minPaceSpeed(template string) float64 {
-	return 1000 / float64(maxPaceSeconds(template))
+// minPaceSpeed is the slowest speed, in m/s, whose pace in u still fits
+// paceTemplate: u's distance -- 1000 metres for min/km -- divided by the
+// template's own ceiling. Below it the reciprocal needs more minutes than the
+// template reserves digits for.
+func minPaceSpeed(template string, u units.Unit) float64 {
+	return u.ToSI(float64(maxPaceSeconds(template)))
 }
 
-// Pace reads speed and shows it as time per kilometre.
+// Pace reads speed and shows it as time per kilometre, or per mile under
+// Context.Units: bind resolves the unit, the speed floor that goes with it,
+// and the format.
 //
 // Pace is the number runners actually think in, and it is the reciprocal of
 // the recorded quantity, which is where the care goes.
@@ -1272,9 +1283,9 @@ func minPaceSpeed(template string) float64 {
 // The format matches videofx's, M:SS per kilometre, since both programs read
 // the same activities.
 func Pace() Readout {
-	minSpeed := minPaceSpeed(paceTemplate)
+	minSpeed := minPaceSpeed(paceTemplate, units.MinutesPerKilometre)
 	return Readout{
-		name: "pace", label: "PACE", unit: "min/km", metric: inspect.MetricSpeed,
+		name: paceName, label: "PACE", unit: "min/km", metric: inspect.MetricSpeed,
 		template: paceTemplate, absent: PacePlaceholder,
 		value: func(s fitactivity.Sample) (float64, bool) {
 			// Speed itself is carried through; the reciprocal happens in
@@ -1284,7 +1295,17 @@ func Pace() Readout {
 			// rather than as a formatting special case downstream.
 			return s.Speed, s.HasSpeed && s.Speed >= minSpeed
 		},
-		format: FormatPace,
+		format: func(v float64) string { return FormatPace(v, units.MinutesPerKilometre) },
+		bind: func(ctx *Context, r Readout) Readout {
+			u := ctx.units().Pace
+			minSpeed := minPaceSpeed(paceTemplate, u)
+			r.unit = u.Name
+			r.value = func(s fitactivity.Sample) (float64, bool) {
+				return s.Speed, s.HasSpeed && s.Speed >= minSpeed
+			}
+			r.format = func(v float64) string { return FormatPace(v, u) }
+			return r
+		},
 		scale: func(ctx *Context, r Readout) (gaugeScale, bool) {
 			// r.value here reports SPEED (see the value closure above), and
 			// paceGaugeScale sweeps on that speed while snapping and
@@ -1293,12 +1314,68 @@ func Pace() Readout {
 			// readout's own format) already turns a speed back into pace
 			// text, so the endpoint labels Static draws need no
 			// metric-specific handling either.
-			return paceGaugeScale(ctx, r.value)
+			return paceGaugeScale(ctx, r.value, ctx.units().Pace)
 		},
 	}
 }
 
-// FormatPace renders a speed in m/s as M:SS per kilometre.
+// paceName and speedName are Pace's and Speed's names, which
+// SpeedReadoutKeeps chooses between.
+const (
+	paceName  = "pace"
+	speedName = "speed"
+)
+
+// Speed reads speed and shows it as distance an hour, in Context.Units'
+// speed unit: km/h, mph, knots or m/s. It is pace's other reading -- the one
+// a ride, a sail or a flight is read in -- and takes pace's place in the
+// gauge column when --speed-readout or the sport chooses it (see
+// ResolveSpeedReadout and SpeedReadoutKeeps).
+//
+// Unlike pace, standing still has a speed: 0 is a reading, shown as 0, the
+// judgement Power and Cadence make about their own zeros. Whole units from
+// 10 up and a tenth below, as fitactivity's units.FormatSpeed writes them, so
+// a walk's 5.4 km/h is not a 5 that cannot tell a stroll from a march.
+func Speed() Readout {
+	r := Readout{
+		name: speedName, label: "SPEED", metric: inspect.MetricSpeed,
+		template: speedTemplate,
+		scale: func(ctx *Context, r Readout) (gaugeScale, bool) {
+			return robustGaugeScale(ctx, r.value, speedGaugeStep)
+		},
+		bind: func(ctx *Context, r Readout) Readout {
+			return bindSpeed(r, ctx.units().Speed)
+		},
+	}
+	return bindSpeed(r, units.KilometresPerHour)
+}
+
+// bindSpeed is r reading and writing speed in u.
+func bindSpeed(r Readout, u units.Unit) Readout {
+	r.unit = u.Name
+	r.value = func(s fitactivity.Sample) (float64, bool) {
+		return u.FromSI(s.Speed), s.HasSpeed
+	}
+	r.format = formatSpeed
+	return r
+}
+
+// formatSpeed is a speed already in its unit, without the unit: whole from
+// 10 up, a tenth below, the rule units.FormatSpeed writes it with.
+func formatSpeed(v float64) string {
+	if math.Abs(v) >= 10 {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return fmt.Sprintf("%.1f", v)
+}
+
+// speedTemplate is the widest speed the readout prints: three digits, a
+// jet's 900 km/h or 480 knots, and wider than any speed under ten's "8.8".
+const speedTemplate = "888"
+
+// FormatPace renders a speed in m/s as M:SS per u's distance -- per
+// kilometre for min/km, per mile for min/mi -- without the unit, which the
+// readout draws beneath it.
 //
 // A non-positive speed, or one slow enough that its pace would not fit
 // paceTemplate, returns the placeholder rather than printing a reciprocal
@@ -1308,11 +1385,11 @@ func Pace() Readout {
 // This mirrors the guard in Pace's value closure rather than replacing it:
 // value decides presence (and therefore colour), this is the belt-and-braces
 // half that keeps FormatPace itself safe for any caller.
-func FormatPace(speedMS float64) string {
+func FormatPace(speedMS float64, u units.Unit) string {
 	if speedMS <= 0 {
 		return PacePlaceholder
 	}
-	totalSec := int(math.Round(1000 / speedMS))
+	totalSec := int(math.Round(u.FromSI(speedMS)))
 	if totalSec > maxPaceSeconds(paceTemplate) {
 		return PacePlaceholder
 	}

@@ -268,14 +268,14 @@ leg* on a run, so the figure a runner recognises is twice it. A run shows `spm`,
 shows `rpm`, and a sport fitdash does not recognise keeps the recorded number under its
 recorded unit rather than being guessed at.
 
-**The fluctuating readouts can be drawn against a scale.** Heart rate, pace, power and
-cadence go up and down as an activity progresses, and a bare number says nothing about
+**The fluctuating readouts can be drawn against a scale.** Heart rate, pace (or speed),
+power and cadence go up and down as an activity progresses, and a bare number says nothing about
 whether 148 bpm is this ride's hard effort or its easy one. `--gauge-style track` draws a
 labelled axis beneath each of those four with a marker at the current reading;
 `--gauge-style dial` draws the identical scale beside the number instead, as a
 semicircular arc with a needle. `plain`, the default, is the number alone, unchanged. The
 range is the activity's own, snapped outward to round numbers, so a gauge might read
-`100`–`190 bpm` or `4:00`–`7:00 min/km`. It is taken from a smoothed reading rather than
+`100`–`190 bpm` or `4:00`–`7:00 min/km`, in whichever units the render is in. It is taken from a smoothed reading rather than
 the raw samples, so the marker never pins at an end, and neither a stopped sample — whose
 pace is undefined — nor a one-sample power spike can take the whole axis for a value the
 activity visited once. Both ends are always
@@ -314,6 +314,26 @@ already stands for a span of activity, so a number describing that span is close
 a viewer takes it to mean than one sample plucked from it. Position, distance and
 elevation are never averaged — a moving average of latitude cuts corners and puts the
 route dot off the path.
+
+**Numbers are written in the units you read.** `--units imperial` writes miles, feet,
+mph and min/mi where the default writes kilometres, metres, km/h and min/km, and
+`--unit QUANTITY=UNIT` changes one quantity after it — `distance=km|mi|nmi`,
+`elevation=m|ft`, `speed=km/h|mph|kn|m/s`, `pace=min/km|min/mi` — for the mixtures
+some activities are read in: a flight is `--units imperial --unit distance=nmi --unit
+speed=kn`. The distance readout, the profile's axis and heights, the climb panel and the
+pace and speed readouts follow it, and so do `--elevation-gain` and `--elevation-loss`,
+read in the elevation unit. Below one distance unit a distance is written in the
+elevation unit, feet below a mile as metres below a kilometre. `fitdash inspect` reports
+what the file recorded, in the units it recorded it. The flags, and the arithmetic behind
+them, are the ones [videofx][videofx] and course use.
+
+**A run is read in pace, a ride in speed.** The gauge column shows one reading of how
+fast: pace for running, walking and hiking, speed for every other sport — and for a file
+that names no sport, such as most GPX and KML tracks, since speed is what was recorded
+and shown as recorded it cannot be the wrong reading, where a pace on a ride or a flight
+would be. `--speed-readout pace` or `--speed-readout speed` decides it outright, and the
+summary says when speed was shown and why. Unlike pace, speed has a value at a
+standstill, so a stopped rider reads `0.0`.
 
 **Pace has no value when you stop.** A speed of zero is a real reading whose reciprocal
 does not exist — standing still is not infinitely slow — so a stopped runner sees `--:--`

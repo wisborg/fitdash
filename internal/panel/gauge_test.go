@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/units"
 )
 
 // --- scale arithmetic --------------------------------------------------
@@ -200,7 +201,7 @@ func TestPaceGaugeScale_SweepsOnSpeedSnapsInPaceSpace(t *testing.T) {
 	track := paceRampTrack(2.0, 0.02, 101)
 	ctx := &Context{Track: track}
 
-	got, ok := paceGaugeScale(ctx, Pace().value)
+	got, ok := paceGaugeScale(ctx, Pace().value, units.MinutesPerKilometre)
 	if !ok {
 		t.Fatal("ok = false, want true")
 	}
@@ -231,7 +232,7 @@ func TestPaceGaugeScale_NonPositiveSpeedRefuses(t *testing.T) {
 	raw := func(s fitactivity.Sample) (float64, bool) { return s.Speed, s.HasSpeed }
 	track := paceRampTrack(-50, 1, 101)
 	ctx := &Context{Track: track}
-	if got, ok := paceGaugeScale(ctx, raw); ok {
+	if got, ok := paceGaugeScale(ctx, raw, units.MinutesPerKilometre); ok {
 		t.Errorf("ok = true for a non-positive low speed, want false (got %+v)", got)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/units"
 )
 
 // GaugeStyle selects how Readout draws a fluctuating reading -- heart rate,
@@ -531,7 +532,10 @@ const paceGaugeStep = 30.0
 // dot. floor is the SLOWER of the two speeds and ceiling the FASTER: floor <
 // ceiling, the same invariant every other gaugeScale carries, even though
 // the pace numbers they came from run the other way.
-func paceGaugeScale(ctx *Context, value func(fitactivity.Sample) (float64, bool)) (gaugeScale, bool) {
+//
+// The snapping is done in u's pace -- seconds per kilometre, or per mile --
+// so the endpoints are round in the unit their labels are written in.
+func paceGaugeScale(ctx *Context, value func(fitactivity.Sample) (float64, bool), u units.Unit) (gaugeScale, bool) {
 	if ctx == nil || ctx.Track == nil {
 		return gaugeScale{}, false
 	}
@@ -545,15 +549,15 @@ func paceGaugeScale(ctx *Context, value func(fitactivity.Sample) (float64, bool)
 		// comment) -- there is no honest reciprocal to snap.
 		return gaugeScale{}, false
 	}
-	slowSec := math.Ceil((1000/loSpeed)/paceGaugeStep) * paceGaugeStep
-	fastSec := math.Floor((1000/hiSpeed)/paceGaugeStep) * paceGaugeStep
+	slowSec := math.Ceil(u.FromSI(loSpeed)/paceGaugeStep) * paceGaugeStep
+	fastSec := math.Floor(u.FromSI(hiSpeed)/paceGaugeStep) * paceGaugeStep
 	if fastSec < paceGaugeStep {
 		fastSec = paceGaugeStep
 	}
 	if fastSec >= slowSec {
 		return gaugeScale{}, false
 	}
-	return gaugeScale{floor: 1000 / slowSec, ceiling: 1000 / fastSec}, true
+	return gaugeScale{floor: u.ToSI(slowSec), ceiling: u.ToSI(fastSec)}, true
 }
 
 // Per-metric snap steps, in whatever unit the readout's own bound value()
@@ -565,6 +569,7 @@ const (
 	heartRateGaugeStep = 10.0
 	powerGaugeStep     = 50.0
 	cadenceGaugeStep   = 10.0
+	speedGaugeStep     = 5.0
 )
 
 // drawTrack draws the reserved strip's track rectangle -- the full-length

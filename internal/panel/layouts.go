@@ -174,7 +174,7 @@ func LandscapeLayout() Layout {
 					gaugeBalanceColumn(),
 					{Dir: Col, Children: []Slot{
 						{Panel: HeartRate(), Pad: 0.01},
-						{Panel: Pace(), Pad: 0.01},
+						paceOrSpeed(),
 						{Panel: Power(), Pad: 0.01},
 						{Panel: Cadence(), Pad: 0.01},
 					}},
@@ -331,7 +331,7 @@ func PortraitLayout() Layout {
 				{Dir: Col, Children: []Slot{
 					{Dir: Row, Weight: 2, Children: []Slot{
 						{Panel: HeartRate(), Pad: 0.01},
-						{Panel: Pace(), Pad: 0.01},
+						paceOrSpeed(),
 					}},
 					{Dir: Row, Weight: 2, Children: []Slot{
 						{Panel: Power(), Pad: 0.01},
@@ -414,4 +414,17 @@ func PortraitLayout() Layout {
 			{Panel: MarkerPanel{}, Weight: 1, Pad: 0.01},
 		}},
 	}
+}
+
+// paceOrSpeed is the gauge column's reading of speed: Pace or Speed,
+// whichever Context.SpeedReadout chose, in one slot. An Alt rather than two
+// slots, so the one not chosen leaves no gap: internal/render's keep filter
+// removes it through SpeedReadoutKeeps, and the other takes the slot whole.
+// Pace first, so a Context that never chose -- the zero value -- draws pace
+// exactly where it always did.
+func paceOrSpeed() Slot {
+	return Slot{Dir: Alt, Children: []Slot{
+		{Panel: Pace(), Pad: 0.01},
+		{Panel: Speed(), Pad: 0.01},
+	}}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/units"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 )
@@ -39,6 +40,12 @@ func trackWith(present ...string) *fitactivity.Track {
 		}
 		if has[inspect.MetricCadence] {
 			s.HasCadence, s.Cadence = true, uint8(80+i%6)
+		}
+		if has[inspect.MetricSpeed] {
+			s.HasSpeed, s.Speed = true, 3+float64(i%5)*0.1
+		}
+		if has[inspect.MetricDistance] {
+			s.HasDistance, s.Distance = true, float64(i)*3
 		}
 		samples[i] = s
 	}
@@ -708,7 +715,7 @@ func TestFormatPace_DerivesMinutesPerKilometre(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := FormatPace(c.speed); got != c.want {
+			if got := FormatPace(c.speed, units.MinutesPerKilometre); got != c.want {
 				t.Errorf("FormatPace(%v) = %q, want %q", c.speed, got, c.want)
 			}
 		})
@@ -796,7 +803,7 @@ func TestPace_SmoothedNearStationarySpeedIsAbsentNotANumber(t *testing.T) {
 // known-bad value" but actually agrees with maxPaceSeconds/minPaceSpeed at
 // the edge.
 func TestPace_ValueAcceptsExactlyWhatTheTemplateCanHoldAndNothingSlower(t *testing.T) {
-	minSpeed := minPaceSpeed(paceTemplate)
+	minSpeed := minPaceSpeed(paceTemplate, units.MinutesPerKilometre)
 	p := Pace()
 
 	if _, ok := p.value(fitactivity.Sample{HasSpeed: true, Speed: minSpeed}); !ok {
@@ -850,7 +857,7 @@ func TestPace_FormattedTextNeverExceedsTheTemplateWidth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	minSpeed := minPaceSpeed(paceTemplate)
+	minSpeed := minPaceSpeed(paceTemplate, units.MinutesPerKilometre)
 	speeds := []float64{
 		0.30, // a very fast runner
 		5, 1000.0 / 324, 1.4, 1000.0 / 240,
@@ -859,7 +866,7 @@ func TestPace_FormattedTextNeverExceedsTheTemplateWidth(t *testing.T) {
 		0, -1, // no pace at all
 	}
 	for _, speed := range speeds {
-		text := FormatPace(speed)
+		text := FormatPace(speed, units.MinutesPerKilometre)
 		w, _, err := faces.Measure(text, 40)
 		if err != nil {
 			t.Fatal(err)

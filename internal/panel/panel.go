@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/units"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/tilemap"
@@ -322,6 +323,24 @@ type Context struct {
 	// false.
 	Gauges string
 
+	// Units are what every panel writes its numbers in: distance on the
+	// distance readout and the profile's axis, elevation on the profile, the
+	// climb panel and short distances, speed and pace in their readouts.
+	// The zero Set is metric, so a Context that never set it -- every test
+	// fixture, every render before --units existed -- draws what it always
+	// drew. Read through units(), never directly.
+	Units units.Set
+
+	// SpeedReadout is which of the gauge column's two readings of speed is
+	// placed: SpeedReadoutPace or SpeedReadoutSpeed, resolved by
+	// ResolveSpeedReadout from --speed-readout and the activity's sport. The
+	// zero value is pace, what this column always showed.
+	//
+	// Read by internal/render's keep filter through SpeedReadoutKeeps, for
+	// Gauges' reason: the readout not chosen is not missing data, and an
+	// Accepts that declined it would have the summary say it was.
+	SpeedReadout string
+
 	// Clock selects which of ElapsedPanel's two clocks is the LARGE one:
 	// ClockElapsed (the zero value's behaviour too, so an unset Context
 	// renders exactly as it always has) or ClockActive, which puts moving
@@ -564,4 +583,13 @@ type Frame struct {
 	// CutWeight is the same 0->1->0 ramp as IntervalWeight and LabelWeight,
 	// across the cut notice's own entrance and exit. See Timeline.CutAt.
 	CutWeight float64
+}
+
+// units is c.Units, or metric when they were never set.
+func (c *Context) units() units.Set {
+	if c == nil || c.Units == (units.Set{}) {
+		m, _ := units.Of(units.Metric)
+		return m
+	}
+	return c.Units
 }

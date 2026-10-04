@@ -1240,6 +1240,30 @@ decline: a pace panel just drew from this activity, so the activity demonstrably
 A name that also drew is now filtered out of that heading. The rule is deliberately about the
 two lists rather than about pace, so it keeps holding for the next panel seated twice.
 
+## Pace or speed, and the units numbers are written in
+
+The gauge column's pace slot is an `Alt` of `Pace` and `Speed`, two readings of the same
+recorded speed. `--speed-readout auto` (the default) picks pace for running, walking and
+hiking and speed for every other sport — the sports `fitactivity.CadenceUnit` counts in steps,
+and an unknown sport gets speed for the reason it gets rpm there: it is what was recorded.
+
+The choice is a second condition in `internal/render`'s keep filter, beside `--gauges`, and
+for `--gauges`' reason: in `Accepts` the readout not chosen would be reported as missing data.
+So the claim above that the filter's one condition is "paid once and never again" now has a
+sibling. It is paid the same way — one call, `panel.SpeedReadoutKeeps`, with the names it
+compares living in `internal/panel` beside the readouts they name — and the balance column's
+own pace is exempt, since running dynamics only come from a run. The alternative, one readout
+switching between pace and speed in `bind`, was rejected: the two have different absent-data
+policies (a stopped runner has no pace, a stopped rider has a speed of zero), different
+templates and different gauge scales, and a readout that is two readouts by a flag is two
+places to get each of those wrong.
+
+`--units` and `--unit` set `Context.Units`, a `fitactivity/units` set whose zero value is
+metric, so every fixture and every render that predates it is unchanged. Panels convert at
+the last moment — `bind` for a readout, `Prepare` for a painter — and everything upstream,
+the elevation model included, stays in SI. A short distance follows the elevation unit (feet
+below a mile, as metres below a kilometre), the rule the units package states for every tool.
+
 ## The basemap: imagery under the route
 
 `--basemap <style>` draws the route over map imagery from Thunderforest, using a key

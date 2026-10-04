@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/units"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 )
@@ -543,8 +544,9 @@ func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 	// the model's StartDistance, or it would repeat on this axis the exact
 	// disagreement between a label and its axis that this panel's y-axis
 	// labels are placed via yForElevation to prevent.
-	p.startLabel, p.endLabel = formatDistance(0), formatDistance(p.axisEnd)
-	p.lowLabel, p.highLabel = formatElevation(p.minElev), formatElevation(p.maxElev)
+	u := ctx.units()
+	p.startLabel, p.endLabel = formatDistance(0, u), formatDistance(p.axisEnd, u)
+	p.lowLabel, p.highLabel = formatElevation(p.minElev, u.Elevation), formatElevation(p.maxElev, u.Elevation)
 
 	// The left gutter is measured from THESE labels rather than from a
 	// worst-case template. Reserving room for "-8888 m" when the profile is
@@ -1530,16 +1532,19 @@ func (p *elevationPainter) drawActiveMarks(c *Canvas, f Frame) {
 	}
 }
 
-// formatElevation renders metres, without decimals: a profile's labels are
-// read at a glance, and a tenth of a metre is below the noise of the
-// barometric reading behind them.
-func formatElevation(m float64) string { return fmt.Sprintf("%.0f m", m) }
+// formatElevation renders m metres in u, metres or feet, without decimals: a
+// profile's labels are read at a glance, and a tenth of a metre is below the
+// noise of the barometric reading behind them.
+func formatElevation(m float64, u units.Unit) string {
+	return fmt.Sprintf("%.0f %s", u.FromSI(m), u.Name)
+}
 
-// formatDistance renders metres below a kilometre and kilometres above it, so
-// a short activity is not labelled "0.4 km" at both ends.
-func formatDistance(m float64) string {
-	if m < 1000 {
-		return fmt.Sprintf("%.0f m", m)
+// formatDistance renders m metres in u's distance unit, or below one of it in
+// u's elevation unit -- metres below a kilometre, feet below a mile -- so a
+// short activity is not labelled "0.4 km" at both ends.
+func formatDistance(m float64, u units.Set) string {
+	if u.Distance.FromSI(m) < 1 {
+		return formatElevation(m, u.Elevation)
 	}
-	return fmt.Sprintf("%.1f km", m/1000)
+	return fmt.Sprintf("%.1f %s", u.Distance.FromSI(m), u.Distance.Name)
 }
