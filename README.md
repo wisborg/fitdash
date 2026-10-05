@@ -165,6 +165,23 @@ The required credit — `Maps © Thunderforest, Data © OpenStreetMap contributo
 — is drawn into every frame that shows imagery. A video carries no interface to
 put attribution in and is distributed on its own, so it goes in the picture.
 
+`--basemap local` draws the map here instead, from OpenStreetMap data in an
+[osmbase](https://github.com/wisborg/osmbase) store on your own disk, in colours
+derived from the theme so the route always reads against it. What the store lacks
+for the activity is offered before it is fetched; afterwards nothing is sent to
+anybody. Add `--terrain` to shade the shape of the ground and draw contour lines
+(`--contours=false` for the shading alone), from elevation by
+[Mapterhorn](https://mapterhorn.com) kept beside the store and offered the same way
+— a second host, asked about separately:
+
+```
+fitdash morning.fit --basemap local --terrain
+```
+
+The frame then credits the elevation briefly, and the summary prints its full
+notice — for Copernicus GLO-30 a sentence its licence dictates — which **whoever
+publishes the video must give with it**, in the description. See [NOTICE](NOTICE).
+
 ## What it is
 
 There is no input video. fitdash generates every pixel of every frame from the

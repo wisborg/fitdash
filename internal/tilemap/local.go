@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"golang.org/x/image/font"
 	"image"
+	"slices"
 	"sync"
 
 	osm "github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
+	"github.com/wisborg/osmbase/terrain"
 )
 
 // LocalProvider is the name this backend goes by on the command line and in
@@ -56,6 +58,13 @@ type Local struct {
 	id     string
 	credit string
 
+	// opts are what rend was built with, and terrain the elevation views
+	// are shaded from, nil without it. With terrain, each view gets a
+	// renderer of its own, because what a view owes the elevation depends
+	// on where it is; see Image.
+	opts    osm.Options
+	terrain *terrain.Store
+
 	mu sync.Mutex
 	// covered is the smallest covered fraction any view came back with, and
 	// 1 when nothing has been drawn yet. A render asks for several views and
@@ -65,6 +74,26 @@ type Local struct {
 	// and 0 when nothing has been drawn yet. The opposite direction to
 	// covered above: this one is bad when it is high.
 	overzoomed float64
+	// shaded is the credit a view drew with when it was shaded: the map's
+	// and the elevation's together. Empty until a view is, and Attribution
+	// then answers with the map's alone -- an unshaded map owes the
+	// elevation nothing.
+	shaded string
+	// notices are the elevation's full notices, one per distinct one a view
+	// owed, in the order they were first owed. See TerrainNotices.
+	notices []string
+	// terrainCovered is the smallest fraction of any view a height was
+	// found for, and contourInterval the widest interval any view drew
+	// contours at; both 0 before a view is shaded.
+	terrainCovered  float64
+	contourInterval float64
+}
+
+// Terrain is what a local map is shaded with: the elevation, and whether
+// contour lines are drawn from it as well as shading.
+type Terrain struct {
+	Store    *terrain.Store
+	Contours bool
 }
 
 // OpenLocal opens the store at root and returns a Provider that draws from
@@ -104,7 +133,14 @@ type Local struct {
 // meaning two different things depending on who asked for it. See
 // render.PlainCredit in osmbase, which both this and osmbase's own render
 // command call so the obligation is discharged one way.
-func OpenLocal(root string, inks MapInks, labels LabelFaces) (*Local, error) {
+//
+// # Terrain
+//
+// With relief, the map is shaded from its elevation and, with Contours,
+// contour lines are drawn; nil draws neither. The palette's shade and
+// contour colours are derived with the rest of it, so they are as clear of
+// the inks drawn over the map as the fills are -- see reliefInks.
+func OpenLocal(root string, inks MapInks, labels LabelFaces, relief *Terrain) (*Local, error) {
 	store, err := slice.Open(root)
 	if err != nil {
 		// Opening, never creating. A render cannot fill a store -- filling is
@@ -139,7 +175,16 @@ func OpenLocal(root string, inks MapInks, labels LabelFaces) (*Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: the theme cannot carry a local basemap: %w", err)
 	}
-	rend, err := osm.New(src, osm.Options{
+	var ts *terrain.Store
+	if relief != nil && relief.Store != nil {
+		ts = relief.Store
+		if !relief.Contours {
+			// Not drawn rather than drawn in no colour: the palette still
+			// has one, and this render chooses to leave the lines out.
+			palette.Omitted |= osm.Roles(osm.RoleContour)
+		}
+	}
+	opts := osm.Options{
 		Style:       osm.BasemapStyle(),
 		Palette:     palette,
 		Attribution: credit,
@@ -156,14 +201,38 @@ func OpenLocal(root string, inks MapInks, labels LabelFaces) (*Local, error) {
 		// size" means.
 		LabelFace:    labels.at(1),
 		LabelFaceFor: labels.at,
-	})
+	}
+	rend, err := osm.New(src, opts)
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: preparing to draw from the local map store %s: %w", root, err)
 	}
 	return &Local{
 		rend: rend, store: store, source: src,
 		root: root, id: m.ID, credit: credit, covered: 1,
+		opts: opts, terrain: ts,
 	}, nil
+}
+
+// rendererFor is the renderer a view is drawn with: the one built at open,
+// or with terrain, one carrying what this view owes the elevation. Building
+// a renderer validates a style and allocates nothing per tile, and a render
+// asks for a handful of views, not one per frame.
+func (l *Local) rendererFor(v View) (*osm.Renderer, error) {
+	if l.terrain == nil {
+		return l.rend, nil
+	}
+	ov := osm.View{Bounds: osm.Bounds{West: v.West, South: v.South, East: v.East, North: v.North}, Width: v.Width, Height: v.Height}
+	z, _, err := ov.Zoom()
+	if err != nil {
+		return nil, err
+	}
+	short, full, err := l.terrain.Credit(slice.Bounds{West: v.West, South: v.South, East: v.East, North: v.North}, z)
+	if err != nil {
+		return nil, fmt.Errorf("tilemap: working out what this view owes the elevation in %s: %w", l.terrain.Root(), err)
+	}
+	o := l.opts
+	o.Terrain, o.TerrainAttribution, o.TerrainNotice = l.terrain.Heights(), short, full
+	return osm.New(l.source, o)
 }
 
 // newestSource picks which of the store's sources to draw from.
@@ -216,7 +285,11 @@ func (l *Local) Image(ctx context.Context, v View) (image.Image, error) {
 		defer l.source.Hold(cells).Release()
 	}
 
-	res, err := l.rend.Render(ctx, osm.View{
+	rend, err := l.rendererFor(v)
+	if err != nil {
+		return nil, err
+	}
+	res, err := rend.Render(ctx, osm.View{
 		Bounds: osm.Bounds{West: v.West, South: v.South, East: v.East, North: v.North},
 		Width:  v.Width, Height: v.Height,
 	})
@@ -233,6 +306,16 @@ func (l *Local) Image(ctx context.Context, v View) (image.Image, error) {
 	// of a route reporting away a bad one at its start.
 	if res.Overzoomed > l.overzoomed {
 		l.overzoomed = res.Overzoomed
+	}
+	if res.TerrainCovered > 0 {
+		l.shaded = osm.PlainCredit(res.Attribution)
+		if l.terrainCovered == 0 || res.TerrainCovered < l.terrainCovered {
+			l.terrainCovered = res.TerrainCovered
+		}
+		l.contourInterval = max(l.contourInterval, res.ContourInterval)
+		if n := res.TerrainNotice; n != "" && !slices.Contains(l.notices, n) {
+			l.notices = append(l.notices, n)
+		}
 	}
 	l.mu.Unlock()
 	return res.Image, nil
@@ -265,11 +348,43 @@ func (l *Local) Overzoomed() float64 {
 	return l.overzoomed
 }
 
-// Attribution is the credit the store's own manifest records.
+// Attribution is the credit the store's own manifest records, and once a
+// view has been shaded, the elevation's short credit after it.
 //
 // Read from the data rather than written down here, which is what stops a
-// change of source leaving the old credit on screen. See OpenLocal.
-func (l *Local) Attribution() string { return l.credit }
+// change of source leaving the old credit on screen. See OpenLocal. The
+// elevation's is added only once a view has actually been shaded, which is
+// why the route panel reads this after its views are drawn: a map the
+// terrain did not reach owes it nothing, and a frame crediting data it does
+// not show makes a claim about somebody else's work.
+func (l *Local) Attribution() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.shaded != "" {
+		return l.shaded
+	}
+	return l.credit
+}
+
+// TerrainNotices are the full notices the elevation of the drawn views
+// asks to be given wherever the video is published -- the frame's credit
+// only points to them -- one for each distinct set of sources a view drew
+// on. Empty when nothing was shaded.
+func (l *Local) TerrainNotices() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.notices)
+}
+
+// TerrainCoverage is the smallest fraction of any drawn view a height was
+// found for, and the widest contour interval any view drew at, in metres;
+// both 0 when nothing was shaded, the interval also when no contours were
+// drawn.
+func (l *Local) TerrainCoverage() (covered, contourInterval float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.terrainCovered, l.contourInterval
+}
 
 // Name identifies this provider AND the source it draws from, in the shape
 // Cached would key on if anyone ever wrapped it. Nothing should -- see

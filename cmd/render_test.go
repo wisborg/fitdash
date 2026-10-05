@@ -3332,7 +3332,7 @@ func TestResolveBasemap_LocalWithNoStoreIsARefusalRatherThanAPlainRender(t *test
 func TestWriteBasemapSummary_LocalSaysNothingWasSentAndNamesTheStore(t *testing.T) {
 	defer func(o renderOptions) { renderOpts = o }(renderOpts)
 	root := localBasemapFixtureStore(t)
-	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil)
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil, nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -3503,7 +3503,7 @@ func straddlingView(t *testing.T, root string) tilemap.View {
 func TestWriteBasemapSummary_LocalSaysHowMuchOfTheAreaTheStoreActuallyHeld(t *testing.T) {
 	defer func(o renderOptions) { renderOpts = o }(renderOpts)
 	root := localBasemapFixtureStore(t)
-	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil)
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil, nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -3561,7 +3561,7 @@ func TestWriteBasemapSummary_ALocalFailureDoesNotSendTheUserToLookAtTheirNetwork
 	// latitude the projection treats the same way.
 	elsewhere := slice.Bounds{West: 68.75, South: 12.33, East: 68.78, North: 12.36}
 	root := localBasemapFixtureStoreOver(t, elsewhere)
-	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil)
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil, nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -3605,7 +3605,7 @@ func TestWriteBasemapSummary_ALocalFailureDoesNotSendTheUserToLookAtTheirNetwork
 func TestWriteBasemapSummary_SaysWhenTheMapWasStretchedRatherThanDrawn(t *testing.T) {
 	defer func(o renderOptions) { renderOpts = o }(renderOpts)
 	root := localBasemapFixtureStore(t)
-	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil)
+	provider, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), nil, nil)
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
@@ -3700,7 +3700,7 @@ func TestLabelFaces_NilResolvesToNoFaceRatherThanPanicking(t *testing.T) {
 	// Through the exported path a caller actually uses: OpenLocal takes the
 	// resolver and must accept nothing.
 	root := localBasemapFixtureStore(t)
-	if _, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), none); err != nil {
+	if _, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), none, nil); err != nil {
 		t.Fatalf("OpenLocal with no label faces: %v", err)
 	}
 	if faces := basemapLabelFaces(cmd, nil, 1080); faces != nil {

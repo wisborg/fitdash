@@ -16,6 +16,7 @@ import (
 	"github.com/wisborg/osmbase/fetch"
 	osm "github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
+	"github.com/wisborg/osmbase/terrain"
 	"github.com/wisborg/output"
 	"github.com/wisborg/output/progress"
 	"github.com/wisborg/output/table"
@@ -465,8 +466,18 @@ func fetchContext(cmd *cobra.Command) context.Context {
 // the prompt was answered against, which is the point of showing progress at
 // all: it is the figure the user agreed to, filling up.
 func newFetchBar(w io.Writer, p *acquire.Plan) (*progress.Display, *progress.Bar) {
+	return newBar(w, "map data", p.Transfer)
+}
+
+// newTransferBar is the progress bar for an elevation fetch: one bar for all
+// of its archives, since terrain.Plan.Fetch reports against the whole.
+func newTransferBar(w io.Writer, total int64) (*progress.Display, *progress.Bar) {
+	return newBar(w, "elevation", total)
+}
+
+func newBar(w io.Writer, label string, total int64) (*progress.Display, *progress.Bar) {
 	d := progress.New(w, progress.Options{Palette: progress.DefaultGradient()})
-	return d, d.Bar(progress.BarSpec{Label: "map data", Total: p.Transfer, Unit: "B"})
+	return d, d.Bar(progress.BarSpec{Label: label, Total: total, Unit: "B"})
 }
 
 // writeFetchPlan states the cost before anything is downloaded.
@@ -849,4 +860,124 @@ func stdinIsATerminal(cmd *cobra.Command) bool {
 	}
 	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// defaultTerrainSource is where elevation is fetched from when
+// --terrain-source does not say: Mapterhorn's download host, which osmbase
+// and course default to as well, so the terrain store the three share is
+// filled from one source. Named here rather than in the library, as
+// tilemap.DefaultArchive is.
+const defaultTerrainSource = "https://download.mapterhorn.com"
+
+// offerTerrain asks whether to download the elevation this render's map is
+// about to be shaded without, and downloads it on a yes: offerToFillTheStore
+// for the terrain store, on the same terms and for the same reasons. The
+// shortfall is measured from the disk; the question names the host before
+// anything is read -- the list of archives included, which already tells
+// the host something -- and a no, nobody there, or a failure costs only the
+// shading.
+//
+// The area and depth are the map's: the activity's padded box, to the depth
+// a map fetch of it takes, less the one zoom an elevation tile's 512 pixels
+// are worth. It is asked about the unpadded box, as the map is.
+func offerTerrain(cmd *cobra.Command, root string, track *fitactivity.Track) {
+	errw := cmd.ErrOrStderr()
+	area, err := activityBounds(track, autoFetchPadKM)
+	if err != nil {
+		return
+	}
+	asked := area
+	if tight, err := activityBounds(track, 0); err == nil {
+		asked = tight
+	}
+	depth, err := acquire.DepthFor(area, slice.MaxCellZoom)
+	if err != nil {
+		return
+	}
+	short, lacking := terrain.Measure(root, asked, depth.Max)
+	if !lacking {
+		return
+	}
+	if short.Empty {
+		fmt.Fprintf(errw, "\nterrain: %s holds no elevation yet, to shade this activity's map with.\n", root)
+	} else {
+		fmt.Fprintf(errw, "\nterrain: %s holds %d of the %d elevation tiles this activity's map needs at zoom %d.\n", root, short.Held, short.Wanted, short.Zoom)
+	}
+	source := renderOpts.terrainSource
+	if strings.Contains(source, "://") {
+		fmt.Fprintf(errw, "         Fetching it contacts %s, which learns which\n", hostOf(source))
+		fmt.Fprintf(errw, "         parts of the map you asked about. Afterwards, rendering contacts nobody.\n")
+	} else {
+		fmt.Fprintf(errw, "         It would be copied from %s, contacting nobody.\n", source)
+	}
+	consent := fetch.Consent{
+		Yes:        basemapFetchOpts.yes,
+		In:         cmd.InOrStdin(),
+		Answerable: func() bool { return stdinIsATerminal(cmd) },
+	}
+	switch consent.Ask(errw, "Fetch the elevation now? [y/N] ") {
+	case fetch.Accepted:
+	case fetch.Unattended:
+		fmt.Fprintf(errw, "         nothing is attached to answer, so no elevation was fetched; pass --yes to fetch without asking\n")
+		return
+	case fetch.NoAnswer:
+		fmt.Fprintf(errw, "\n         no answer, so no elevation was fetched\n")
+		return
+	default:
+		fmt.Fprintf(errw, "\n         no elevation fetched\n")
+		return
+	}
+	if err := fillTerrain(cmd, root, area, depth.Max, source); err != nil {
+		fmt.Fprintf(errw, "terrain: %v\n", err)
+		fmt.Fprintf(errw, "         carrying on with what the terrain store holds\n")
+	}
+}
+
+// fillTerrain carries out the fetch offerTerrain just got consent for: the
+// sequence is osmbase's terrain.Fill, and what is here is fitdash's voice
+// around it, as fillStore is for the map.
+func fillTerrain(cmd *cobra.Command, root string, area slice.Bounds, mapZoom uint8, source string) error {
+	errw := cmd.ErrOrStderr()
+	l, err := terrain.Locate(fetchContext(cmd), source, func(index string) {
+		fmt.Fprintf(errw, "terrain: reading the list of elevation archives at %s\n", index)
+	})
+	if err != nil {
+		return err
+	}
+	var (
+		display *progress.Display
+		bar     *progress.Bar
+		fetched bool
+	)
+	res, err := terrain.Fill(fetchContext(cmd), l, root, area, mapZoom,
+		func(src string) (*fetch.Archive, error) { return fetch.Open(src, fetch.Options{}) },
+		func(p *terrain.Plan) {
+			if p.Empty() {
+				fmt.Fprintf(errw, "terrain: nothing more to fetch for this activity\n")
+				return
+			}
+			t := p.Totals()
+			fmt.Fprintf(errw, "terrain: %d elevation tiles from %d archives, %s to download\n", t.Tiles, 1+len(p.Regions)+btoi(p.Coverage != nil), humanBytes(t.Transfer))
+			display, bar = newTransferBar(errw, t.Transfer)
+			fetched = true
+		},
+		func(pr acquire.Progress) { bar.Set(pr.DoneTransfer) })
+	if fetched {
+		bar.Done()
+		display.Stop()
+	}
+	if err != nil {
+		return err
+	}
+	if res.Written > 0 {
+		fmt.Fprintf(errw, "terrain: fetched %d elevation tiles, %s\n", res.Written, humanBytes(res.Transfer))
+	}
+	return nil
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

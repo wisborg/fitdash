@@ -111,6 +111,12 @@ var mapRoles = []mapRole{
 	{"built", color.RGBA{R: 0xe0, G: 0x73, B: 0x26, A: 0xff}, 0.80, func(p *osm.Palette, c color.RGBA) { p.Built = c }},
 	{"ink", color.RGBA{R: 0x8a, G: 0x3c, B: 0xe0, A: 0xff}, 0.90, func(p *osm.Palette, c color.RGBA) { p.Ink = c }},
 	{"road", color.RGBA{R: 0xb4, G: 0xb8, B: 0xc4, A: 0xff}, 1.00, func(p *osm.Palette, c color.RGBA) { p.Road = c }},
+	// Contour lines, drawn only with terrain: the red-brown of contours on
+	// most printed maps. Out of prominence order, at 0.55, because its hue is
+	// nearest the built-up ink's: at 0.65 the dark theme put the two 5.8
+	// apart, under the 6 the roles have to be told apart by, and a contour
+	// that looks like a building edge reads as one.
+	{"contour", color.RGBA{R: 0xc0, G: 0x3c, B: 0x2c, A: 0xff}, 0.55, func(p *osm.Palette, c color.RGBA) { p.Contour = c }},
 }
 
 // maxRoleChroma is how colourful a derived map ink is allowed to be, in
@@ -274,7 +280,31 @@ func (i MapInks) localPalette() (osm.Palette, error) {
 		ink := atChroma(atLuminance(r.anchor, target), maxRoleChroma)
 		r.set(&p, nearestStorable(ink, target, maxRoleChroma))
 	}
+	p.Shade, p.Highlight = reliefInks(quiet, loud)
 	return p, nil
+}
+
+// reliefInks are what terrain shading tints the ground toward: greys at the
+// band's two ends, the darker for slopes in shadow and the lighter for
+// slopes in the light.
+//
+// The band is what makes them safe rather than merely pleasant. Every map
+// ink is placed inside it, and osmbase moves a shaded surface at most part
+// of the way toward Shade or Highlight -- so a shaded field, mixed between
+// two colours inside the band, stays inside it, and clear of every ink
+// drawn over the map by the same margin the fills are. osmbase's contrast
+// check measures the shaded extremes anyway; this is why they pass. Grey,
+// because a hillside's shadow is not a colour, and a hue here would tint
+// every slope of the map with it.
+//
+// They are set whether or not a render asks for terrain: a palette's shade
+// is drawn only where there are heights to shade from, so a render without
+// terrain draws exactly what it drew before.
+func reliefInks(quiet, loud float64) (shade, highlight color.RGBA) {
+	lo, hi := math.Min(quiet, loud), math.Max(quiet, loud)
+	grey := color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}
+	return nearestStorable(atLuminance(grey, lo), lo, maxRoleChroma),
+		nearestStorable(atLuminance(grey, hi), hi, maxRoleChroma)
 }
 
 // labelRatio is how far a map label stands from the background, as a contrast

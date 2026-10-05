@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"golang.org/x/image/font"
 	"image/color"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -25,6 +27,7 @@ import (
 	"github.com/wisborg/fitdash/internal/render"
 	"github.com/wisborg/fitdash/internal/route"
 	"github.com/wisborg/fitdash/internal/tilemap"
+	"github.com/wisborg/osmbase/terrain"
 )
 
 type renderOptions struct {
@@ -43,6 +46,10 @@ type renderOptions struct {
 	basemapDim          float64
 	basemapCache        string
 	basemapStore        string
+	terrain             bool
+	contours            bool
+	terrainStore        string
+	terrainSource       string
 	power               string
 	layout              string
 	bottomBand          string
@@ -250,6 +257,20 @@ func bindRenderFlags(c *cobra.Command) {
 			"osmbase folder under your user cache directory, which is shared between programs rather than private to "+
 			"fitdash -- download an area once and anything else using the same library renders from it). The store is "+
 			"never written to by a render and never fetched into by one: data gets there because you asked for it")
+	f.BoolVar(&renderOpts.terrain, "terrain", false,
+		"with --basemap "+tilemap.LocalProvider+", shade the shape of the ground under the map and draw contour lines, "+
+			"from elevation kept beside the map's store. What the store lacks for this activity is offered before it is "+
+			"fetched, as the map is, and fetching it tells Mapterhorn's host the area. The frame credits the elevation "+
+			"briefly and the summary prints its full notice, which whoever publishes the video must give with it")
+	f.BoolVar(&renderOpts.contours, "contours", true,
+		"with --terrain, draw contour lines, every fifth one labelled with its height; --contours=false shades the ground "+
+			"without them")
+	f.StringVar(&renderOpts.terrainStore, "terrain-store", "",
+		"with --terrain, the directory the elevation is kept in (default: beside --basemap-store, its name ending "+
+			"-terrain, where osmbase keeps it too)")
+	f.StringVar(&renderOpts.terrainSource, "terrain-source", defaultTerrainSource,
+		"with --terrain, where elevation the store lacks is fetched from, after asking: a host's address, or a "+
+			"directory of its archives, which reaches no network at all")
 	f.StringVar(&renderOpts.basemapCache, "basemap-cache", "",
 		"directory to keep fetched --basemap imagery in (default: a fitdash folder under your user cache directory). "+
 			"Tuning a --highlight means rendering the same activity repeatedly, and without a cache every run re-fetches "+
@@ -902,6 +923,7 @@ func resolveBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Tr
 		if cmd.Flags().Changed("basemap-store") {
 			fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-store given without --basemap %s; no map was drawn\n", tilemap.LocalProvider)
 		}
+		warnTerrainUnused(cmd)
 		return nil, nil
 	}
 	if style == tilemap.LocalProvider {
@@ -918,6 +940,7 @@ func resolveBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Tr
 		fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-store is only read by --basemap %s; %s imagery comes from the service and is kept in --basemap-cache\n",
 			tilemap.LocalProvider, tilemap.ThunderforestProvider)
 	}
+	warnTerrainUnused(cmd)
 	if err := tilemap.CheckKeyFilePermissions(renderOpts.basemapKeyFile); err != nil {
 		// A warning, not a refusal: the file is the user's and the
 		// permissions may be deliberate.
@@ -977,11 +1000,59 @@ func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivi
 	// fetched. See offerToFillTheStore.
 	offerToFillTheStore(cmd, store, track)
 
-	provider, err := tilemap.OpenLocal(store, inks, labels)
+	relief, err := resolveTerrain(cmd, store, track)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := tilemap.OpenLocal(store, inks, labels, relief)
 	if err != nil {
 		return nil, fmt.Errorf("render: --basemap %s: %w", tilemap.LocalProvider, err)
 	}
 	return provider, nil
+}
+
+// warnTerrainUnused says so when a terrain flag is given to a render that
+// will not draw terrain: only the local basemap shades. Said rather than
+// ignored, as for --basemap-store, because a user who asked for hills and
+// got none will otherwise go looking for a fault.
+func warnTerrainUnused(cmd *cobra.Command) {
+	for _, name := range []string{"terrain", "contours", "terrain-store", "terrain-source"} {
+		if cmd.Flags().Changed(name) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "--%s is only read by --basemap %s, which draws the map here and can shade it; no terrain was drawn\n", name, tilemap.LocalProvider)
+			return
+		}
+	}
+}
+
+// resolveTerrain is the elevation a local map is shaded with: nil without
+// --terrain, and nil -- with a warning -- when there is still none for this
+// activity after the offer to fetch it. A render whose terrain was declined
+// still draws its map, unshaded, as one whose map was declined still draws
+// its route.
+func resolveTerrain(cmd *cobra.Command, mapStore string, track *fitactivity.Track) (*tilemap.Terrain, error) {
+	if !renderOpts.terrain {
+		for _, name := range []string{"contours", "terrain-store", "terrain-source"} {
+			if cmd.Flags().Changed(name) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "--%s given without --terrain; no terrain was drawn\n", name)
+				break
+			}
+		}
+		return nil, nil
+	}
+	root := renderOpts.terrainStore
+	if root == "" {
+		root = terrain.Root(mapStore)
+	}
+	offerTerrain(cmd, root, track)
+	ts, err := terrain.Open(root)
+	if errors.Is(err, terrain.ErrNoTerrain) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "terrain: %s holds no elevation for this activity, so the map is drawn unshaded\n", root)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("render: --terrain: %w", err)
+	}
+	return &tilemap.Terrain{Store: ts, Contours: renderOpts.contours}, nil
 }
 
 // basemapLabelHeight is the label text height as a fraction of the frame.
@@ -1354,6 +1425,33 @@ func writeBasemapSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs
 	fmt.Fprintf(out, "basemap: %s, dimmed %.0f%% -- %s\n", source, in.basemapDim*100, origin)
 	if note != "" {
 		fmt.Fprintf(out, "  %s\n", note)
+	}
+	if l, ok := in.basemap.(*tilemap.Local); ok {
+		writeTerrainSummary(out, l)
+	}
+}
+
+// writeTerrainSummary says what the elevation added to a local map, and
+// hands over the notice the frame's credit only points to.
+//
+// The notice is printed because it is owed by whoever publishes the video,
+// not by this program: Copernicus GLO-30's licence asks for a sentence too
+// long for a corner of a frame to be given wherever the data is shown, and
+// the person who posts the video is the one showing it. The summary is
+// where they read what was drawn, so it is where they can copy it from.
+// Nothing is printed for a render that shaded nothing.
+func writeTerrainSummary(out io.Writer, l *tilemap.Local) {
+	covered, interval := l.TerrainCoverage()
+	if covered == 0 {
+		return
+	}
+	line := fmt.Sprintf("terrain: %.0f%% of the map shaded", covered*100)
+	if interval > 0 {
+		line += fmt.Sprintf(", contours every %g m, labelled every %g m", interval, 5*interval)
+	}
+	fmt.Fprintln(out, line)
+	for _, n := range l.TerrainNotices() {
+		fmt.Fprintf(out, "  The frame credits the elevation briefly. Wherever you publish the video, give this notice with it:\n  %s\n", n)
 	}
 }
 
