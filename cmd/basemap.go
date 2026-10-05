@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -64,10 +65,16 @@ exactly before anything is transferred -- it is read from the archive's own
 directories rather than estimated -- and nothing is written until you agree to
 it.
 
+--terrain also fetches the elevation for the same area, for "--terrain" at
+render time: the shape of the ground, shaded and drawn as contour lines. It
+comes from a second host, Mapterhorn's, which learns the same cells. The plan
+shows both halves and the question names both hosts and the whole size, once.
+
 examples:
   fitdash basemap fetch run.fit --dry-run
   fitdash basemap fetch run.fit
   fitdash basemap fetch morning.fit race.fit --pad 5
+  fitdash basemap fetch run.fit --terrain
   fitdash ACTIVITY.fit --basemap local`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runBasemapFetch,
@@ -81,6 +88,10 @@ type basemapFetchOptions struct {
 	maxZoom int
 	dryRun  bool
 	yes     bool
+
+	terrain       bool
+	terrainSource string
+	terrainStore  string
 }
 
 var basemapFetchOpts basemapFetchOptions
@@ -109,6 +120,17 @@ func init() {
 	f.BoolVar(&basemapFetchOpts.yes, "yes", false,
 		"do not ask before downloading. The confirmation exists because this is the one command that sends anything "+
 			"anywhere; skip it in a script that has already made that decision")
+
+	f.BoolVar(&basemapFetchOpts.terrain, "terrain", false,
+		"also fetch the elevation for the same area, for --terrain at render time: the shape of the ground, shaded "+
+			"and drawn as contour lines. It comes from a second host, Mapterhorn's, which learns the same cells; the "+
+			"plan and the question name both hosts and the whole size before anything is downloaded")
+	f.StringVar(&basemapFetchOpts.terrainSource, "terrain-source", defaultTerrainSource,
+		"with --terrain, where the elevation comes from: a host's address, or a directory of its archives, which "+
+			"reaches no network at all")
+	f.StringVar(&basemapFetchOpts.terrainStore, "terrain-store", "",
+		"with --terrain, the directory to keep the elevation in (default: beside --store, its name ending -terrain, "+
+			"where a render with --terrain and osmbase both look for it)")
 
 	// Registered on the ROOT render command as well, because that is where
 	// the other half of this decision now lives: a render offers to fetch
@@ -170,6 +192,23 @@ type fetchReport struct {
 	// answered no -- so Outcome says which.
 	Outcome string       `json:"outcome"`
 	Fetched *fetchedInfo `json:"fetched,omitempty"`
+
+	// Terrain is the elevation's half of the fetch, present with --terrain.
+	Terrain *terrainReport `json:"terrain,omitempty"`
+}
+
+// terrainReport is what a fetch with --terrain planned and fetched of the
+// elevation: from where, into where, and how much.
+type terrainReport struct {
+	Source   string       `json:"source"`
+	Store    string       `json:"store"`
+	Remote   bool         `json:"remote"`
+	Tiles    int          `json:"tiles_to_fetch"`
+	Held     int          `json:"tiles_already_held"`
+	Absent   int          `json:"tiles_not_in_archive"`
+	Transfer int64        `json:"download_bytes"`
+	Requests int          `json:"requests"`
+	Fetched  *fetchedInfo `json:"fetched,omitempty"`
 }
 
 type bounds struct {
@@ -232,62 +271,188 @@ func runBasemapFetch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("basemap fetch: %w", err)
 	}
 	rep := newFetchReport(root, archive, credit, sources, area, plan)
-
 	writeFetchPlan(errw, rep, plan)
+
+	// The elevation, planned after the map and before anything is asked:
+	// one question, naming both hosts and the whole size, rather than a
+	// second one after the first download.
+	var tp *terrain.Plan
+	if basemapFetchOpts.terrain {
+		var cleanup func()
+		tp, cleanup, err = planTerrain(cmd, root, area)
+		if err != nil {
+			return fmt.Errorf("basemap fetch: %w", err)
+		}
+		defer cleanup()
+		defer tp.Close()
+		rep.Terrain = newTerrainReport(tp)
+		rep.Terrain.Store = terrainStoreName(root)
+		writeTerrainPlan(errw, rep.Terrain, tp)
+	} else if cmd.Flags().Changed("terrain-source") || cmd.Flags().Changed("terrain-store") {
+		return fmt.Errorf("basemap fetch: --terrain-source and --terrain-store say where the elevation is, and --terrain is what fetches it; add --terrain")
+	}
+	terrainToDo := tp != nil && !tp.Empty()
+
 	switch {
-	case plan.Empty():
+	case plan.Empty() && !terrainToDo:
 		rep.Outcome = "nothing to fetch: the store already holds this area"
 		fmt.Fprintf(errw, "\n%s.\n", rep.Outcome)
-		return writeFetchReport(out, rep, plan)
+		return writeFetchReport(out, rep, plan, tp)
 	case basemapFetchOpts.dryRun:
 		rep.Outcome = "dry run: nothing was downloaded and nothing was written"
 		fmt.Fprintf(errw, "\n%s.\n", rep.Outcome)
-		return writeFetchReport(out, rep, plan)
+		return writeFetchReport(out, rep, plan, tp)
 	}
-	if archive.Remote() && !basemapFetchOpts.yes {
-		ok, err := confirmFetch(cmd, plan, archive.Name())
+	var hosts []string
+	var transfer int64
+	if archive.Remote() && !plan.Empty() {
+		hosts, transfer = append(hosts, hostOf(archive.Name())), plan.Transfer
+	}
+	if terrainToDo && tp.Remote() {
+		hosts, transfer = append(hosts, hostOf(basemapFetchOpts.terrainSource)), transfer+tp.Totals().Transfer
+	}
+	if len(hosts) > 0 && !basemapFetchOpts.yes {
+		ok, err := confirmFetch(cmd, hosts, transfer)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			rep.Outcome = "stopped; nothing was downloaded"
 			fmt.Fprintf(errw, "%s.\n", rep.Outcome)
-			return writeFetchReport(out, rep, plan)
+			return writeFetchReport(out, rep, plan, tp)
 		}
-	}
-
-	if store == nil {
-		if store, err = slice.Create(root, slice.Config{}); err != nil {
-			return fmt.Errorf("basemap fetch: creating the map store at %s: %w", root, err)
-		}
-	}
-	if src, err = archive.AddTo(store, credit); err != nil {
-		return fmt.Errorf("basemap fetch: %w", err)
-	}
-
-	// The trace and the bar cannot share a stream: the carriage return that
-	// redraws the bar lands in the middle of a trace line and both become
-	// unreadable. Planning keeps its trace, because planning is the slow
-	// silent part and has no bar to fight with.
-	archive.Silence()
-	display, bar := newFetchBar(errw, plan)
-	res, err := archive.Fetch(fetchContext(cmd), plan, src, func(pr acquire.Progress) {
-		bar.Set(pr.DoneTransfer)
-	})
-	bar.Done()
-	display.Stop()
-	if err != nil {
-		return fmt.Errorf("basemap fetch: %w", err)
 	}
 
 	rep.Outcome = "fetched"
-	rep.Fetched = &fetchedInfo{
-		Tiles: res.Written, Bytes: res.Bytes, Transfer: res.Transfer,
-		Requests: res.Requests, Cells: len(res.Cells),
-		Seconds: res.Elapsed.Seconds(),
+	if !plan.Empty() {
+		if store == nil {
+			if store, err = slice.Create(root, slice.Config{}); err != nil {
+				return fmt.Errorf("basemap fetch: creating the map store at %s: %w", root, err)
+			}
+		}
+		if src, err = archive.AddTo(store, credit); err != nil {
+			return fmt.Errorf("basemap fetch: %w", err)
+		}
+
+		// The trace and the bar cannot share a stream: the carriage return that
+		// redraws the bar lands in the middle of a trace line and both become
+		// unreadable. Planning keeps its trace, because planning is the slow
+		// silent part and has no bar to fight with.
+		archive.Silence()
+		display, bar := newFetchBar(errw, plan)
+		res, err := archive.Fetch(fetchContext(cmd), plan, src, func(pr acquire.Progress) {
+			bar.Set(pr.DoneTransfer)
+		})
+		bar.Done()
+		display.Stop()
+		if err != nil {
+			return fmt.Errorf("basemap fetch: %w", err)
+		}
+		rep.Fetched = &fetchedInfo{
+			Tiles: res.Written, Bytes: res.Bytes, Transfer: res.Transfer,
+			Requests: res.Requests, Cells: len(res.Cells),
+			Seconds: res.Elapsed.Seconds(),
+		}
+		writeFetchResult(errw, rep, res, plan, store, root)
 	}
-	writeFetchResult(errw, rep, res, plan, store, root)
-	return writeFetchReport(out, rep, plan)
+	if terrainToDo {
+		tp.Silence()
+		display, bar := newTransferBar(errw, tp.Totals().Transfer)
+		res, err := tp.Fetch(fetchContext(cmd), func(pr acquire.Progress) { bar.Set(pr.DoneTransfer) })
+		bar.Done()
+		display.Stop()
+		if err != nil {
+			return fmt.Errorf("basemap fetch: the elevation: %w", err)
+		}
+		rep.Terrain.Fetched = &fetchedInfo{
+			Tiles: res.Written, Bytes: res.Bytes, Transfer: res.Transfer,
+			Requests: res.Requests, Seconds: res.Elapsed.Seconds(),
+		}
+		fmt.Fprintf(errw, "%-12s %d elevation tiles in %d requests, %s in %s, at %s\n",
+			"terrain", res.Written, res.Requests, humanBytes(res.Transfer), res.Elapsed.Round(time.Millisecond), rep.Terrain.Store)
+	}
+	writeNextStep(errw, root, basemapFetchOpts.terrain)
+	return writeFetchReport(out, rep, plan, tp)
+}
+
+// planTerrain works out the elevation for area, to the depth a map fetch of
+// it takes, from --terrain-source into the terrain store.
+//
+// A dry run must leave no trace, and planning terrain needs a store to plan
+// against -- it registers its sources there. So a dry run with no terrain
+// store yet plans in a temporary one, removed by cleanup, which holds
+// nothing, as the store that does not exist would not: the plan is the same.
+// The list of archives is announced before it is read, as planning the map
+// announces its archive.
+func planTerrain(cmd *cobra.Command, mapRoot string, area slice.Bounds) (*terrain.Plan, func(), error) {
+	errw := cmd.ErrOrStderr()
+	cleanup := func() {}
+	root := basemapFetchOpts.terrainStore
+	if root == "" {
+		root = terrain.Root(mapRoot)
+	}
+	planRoot := root
+	if basemapFetchOpts.dryRun {
+		if _, err := os.Stat(root); os.IsNotExist(err) {
+			tmp, err := os.MkdirTemp("", "fitdash-terrain-plan-")
+			if err != nil {
+				return nil, cleanup, err
+			}
+			planRoot, cleanup = filepath.Join(tmp, "terrain"), func() { os.RemoveAll(tmp) }
+		}
+	}
+	l, err := terrain.Locate(fetchContext(cmd), basemapFetchOpts.terrainSource, func(index string) {
+		fmt.Fprintf(errw, "reading the list of elevation archives at %s\n", index)
+	})
+	if err != nil {
+		return nil, cleanup, err
+	}
+	st, err := slice.Create(planRoot, slice.Config{})
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("opening the terrain store at %s: %w", planRoot, err)
+	}
+	maxZoom := basemapFetchOpts.maxZoom
+	p, err := terrain.Prepare(fetchContext(cmd), l, st, acquire.Request{Bounds: area, MaxZoom: maxZoom, CellZoom: st.CellZoom()},
+		func(src string) (*fetch.Archive, error) {
+			return fetch.Open(src, fetch.Options{Trace: func(line string) { fmt.Fprintf(errw, "%s\n", line) }})
+		})
+	if err != nil {
+		return nil, cleanup, err
+	}
+	return p, cleanup, nil
+}
+
+// terrainStoreName is where the elevation goes, for the report: the store
+// the user named or the one beside the map's, never the temporary one a dry
+// run plans in.
+func terrainStoreName(mapRoot string) string {
+	if basemapFetchOpts.terrainStore != "" {
+		return basemapFetchOpts.terrainStore
+	}
+	return terrain.Root(mapRoot)
+}
+
+func newTerrainReport(p *terrain.Plan) *terrainReport {
+	t := p.Totals()
+	return &terrainReport{
+		Source: basemapFetchOpts.terrainSource, Remote: p.Remote(),
+		Tiles: t.Tiles, Held: t.Held, Absent: t.Absent, Transfer: t.Transfer, Requests: t.Requests,
+	}
+}
+
+// writeTerrainPlan says what the elevation's half of the fetch would take.
+func writeTerrainPlan(w io.Writer, rep *terrainReport, p *terrain.Plan) {
+	fmt.Fprintf(w, "\n%-12s %s\n", "terrain", rep.Source)
+	fmt.Fprintf(w, "%-12s %s\n", "store", rep.Store)
+	fmt.Fprintf(w, "%-12s %d to fetch", "tiles", rep.Tiles)
+	if rep.Held > 0 {
+		fmt.Fprintf(w, ", %d already held", rep.Held)
+	}
+	if rep.Absent > 0 {
+		fmt.Fprintf(w, ", %d not in the archives", rep.Absent)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "%-12s %s in %d range requests, from %d archives\n", "download", humanBytes(rep.Transfer), rep.Requests, 1+len(p.Regions)+btoi(p.Coverage != nil))
 }
 
 // activityBounds is the ground the activity covered, padded by padKM.
@@ -528,10 +693,18 @@ func writeFetchPlan(w io.Writer, rep fetchReport, p *acquire.Plan) {
 // all it needs and a function that asks for more than it uses is one a test
 // has to fake -- which is how this came to be called with a zero-value
 // archive whose methods later grew a pointer to dereference.
-func confirmFetch(cmd *cobra.Command, p *acquire.Plan, archive string) (bool, error) {
+func confirmFetch(cmd *cobra.Command, hosts []string, transfer int64) (bool, error) {
 	w := cmd.ErrOrStderr()
-	fmt.Fprintf(w, "\nThis contacts %s and downloads %s.\n", hostOf(archive), humanBytes(p.Transfer))
-	fmt.Fprintf(w, "It tells that host which cells you asked for, once. Rendering afterwards contacts nobody.\n")
+	who := hosts[0]
+	if len(hosts) > 1 {
+		who = strings.Join(hosts[:len(hosts)-1], ", ") + " and " + hosts[len(hosts)-1]
+	}
+	that := "that host"
+	if len(hosts) > 1 {
+		that = "each host"
+	}
+	fmt.Fprintf(w, "\nThis contacts %s and downloads %s.\n", who, humanBytes(transfer))
+	fmt.Fprintf(w, "It tells %s which cells you asked for, once. Rendering afterwards contacts nobody.\n", that)
 
 	consent := fetch.Consent{In: cmd.InOrStdin(), Answerable: func() bool { return stdinIsATerminal(cmd) }}
 	switch consent.Ask(w, "Continue? [y/N] ") {
@@ -558,9 +731,21 @@ func writeFetchResult(w io.Writer, rep fetchReport, res acquire.Result, p *acqui
 	if rep.Credit != "" {
 		fmt.Fprintf(w, "%-12s %s\n", "credit", rep.Credit)
 	}
+}
+
+// writeNextStep says how to draw what was fetched, last of all, so that it
+// is the line left on the screen -- after the elevation's summary as well
+// as the map's -- and with --terrain when the elevation was fetched.
+func writeNextStep(w io.Writer, root string, withTerrain bool) {
 	fmt.Fprintf(w, "\nNow: fitdash ACTIVITY.fit --basemap %s", tilemap.LocalProvider)
 	if basemapFetchOpts.store != "" {
 		fmt.Fprintf(w, " --basemap-store %s", root)
+	}
+	if withTerrain {
+		fmt.Fprintf(w, " --terrain")
+		if basemapFetchOpts.terrainStore != "" {
+			fmt.Fprintf(w, " --terrain-store %s", basemapFetchOpts.terrainStore)
+		}
 	}
 	fmt.Fprintf(w, "\nNothing about that reaches the network.\n")
 }
@@ -576,7 +761,7 @@ func writeFetchResult(w io.Writer, rep fetchReport, res acquire.Result, p *acqui
 // activity-wide totals are fields on the object and lines on stderr rather
 // than rows in it, since a table whose first rows are "area" and "download"
 // puts two kinds of thing in one column.
-func writeFetchReport(w io.Writer, rep fetchReport, p *acquire.Plan) error {
+func writeFetchReport(w io.Writer, rep fetchReport, p *acquire.Plan, tp *terrain.Plan) error {
 	t := table.New(
 		table.Column{Header: "group"},
 		table.Column{Header: "tiles", Align: table.Right},
@@ -585,6 +770,19 @@ func writeFetchReport(w io.Writer, rep fetchReport, p *acquire.Plan) error {
 	)
 	for _, g := range p.Groups {
 		t.MustAppend(g.Label(), len(g.Tiles), humanBytes(g.Transfer), len(g.Ranges))
+	}
+	// The elevation's archives, one row each, after the map's groups.
+	if tp != nil {
+		row := func(what string, ap *acquire.Plan) {
+			t.MustAppend("terrain "+what, ap.Tiles, humanBytes(ap.Transfer), ap.Requests)
+		}
+		row("global", tp.Global)
+		for _, r := range tp.Regions {
+			row(fmt.Sprintf("region %d/%d/%d", r.Region.Tile.Z, r.Region.Tile.X, r.Region.Tile.Y), r.Plan)
+		}
+		if tp.Coverage != nil {
+			row("coverage", tp.Coverage)
+		}
 	}
 	doc := output.Document{Data: rep, Table: t}
 	if err := doc.Write(w, format.Format); err != nil {
@@ -604,7 +802,10 @@ func newFetchReport(root string, a *tilemap.Archive, credit string, sources []ac
 		MinZoom: p.Zoom.Min, MaxZoom: p.Zoom.Max,
 		Depth: p.Depth.Why,
 		Cells: len(p.Cells), CellsToDo: p.CellsToFetch,
-		Tiles: p.Tiles - p.Held - p.Absent,
+		// Plan.Tiles is already what will be written, held and absent tiles
+		// excluded; taking them off again reported a partly held area as a
+		// negative number of tiles to fetch.
+		Tiles: p.Tiles,
 		Held:  p.Held, Absent: p.Absent,
 		Transfer: p.Transfer, Requests: p.Requests,
 	}

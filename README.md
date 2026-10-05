@@ -172,7 +172,8 @@ for the activity is offered before it is fetched; afterwards nothing is sent to
 anybody. Add `--terrain` to shade the shape of the ground and draw contour lines
 (`--contours=false` for the shading alone), from elevation by
 [Mapterhorn](https://mapterhorn.com) kept beside the store and offered the same way
-— a second host, asked about separately:
+— a second host, asked about separately. `fitdash basemap fetch ACTIVITY --terrain`
+fetches both ahead of time instead, with one question naming both hosts:
 
 ```
 fitdash morning.fit --basemap local --terrain

@@ -22,6 +22,7 @@ import (
 	"github.com/wisborg/osmbase/osmbasetest"
 	"github.com/wisborg/osmbase/pmtiles"
 	"github.com/wisborg/osmbase/slice"
+	"github.com/wisborg/osmbase/terrain"
 	"github.com/wisborg/output"
 
 	"github.com/wisborg/fitdash/internal/panel"
@@ -294,7 +295,7 @@ func TestConfirmFetch_DoesNotBlockOnAPipeNobodyWillWriteTo(t *testing.T) {
 	}
 	done := make(chan answer, 1)
 	go func() {
-		ok, err := confirmFetch(cmd, &acquire.Plan{}, "https://example.test/planet.pmtiles")
+		ok, err := confirmFetch(cmd, []string{"example.test"}, 0)
 		done <- answer{ok, err}
 	}()
 	select {
@@ -326,7 +327,7 @@ func TestConfirmFetch_TreatsSilenceAndAnythingButYesAsNo(t *testing.T) {
 		var prompt strings.Builder
 		cmd.SetErr(&prompt)
 		cmd.SetIn(strings.NewReader(c.answer))
-		got, err := confirmFetch(cmd, &acquire.Plan{}, "https://example.test/planet.pmtiles")
+		got, err := confirmFetch(cmd, []string{"example.test"}, 0)
 		if err != nil {
 			t.Fatalf("confirmFetch(%q): %v", c.answer, err)
 		}
@@ -391,10 +392,16 @@ func execFetchTo(t *testing.T, out, errw io.Writer, in io.Reader, args ...string
 	// --pad 0 and --max-zoom 0 -- which is how three tests here came to fail
 	// against correct code, reporting that a route running due north was "at
 	// the same place".
+	//
+	// Whether a flag was given is shared the same way, and has to be put back
+	// as well: the command refuses --terrain-source without --terrain by
+	// asking whether it was given, and one test passing it would otherwise
+	// have every later test refused.
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
 		if err := f.Value.Set(f.DefValue); err != nil {
 			t.Fatalf("restoring the default for --%s: %v", f.Name, err)
 		}
+		f.Changed = false
 	})
 	cmd.SetOut(out)
 	cmd.SetErr(errw)
@@ -953,4 +960,69 @@ func shiftTrack(track *fitactivity.Track, degrees float64) *fitactivity.Track {
 		}
 	}
 	return out
+}
+
+// --terrain plans the elevation beside the map and reports both; a dry run
+// still writes nothing, the terrain store included; a real run fills a
+// terrain store beside the map's that a render with --terrain opens; and a
+// second run has nothing left of either to fetch.
+func TestRunBasemapFetch_TerrainFillsTheStoreBesideTheMap(t *testing.T) {
+	dir := t.TempDir()
+	archive := buildFetchArchive(t, dir)
+	store := filepath.Join(dir, "store")
+	fit := writeFetchActivity(t, dir)
+	source := terrainSourceDir(t)
+	args := []string{"--source", archive, "--store", store, "--max-zoom", "12", "--terrain", "--terrain-source", source, fit}
+
+	dry := runFetch(t, nil, append([]string{"--dry-run"}, args...)...)
+	if dry.Terrain == nil || dry.Terrain.Tiles == 0 || dry.Terrain.Store != store+"-terrain" {
+		t.Fatalf("the dry run's terrain plan: %+v", dry.Terrain)
+	}
+	for _, p := range []string{store, store + "-terrain"} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("a dry run created %s", p)
+		}
+	}
+
+	rep := runFetch(t, nil, args...)
+	if rep.Fetched == nil || rep.Terrain == nil || rep.Terrain.Fetched == nil || rep.Terrain.Fetched.Tiles == 0 {
+		t.Fatalf("map %+v, terrain %+v", rep.Fetched, rep.Terrain)
+	}
+	if _, err := terrain.Open(store + "-terrain"); err != nil {
+		t.Errorf("a render cannot open the terrain this fetched: %v", err)
+	}
+
+	again := runFetch(t, nil, args...)
+	if again.Fetched != nil || again.Terrain.Fetched != nil || !strings.Contains(again.Outcome, "already holds") {
+		t.Errorf("the second run: outcome %q, map %+v, terrain %+v", again.Outcome, again.Fetched, again.Terrain.Fetched)
+	}
+}
+
+// The terrain flags without --terrain are refused rather than ignored.
+func TestRunBasemapFetch_TerrainSourceWithoutTerrainIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	err := runFetchErr(t, nil, "--dry-run", "--source", buildFetchArchive(t, dir), "--store", filepath.Join(dir, "s"),
+		"--terrain-source", terrainSourceDir(t), writeFetchActivity(t, dir))
+	if err == nil || !strings.Contains(err.Error(), "add --terrain") {
+		t.Errorf("--terrain-source alone: %v", err)
+	}
+}
+
+// An area the store already holds part of is costed at the tiles still to
+// fetch, never fewer than none: the plan's count already leaves out what is
+// held and what the archive lacks, and taking them off again once reported
+// a partly held area as minus twelve tiles.
+func TestRunBasemapFetch_APartlyHeldAreaCountsWhatIsLeft(t *testing.T) {
+	dir := t.TempDir()
+	archive := buildFetchArchive(t, dir)
+	store := filepath.Join(dir, "store")
+	fit := writeFetchActivity(t, dir)
+	runFetch(t, nil, "--source", archive, "--store", store, "--max-zoom", "11", fit)
+	rep := runFetch(t, nil, "--dry-run", "--source", archive, "--store", store, "--max-zoom", "12", fit)
+	if rep.Held == 0 {
+		t.Fatalf("precondition: nothing held after the first fetch: %+v", rep)
+	}
+	if rep.Tiles < 0 {
+		t.Errorf("%d tiles to fetch, with %d held", rep.Tiles, rep.Held)
+	}
 }
