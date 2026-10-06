@@ -292,9 +292,27 @@ func runBasemapFetch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("basemap fetch: --terrain-source and --terrain-store say where the elevation is, and --terrain is what fetches it; add --terrain")
 	}
 	terrainToDo := tp != nil && !tp.Empty()
+	// A terrain plan with nothing to fetch is still settled: where the
+	// elevation stops shallower than asked, that is what records the cells
+	// as complete, and without it every render here would offer the same
+	// download again. See terrain.Plan.Settle.
+	settle := func() error {
+		if tp == nil || terrainToDo {
+			return nil
+		}
+		if err := tp.Settle(); err != nil {
+			return fmt.Errorf("basemap fetch: the elevation: %w", err)
+		}
+		return nil
+	}
 
 	switch {
 	case plan.Empty() && !terrainToDo:
+		if !basemapFetchOpts.dryRun {
+			if err := settle(); err != nil {
+				return err
+			}
+		}
 		rep.Outcome = "nothing to fetch: the store already holds this area"
 		fmt.Fprintf(errw, "\n%s.\n", rep.Outcome)
 		return writeFetchReport(out, rep, plan, tp)
@@ -370,6 +388,8 @@ func runBasemapFetch(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(errw, "%-12s %d elevation tiles in %d requests, %s in %s, at %s\n",
 			"terrain", res.Written, res.Requests, humanBytes(res.Transfer), res.Elapsed.Round(time.Millisecond), rep.Terrain.Store)
+	} else if err := settle(); err != nil {
+		return err
 	}
 	writeNextStep(errw, root, basemapFetchOpts.terrain)
 	return writeFetchReport(out, rep, plan, tp)
