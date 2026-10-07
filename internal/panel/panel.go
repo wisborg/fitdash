@@ -199,6 +199,10 @@ type Context struct {
 	// into thousands of requests and make an offline run impossible.
 	Basemap tilemap.Provider
 
+	// RouteInks, when non-nil, are the colours the route is drawn in over a
+	// map that brings its own -- see RouteInks; nil draws it in the theme's.
+	RouteInks *RouteInks
+
 	// Route3D, when non-nil, draws the route panel in perspective over the
 	// basemap draped on the ground's heights; it needs a Basemap that is a
 	// Draper. Nil -- the default -- draws the route seen from above.

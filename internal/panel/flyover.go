@@ -81,6 +81,7 @@ func FlightGround(cams []perspective.Camera, aspect float64) slice.Bounds {
 // tile is drawn the same whenever it is first wanted.
 type flyoverPainter struct {
 	box    Box
+	inks   *RouteInks // ctx.RouteInks
 	cams   []perspective.Camera
 	flight tilemap.FlightMap
 	air    perspective.Options
@@ -103,7 +104,7 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	if !ok {
 		return nil, "a flyover needs a map drawn here, --basemap local", false
 	}
-	p := &flyoverPainter{box: box}
+	p := &flyoverPainter{box: box, inks: ctx.RouteInks}
 	p.all = route.FromTrack(ctx.Track, len(ctx.Track.Samples)+1)
 	p.pts = route.FromTrack(ctx.Track, route3DMaxPoints)
 	if len(p.pts) < 2 {
@@ -193,9 +194,9 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 		xs[i], ys[i], in[i], seen[i] = p.place(pic, pt)
 	}
 	s := route3DPainter{xs: xs, ys: ys, in: in, seen: seen}
-	s.stroke(c, 0, n-1, p.outlineW, c.Theme.Dim, 1)
+	s.stroke(c, 0, n-1, p.outlineW, routeInks(p.inks, true, c.Theme).Dim, 1)
 	if drawn := route.IndexAt(p.pts, f.At); drawn >= 1 {
-		s.stroke(c, 0, drawn, p.coveredW, c.Theme.Foreground, 1)
+		s.stroke(c, 0, drawn, p.coveredW, routeInks(p.inks, true, c.Theme).Foreground, 1)
 	}
 	for i, m := range p.marks {
 		if !m.ok {
@@ -205,7 +206,7 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 		if i == f.Interval {
 			alpha = restAlpha(f.IntervalWeight)
 		}
-		s.stroke(c, m.i0, m.i1, p.coveredW, c.Theme.Highlight, alpha)
+		s.stroke(c, m.i0, m.i1, p.coveredW, routeInks(p.inks, true, c.Theme).Highlight, alpha)
 	}
 	if cur := route.IndexAt(p.all, f.At); cur >= 0 {
 		if x, y, in, seen := p.place(pic, p.all[cur]); in {
@@ -213,7 +214,7 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 			if !seen {
 				alpha = hiddenAlpha
 			}
-			c.Circle(x, y, p.dotR, Fade(c.Theme.Accent, alpha))
+			c.Circle(x, y, p.dotR, Fade(routeInks(p.inks, true, c.Theme).Accent, alpha))
 		}
 	}
 	fitted := p.creditFitted

@@ -83,7 +83,7 @@ func joinNotes(notes ...string) string {
 
 // prepareFlat is Prepare for the route seen from straight above.
 func prepareFlat(ctx *Context, box Box) *routePainter {
-	p := &routePainter{box: box}
+	p := &routePainter{box: box, inks: ctx.RouteInks}
 
 	// Two lists, deliberately. The outline is drawn from a thinned copy,
 	// because a route a few hundred pixels wide cannot show more; the position
@@ -337,6 +337,7 @@ func maxf(a, b float64) float64 {
 
 type routePainter struct {
 	box      Box
+	inks     *RouteInks    // ctx.RouteInks
 	pts      []route.Point // thinned, for the outline
 	all      []route.Point // every fix, for the position lookup
 	place    func(route.Point) (float64, float64)
@@ -464,7 +465,7 @@ func (p *routePainter) Static(c *Canvas) {
 		return
 	}
 	p.drawBasemap(c, p.baseMap, nil, 0)
-	c.Polyline(p.xs, p.ys, p.outlineW, c.Theme.Dim)
+	c.Polyline(p.xs, p.ys, p.outlineW, p.routeInks(c).Dim)
 	p.drawCredit(c)
 }
 
@@ -684,7 +685,7 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 			front, weight = p.zoomMaps[f.Interval], f.IntervalWeight
 		}
 		p.drawBasemap(c, p.baseMap, front, weight)
-		c.Polyline(xs, ys, p.outlineW, c.Theme.Dim)
+		c.Polyline(xs, ys, p.outlineW, p.routeInks(c).Dim)
 	}
 
 	// The covered portion is a prefix of the DRAWN points, so it is looked up
@@ -693,7 +694,7 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 	// the first fix, IndexAt returns -1 here exactly as it does against
 	// p.all below, so nothing is drawn -- there is nothing covered yet.
 	if drawn := route.IndexAt(p.pts, f.At); drawn >= 1 {
-		c.Polyline(xs[:drawn+1], ys[:drawn+1], p.coveredW, c.Theme.Foreground)
+		c.Polyline(xs[:drawn+1], ys[:drawn+1], p.coveredW, p.routeInks(c).Foreground)
 	}
 
 	// Every markable highlight draws, not only the one active this frame --
@@ -716,7 +717,7 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 		if i == f.Interval {
 			alpha = restAlpha(f.IntervalWeight)
 		}
-		c.Polyline(xs[m.i0:m.i1+1], ys[m.i0:m.i1+1], p.coveredW, Fade(c.Theme.Highlight, alpha))
+		c.Polyline(xs[m.i0:m.i1+1], ys[m.i0:m.i1+1], p.coveredW, Fade(p.routeInks(c).Highlight, alpha))
 	}
 
 	// The dot comes from the full fix list and is placed directly, so it moves
@@ -730,5 +731,11 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 		return
 	}
 	x, y := place(p.all[cur])
-	c.Circle(x, y, p.dotR, c.Theme.Accent)
+	c.Circle(x, y, p.dotR, p.routeInks(c).Accent)
+}
+
+// routeInks are the inks this route is drawn in: the map's own while the
+// map is drawn under it, the theme's otherwise -- see RouteInks.
+func (p *routePainter) routeInks(c *Canvas) RouteInks {
+	return routeInks(p.inks, p.baseMap != nil && !p.suppressMap, c.Theme)
 }

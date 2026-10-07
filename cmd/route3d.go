@@ -179,6 +179,40 @@ func union(a, b slice.Bounds) slice.Bounds {
 	return slice.Bounds{West: math.Min(a.West, b.West), South: math.Min(a.South, b.South), East: math.Max(a.East, b.East), North: math.Max(a.North, b.North)}
 }
 
+// resolveBasemapPalette reads --basemap-palette and, for outdoors, turns the
+// local map to it and returns the inks the route is to be drawn in over it;
+// nil keeps the theme's. auto is outdoors under 3d and flyover, where the
+// map is the picture, and theme for the flat map, whose quiet derived
+// colours are what let a small route over it stand out.
+func resolveBasemapPalette(cmd *cobra.Command, basemap tilemap.Provider, route3D *panel.Route3D) (*panel.RouteInks, error) {
+	choice := renderOpts.basemapPalette
+	switch choice {
+	case "auto":
+		choice = "theme"
+		if route3D != nil {
+			choice = "outdoors"
+		}
+	case "theme", "outdoors":
+	default:
+		return nil, fmt.Errorf("render: --basemap-palette %q is invalid; use auto, theme or outdoors", renderOpts.basemapPalette)
+	}
+	local, ok := basemap.(*tilemap.Local)
+	if !ok {
+		if cmd.Flags().Changed("basemap-palette") {
+			fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-palette is only read by --basemap %s, which draws the map here\n", tilemap.LocalProvider)
+		}
+		return nil, nil
+	}
+	if choice == "theme" {
+		return nil, nil
+	}
+	if err := local.UseOutdoors(); err != nil {
+		return nil, fmt.Errorf("render: %w", err)
+	}
+	fg, dim, accent, hl := tilemap.OutdoorsInks()
+	return &panel.RouteInks{Foreground: fg, Dim: dim, Accent: accent, Highlight: hl}, nil
+}
+
 // rgbaOf is a theme colour as the opaque RGBA a picture's sky is drawn in.
 func rgbaOf(c color.Color) color.RGBA {
 	r, g, b, _ := c.RGBA()

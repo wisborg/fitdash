@@ -87,8 +87,9 @@ type Draper interface {
 // through the camera is placed in Prepare, once; Dynamic only picks which of
 // it to draw.
 type route3DPainter struct {
-	box Box
-	pic *perspective.Picture
+	box  Box
+	inks *RouteInks // ctx.RouteInks
+	pic  *perspective.Picture
 	// pts are the drawn points, all every fix, as for the flat painter;
 	// xs, ys are pts placed in the frame, in is whether each is in the
 	// picture at all and seen whether nearer ground leaves it in view.
@@ -116,7 +117,7 @@ func prepare3D(ctx *Context, box Box) (_ *route3DPainter, why string, ok bool) {
 	if !ok {
 		return nil, "a 3d route needs a map drawn here, --basemap local", false
 	}
-	p := &route3DPainter{box: box}
+	p := &route3DPainter{box: box, inks: ctx.RouteInks}
 	p.all = route.FromTrack(ctx.Track, len(ctx.Track.Samples)+1)
 	p.pts = route.FromTrack(ctx.Track, route3DMaxPoints)
 	if len(p.pts) < 2 {
@@ -203,7 +204,7 @@ func (p *route3DPainter) Static(c *Canvas) {
 			c.Rect(p.box, Fade(c.Theme.Background, p.mapDim))
 		}
 	}
-	p.stroke(c, 0, len(p.pts)-1, p.outlineW, c.Theme.Dim, 1)
+	p.stroke(c, 0, len(p.pts)-1, p.outlineW, routeInks(p.inks, !p.suppressMap, c.Theme).Dim, 1)
 	if !p.suppressMap {
 		drawMapCredit(c, p.box, p.mapCredit, p.creditPx, &p.creditFitted)
 	}
@@ -214,7 +215,7 @@ func (p *route3DPainter) Static(c *Canvas) {
 // see routePainter.Dynamic.
 func (p *route3DPainter) Dynamic(c *Canvas, f Frame) {
 	if drawn := route.IndexAt(p.pts, f.At); drawn >= 1 {
-		p.stroke(c, 0, drawn, p.coveredW, c.Theme.Foreground, 1)
+		p.stroke(c, 0, drawn, p.coveredW, routeInks(p.inks, !p.suppressMap, c.Theme).Foreground, 1)
 	}
 	for i, m := range p.marks {
 		if !m.ok {
@@ -224,7 +225,7 @@ func (p *route3DPainter) Dynamic(c *Canvas, f Frame) {
 		if i == f.Interval {
 			alpha = restAlpha(f.IntervalWeight)
 		}
-		p.stroke(c, m.i0, m.i1, p.coveredW, c.Theme.Highlight, alpha)
+		p.stroke(c, m.i0, m.i1, p.coveredW, routeInks(p.inks, !p.suppressMap, c.Theme).Highlight, alpha)
 	}
 	cur := route.IndexAt(p.all, f.At)
 	if cur < 0 {
@@ -238,7 +239,7 @@ func (p *route3DPainter) Dynamic(c *Canvas, f Frame) {
 	if !seen {
 		alpha = hiddenAlpha
 	}
-	c.Circle(x, y, p.dotR, Fade(c.Theme.Accent, alpha))
+	c.Circle(x, y, p.dotR, Fade(routeInks(p.inks, !p.suppressMap, c.Theme).Accent, alpha))
 }
 
 // stroke draws the route from point i0 to i1, at alpha where it is seen and

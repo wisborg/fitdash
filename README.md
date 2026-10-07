@@ -215,6 +215,12 @@ sees, which is more than the route's.
 fitdash morning.fit --basemap local --route-view flyover --video-duration 45s
 ```
 
+Under `3d` and `flyover` the map is drawn in osmbase's **outdoors** palette — fuller greens,
+bluer water, deeper hill shading — and the route in the dark navy and crimson made for it,
+because there the map is the picture rather than the quiet ground under a small route. The
+flat map keeps colours derived from `--theme`, held quiet so the route stands out.
+`--basemap-palette theme` or `outdoors` chooses either for any view.
+
 ## What it is
 
 There is no input video. fitdash generates every pixel of every frame from the

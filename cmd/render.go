@@ -56,6 +56,7 @@ type renderOptions struct {
 	routeExaggeration   float64
 	routeDistance       float64
 	routeSmoothing      time.Duration
+	basemapPalette      string
 	power               string
 	layout              string
 	bottomBand          string
@@ -295,6 +296,11 @@ func bindRenderFlags(c *cobra.Command) {
 		"with --route-view 3d or flyover, how many times their height hills are drawn; 1 is true to life")
 	f.Float64Var(&renderOpts.routeDistance, "route-distance", 800,
 		"with --route-view flyover, how far behind the activity the camera follows, in metres, from 100 to 20000")
+	f.StringVar(&renderOpts.basemapPalette, "basemap-palette", "auto",
+		"the colours --basemap "+tilemap.LocalProvider+" draws in: \"theme\", derived from --theme and kept quiet so "+
+			"the route and readouts stand out, or \"outdoors\", fuller greens, bluer water and deeper hill shading, with "+
+			"the route drawn in the inks made for it. \"auto\" (default) is outdoors for --route-view 3d and flyover, "+
+			"where the map is the picture, and theme for the flat map")
 	f.DurationVar(&renderOpts.routeSmoothing, "route-camera-smoothing", 1500*time.Millisecond,
 		"with --route-view flyover, how much VIDEO time the camera's height is smoothed over as the ground rises and "+
 			"falls under the activity: 0 follows the ground exactly, which in hilly country bobs over every bank; "+
@@ -560,6 +566,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	routeInks, err := resolveBasemapPalette(cmd, basemap, route3D)
+	if err != nil {
+		return err
+	}
 	if local, ok := basemap.(*tilemap.Local); ok && route3D != nil && route3D.Flyover {
 		// A flyover draws its tiles in parallel and stands their names on
 		// its pictures afterwards, each tile in faces of its own; see
@@ -573,6 +583,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Basemap:             basemap,
 		BasemapDim:          basemapDim,
 		Route3D:             route3D,
+		RouteInks:           routeInks,
 		Report:              inspect.Build(track),
 		Elevation:           panel.BuildElevation(track, elevTuning),
 		Timer:               timer,
@@ -1440,6 +1451,9 @@ func writeBasemapSummary(cmd *cobra.Command, r *render.Renderer, in renderInputs
 	var source, origin string
 	if l, ok := in.basemap.(*tilemap.Local); ok {
 		source = "drawn here from " + l.Root()
+		if l.Outdoors() {
+			source += " in the outdoors palette"
+		}
 		origin = "nothing was sent to anybody"
 		// Two different ways a local map falls short, reported together
 		// because a render can suffer both and because they are invisible in

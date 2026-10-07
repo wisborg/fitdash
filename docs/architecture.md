@@ -1537,6 +1537,20 @@ shapes the 3d offer uses: the ground offered is the ground the flight sees. That
 box round every camera's view, which for a long route is far more than the corridor the
 chase camera flies over; an offer by cell along the corridor would be smaller.
 
+### The map's own colours
+
+The local map's colours are derived from the theme and held in a narrow band of luminance
+(`MapInks`), so that a small flat map stays quiet and the route and readouts win. Under 3d
+and the flyover the map is the picture, and that rule cost the most where it mattered most:
+the light theme's flyover was washed out, and the night theme's -- linework over black -- left
+a national park with few roads as an unlit mass. So those views draw in osmbase's outdoors
+palette (`--basemap-palette auto`), and the route in the inks that palette was made and
+contrast-checked with (`Context.RouteInks`), not the theme's: a theme's white line on pale
+greens is not guaranteed to read. The theme's inks are still used wherever the route is over
+no map, since the map's were chosen against the map and may vanish into the dashboard. Only
+the render's choice to leave contours out carries into the outdoors palette; the theme's own
+omissions do not, or night's -- every filled surface but water -- leave the land bare paper.
+
 ### What it declines
 
 As for 3d: it needs `--basemap local`, turns `--terrain` on, says when the ground is level

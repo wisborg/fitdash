@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"golang.org/x/image/font"
 	"image"
+	"image/color"
 	"slices"
 	"sync"
 
@@ -94,6 +95,9 @@ type Local struct {
 	// freshLabels makes label faces no one else draws with, for a flight's
 	// tiles; see FreshLabels. Nil draws a flight's tiles without names.
 	freshLabels func() LabelFaces
+
+	// outdoors is true once UseOutdoors has turned the map to that palette.
+	outdoors bool
 }
 
 // FreshLabels gives the map a way to make label faces of its own, as many
@@ -562,4 +566,41 @@ func StoreShortfall(root string, b slice.Bounds) (Shortfall, error) {
 		Cells: cov.Cells, Held: cov.Complete,
 		Overview: cov.OverviewWanted, OverviewHeld: cov.OverviewHeld,
 	}, nil
+}
+
+// UseOutdoors draws the map in osmbase's outdoors palette rather than in
+// colours derived from the theme: fuller greens, bluer water and deeper
+// shading, made for a map seen in perspective, where the map is the picture
+// rather than the quiet ground under a route. A render's choice to leave
+// contours out is kept; the theme's own omissions are not. The route over it is to be drawn in the inks the
+// palette was made with, OutdoorsInks.
+func (l *Local) UseOutdoors() error {
+	o := l.opts
+	p := osm.OutdoorsPalette()
+	// Only the render's choice about contours carries over. The theme's
+	// palette leaves out other roles of its own -- under night, every
+	// filled surface but water -- and the outdoors palette carried those
+	// over drew the land as bare paper in the haze.
+	if o.Palette.Omits(osm.RoleContour) {
+		p.Omitted = osm.Roles(osm.RoleContour)
+	}
+	o.Palette = p
+	rend, err := osm.New(l.source, o)
+	if err != nil {
+		return fmt.Errorf("tilemap: preparing to draw from the local map store %s in the outdoors palette: %w", l.root, err)
+	}
+	l.opts, l.rend, l.outdoors = o, rend, true
+	return nil
+}
+
+// Outdoors is true when the map is drawn in the outdoors palette; see
+// UseOutdoors.
+func (l *Local) Outdoors() bool { return l.outdoors }
+
+// OutdoorsInks are the inks the outdoors palette was chosen and checked
+// against, for the route drawn over it: a dark line, a crimson dot, a purple
+// highlight and a charcoal for the line still ahead.
+func OutdoorsInks() (foreground, dim, accent, highlight color.RGBA) {
+	o := osm.OutdoorsOverlay()
+	return o.Foreground, o.Dim, o.Accent, o.Highlight
 }
