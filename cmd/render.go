@@ -50,6 +50,10 @@ type renderOptions struct {
 	contours            bool
 	terrainStore        string
 	terrainSource       string
+	routeView           string
+	routeHeading        string
+	routePitch          float64
+	routeExaggeration   float64
 	power               string
 	layout              string
 	bottomBand          string
@@ -271,6 +275,19 @@ func bindRenderFlags(c *cobra.Command) {
 	f.StringVar(&renderOpts.terrainSource, "terrain-source", defaultTerrainSource,
 		"with --terrain, where elevation the store lacks is fetched from, after asking: a host's address, or a "+
 			"directory of its archives, which reaches no network at all")
+	f.StringVar(&renderOpts.routeView, "route-view", "flat",
+		"how the route panel sees the route: \"flat\" (default), from straight above, or \"3d\", in perspective from a "+
+			"camera in the sky, the map draped over the shape of the ground and the route lying on it. 3d draws the map "+
+			"here, so it needs --basemap "+tilemap.LocalProvider+", and it shapes the ground from the elevation, so it "+
+			"turns --terrain on, with its offer to fetch what the store lacks. The camera sees far beyond the route, out "+
+			"into the haze, and the map and elevation offered are for all of that ground")
+	f.StringVar(&renderOpts.routeHeading, "route-heading", "auto",
+		"with --route-view 3d, the compass bearing the camera looks along, in degrees, 0 looking north; auto takes "+
+			"whichever bearing shows the route largest")
+	f.Float64Var(&renderOpts.routePitch, "route-pitch", 35,
+		"with --route-view 3d, how far below the horizontal the camera looks, in degrees, from 10 to 90 (straight down)")
+	f.Float64Var(&renderOpts.routeExaggeration, "route-exaggeration", 1,
+		"with --route-view 3d, how many times their height hills are drawn; 1 is true to life")
 	f.StringVar(&renderOpts.basemapCache, "basemap-cache", "",
 		"directory to keep fetched --basemap imagery in (default: a fitdash folder under your user cache directory). "+
 			"Tuning a --highlight means rendering the same activity repeatedly, and without a cache every run re-fetches "+
@@ -511,6 +528,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// see panel.Context.Elevation's own doc comment.
 	elevTuning, elevSource := resolveElevationTuning(track, unitSet)
 	speedReadout, _ := panel.ResolveSpeedReadout(renderOpts.speedReadout, track.Sport)
+	route3D, err := resolveRoute3D(cmd)
+	if err != nil {
+		return err
+	}
+	if route3D != nil {
+		route3D.Air = rgbaOf(theme.Background)
+	}
 	basemap, err := resolveBasemap(cmd, theme, track, basemapLabelFaces(cmd, fonts, h))
 	if err != nil {
 		return err
@@ -521,6 +545,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Track:               track,
 		Basemap:             basemap,
 		BasemapDim:          basemapDim,
+		Route3D:             route3D,
 		Report:              inspect.Build(track),
 		Elevation:           panel.BuildElevation(track, elevTuning),
 		Timer:               timer,

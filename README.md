@@ -183,6 +183,19 @@ The frame then credits the elevation briefly, and the summary prints its full
 notice — for Copernicus GLO-30 a sentence its licence dictates — which **whoever
 publishes the video must give with it**, in the description. See [NOTICE](NOTICE).
 
+`--route-view 3d` draws the route panel in perspective instead: the map draped over the
+shape of the ground and seen from a camera in the sky, the route lying on it and filling in
+as the activity goes. A stretch behind a hill, and the dot while it is there, are drawn
+faintly rather than left out. It needs `--basemap local` and turns `--terrain` on; the
+camera sees far beyond the route, so the map and elevation offered are for all the ground
+in view, not just the route's. `--route-heading` says which way it looks (`auto`, the
+default, takes the bearing that shows the route largest), and `--route-pitch` and
+`--route-exaggeration` how steeply and how tall the hills are drawn.
+
+```
+fitdash morning.fit --basemap local --route-view 3d
+```
+
 ## What it is
 
 There is no input video. fitdash generates every pixel of every frame from the

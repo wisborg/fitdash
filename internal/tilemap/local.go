@@ -217,9 +217,22 @@ func OpenLocal(root string, inks MapInks, labels LabelFaces, relief *Terrain) (*
 // or with terrain, one carrying what this view owes the elevation. Building
 // a renderer validates a style and allocates nothing per tile, and a render
 // asks for a handful of views, not one per frame.
-func (l *Local) rendererFor(v View) (*osm.Renderer, error) {
-	if l.terrain == nil {
+//
+// facing, for a map draped in perspective, is the camera's heading: the
+// names of places are lifted off the map into the result's PointLabels, to
+// be stood upright on the picture, and the names along streets and contours
+// that stay on the ground are turned to read upright for the camera rather
+// than for a north-up reader. Nil for a flat map.
+func (l *Local) rendererFor(v View, facing *float64) (*osm.Renderer, error) {
+	if l.terrain == nil && facing == nil {
 		return l.rend, nil
+	}
+	o := l.opts
+	if facing != nil {
+		o.LiftPointLabels, o.LabelsFacing = true, *facing
+	}
+	if l.terrain == nil {
+		return osm.New(l.source, o)
 	}
 	ov := osm.View{Bounds: osm.Bounds{West: v.West, South: v.South, East: v.East, North: v.North}, Width: v.Width, Height: v.Height}
 	z, _, err := ov.Zoom()
@@ -230,7 +243,6 @@ func (l *Local) rendererFor(v View) (*osm.Renderer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: working out what this view owes the elevation in %s: %w", l.terrain.Root(), err)
 	}
-	o := l.opts
 	o.Terrain, o.TerrainAttribution, o.TerrainNotice = l.terrain.Heights(), short, full
 	return osm.New(l.source, o)
 }
@@ -285,7 +297,7 @@ func (l *Local) Image(ctx context.Context, v View) (image.Image, error) {
 		defer l.source.Hold(cells).Release()
 	}
 
-	rend, err := l.rendererFor(v)
+	rend, err := l.rendererFor(v, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -296,6 +308,14 @@ func (l *Local) Image(ctx context.Context, v View) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: drawing a %dx%d view from the local map store %s: %w", v.Width, v.Height, l.root, err)
 	}
+	l.record(res)
+	return res.Image, nil
+}
+
+// record keeps what a drawn view says about the store and the elevation,
+// for the summary: the worst coverage and overzoom of any view, and what
+// the shaded ones owe the elevation.
+func (l *Local) record(res *osm.Result) {
 	l.mu.Lock()
 	if res.Covered < l.covered {
 		l.covered = res.Covered
@@ -318,7 +338,6 @@ func (l *Local) Image(ctx context.Context, v View) (image.Image, error) {
 		}
 	}
 	l.mu.Unlock()
-	return res.Image, nil
 }
 
 // Coverage is the smallest fraction of any drawn view the store actually held

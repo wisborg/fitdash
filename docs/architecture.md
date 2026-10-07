@@ -1427,6 +1427,64 @@ tempting bug: it would keep drawing at its whole-course position while the outli
 underneath it, putting the dot off the line entirely — a confident claim that the runner was
 somewhere the route does not go, which would pass every "is there a dot" assertion.
 
+## The route in 3D
+
+`--route-view 3d` draws the route panel in perspective: the map draped over the shape of
+the ground, seen from a camera in the sky, the route lying on it. The renderer is osmbase's
+`perspective` package; what is decided here is how a moving picture uses a still one.
+
+### One picture, rendered once
+
+A draped picture costs a second or more, and a 25-minute render has 45,000 frames. So the
+picture is rendered **once, in `Prepare`**, and `Static` draws it; nothing about it moves.
+The route is not in it. It is placed through the same camera with `Picture.Project` and
+`Picture.Locate`, once per drawn point in `Prepare`, and `Dynamic` only chooses how much of
+it to stroke -- the same shape as the flat painter, whose projection is a field and whose
+outline is static. Drawing the route into the map before draping it, as `course map --3d`
+does, would follow the ground more exactly but would fix the covered prefix at one instant:
+the one thing on the panel that has to move.
+
+Straight segments through the air between points on the ground cut into a hill when they
+are long, so 3D draws 2,000 of the route's points rather than the flat panel's 500.
+
+### Hidden is faint, not absent
+
+A stretch a hill hides is drawn at `hiddenAlpha`, and so is the dot behind one. Left out,
+the line breaks off at the ridge and the dot vanishes, which looks exactly like a recording
+that stopped -- a confident claim the data does not make, the same failure as a reading
+drawn as zero. A stretch outside the picture is not drawn, because there is nowhere to
+draw it.
+
+### The camera, and the ground the offer asks for
+
+The camera frames every point of the route in the panel's box, from `--route-heading` or,
+with `auto`, from whichever bearing lets it stand nearest -- osmbase's
+`Camera.BestHeading`, the rule course uses too. It sees far past the route, out into the
+haze, and the map and elevation have to cover all of that ground.
+
+The box is the trap. The offers to fetch run in `cmd`, before the layout exists, and the
+camera depends on the box's shape. So the offer frames the panel's own camera
+(`panel.Route3D.Camera`, the one function both call) at a range of shapes, from a tall
+column to a wide band, and asks for the union of what they see. A test holds the ground
+draped for boxes between those shapes to be inside it.
+
+### What 3D needs, and what it declines
+
+It needs `--basemap local`: the ground's shape comes from the elevation beside the map's
+store, and a tile service's pictures carry none. It turns `--terrain` on, with the usual
+offer and consent; turned off by name, the map is draped over level ground -- the map
+tilted, which is honest about what is known -- and the summary says the ground is level
+for want of elevation, so it is not mistaken for flat country. A basemap that cannot drape
+draws the flat route, and its note says why.
+
+A highlight's **zoom is declined** in 3D, and said: the map is draped for the whole route's
+camera, and a camera flown to one stretch would look at ground nobody draped. Highlight
+marks are drawn, through the camera, as on the flat panel.
+
+The sky and the haze are the theme's background (`Route3D.Air`, set by `cmd` as it sets
+the local map's inks), so the distance dissolves into the dashboard rather than into a sky
+of its own -- osmbase's pale blue was a band across a night theme.
+
 ## Absent data
 
 The two policies map onto the two phases, and the mapping follows from *when* each kind of
@@ -2125,7 +2183,7 @@ having when the code they concern is read.
 
 ## Not designed here
 
-Map imagery, 3D and TCX/GPX input are future work. What the design must not foreclose:
+Map imagery, TCX/GPX input and a moving 3D camera are future work. What the design must not foreclose:
 
 - **Map imagery.** The route Painter computes its projection in `Prepare` and `Static` draws
   the outline over whatever is beneath. The whole hook is one interface consulted **once, in
@@ -2141,8 +2199,9 @@ Map imagery, 3D and TCX/GPX input are future work. What the design must not fore
   it makes it harder to keep. A basemap must be resolved for the views the render will
   actually use, which are knowable in `Prepare` (the whole-course projection, plus one per
   zooming highlight), and never per frame for the blended views in between.
-- **3D** is a different projection and almost certainly a different panel. A panel already
-  owns its box and its projection, so there is nothing to do now.
+- **3D** turned out to be a different painter rather than a different panel: see "The
+  route in 3D". The flyover -- a camera that moves along the route -- is not designed yet;
+  it cannot reuse the one-picture rule, and is where per-frame rendering cost returns.
 - **GPX/TCX input** is a fitactivity change, not a fitdash one. The requirement this design
   imposes: nothing outside the single `DecodeAll` call may assume the input was FIT. No
   panel reads the source path or its extension.

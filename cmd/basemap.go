@@ -916,7 +916,7 @@ const autoFetchPadKM = 2
 func offerToFillTheStore(cmd *cobra.Command, root string, track *fitactivity.Track) {
 	errw := cmd.ErrOrStderr()
 
-	area, err := activityBounds(track, autoFetchPadKM)
+	area, err := offerBounds(track, autoFetchPadKM)
 	if err != nil {
 		// No GPS, or every fix at one point. There is no ground to fetch and
 		// the render's own report will say so more precisely than this could.
@@ -935,7 +935,7 @@ func offerToFillTheStore(cmd *cobra.Command, root string, track *fitactivity.Tra
 	// A degenerate activity -- every fix at one point -- has no unpadded box
 	// at all, so the padded one stands in for it there.
 	asked := area
-	if tight, err := activityBounds(track, 0); err == nil {
+	if tight, err := offerBounds(track, 0); err == nil {
 		asked = tight
 	}
 	short, err := tilemap.StoreShortfall(root, asked)
@@ -1103,12 +1103,12 @@ const defaultTerrainSource = "https://download.mapterhorn.com"
 // are worth. It is asked about the unpadded box, as the map is.
 func offerTerrain(cmd *cobra.Command, root string, track *fitactivity.Track) {
 	errw := cmd.ErrOrStderr()
-	area, err := activityBounds(track, autoFetchPadKM)
+	area, err := offerBounds(track, autoFetchPadKM)
 	if err != nil {
 		return
 	}
 	asked := area
-	if tight, err := activityBounds(track, 0); err == nil {
+	if tight, err := offerBounds(track, 0); err == nil {
 		asked = tight
 	}
 	depth, err := acquire.DepthFor(area, slice.MaxCellZoom)

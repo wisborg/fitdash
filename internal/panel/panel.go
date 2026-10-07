@@ -199,6 +199,11 @@ type Context struct {
 	// into thousands of requests and make an offline run impossible.
 	Basemap tilemap.Provider
 
+	// Route3D, when non-nil, draws the route panel in perspective over the
+	// basemap draped on the ground's heights; it needs a Basemap that is a
+	// Draper. Nil -- the default -- draws the route seen from above.
+	Route3D *Route3D
+
 	// BasemapDim is how far the imagery is washed toward the background, in
 	// [0, 1]. A full-strength map competes with the route line and the
 	// readouts beside it; the map is context and the activity is the subject.

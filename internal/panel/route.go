@@ -38,7 +38,42 @@ func (RoutePanel) Accepts(ctx *Context) bool {
 // re-projecting on every frame, because its gauges are handed nothing that
 // persists between them. Here there is nowhere for such a cache to go, because
 // there is nothing to cache: the work happens once and the result is a field.
+//
+// With Route3D set it draws the route in perspective instead, over the map
+// draped on the ground's heights. When that cannot be done -- no map that can
+// drape, a route that cannot be framed -- the flat route is drawn, and its
+// basemap note says why, so the render summary does: a 3d render that came
+// out flat with nothing said would look like a fault.
 func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
+	if ctx.Route3D != nil && ctx.Basemap != nil {
+		p3, why, ok := prepare3D(ctx, box)
+		if ok {
+			return p3
+		}
+		p := prepareFlat(ctx, box)
+		p.mapNote = joinNotes("drawn flat: "+why, p.mapNote)
+		return p
+	}
+	return prepareFlat(ctx, box)
+}
+
+// joinNotes is the non-empty notes, in order, as one.
+func joinNotes(notes ...string) string {
+	var out string
+	for _, n := range notes {
+		switch {
+		case n == "":
+		case out == "":
+			out = n
+		default:
+			out += "; " + n
+		}
+	}
+	return out
+}
+
+// prepareFlat is Prepare for the route seen from straight above.
+func prepareFlat(ctx *Context, box Box) *routePainter {
 	p := &routePainter{box: box}
 
 	// Two lists, deliberately. The outline is drawn from a thinned copy,
@@ -480,36 +515,46 @@ func (p *routePainter) drawBasemap(c *Canvas, back, front *basemapView, weight f
 // small for the imagery, and the honest response is to keep the obligation
 // and let the map be small.
 func (p *routePainter) drawCredit(c *Canvas) {
-	if p.suppressMap || p.baseMap == nil || p.mapCredit == "" {
+	if p.suppressMap || p.baseMap == nil {
+		return
+	}
+	drawMapCredit(c, p.box, p.mapCredit, p.creditPx, &p.creditFitted)
+}
+
+// drawMapCredit is drawCredit's body, for any painter that puts a map in its
+// box: the credit at px, shrunk once to fit the box and kept in *fitted, on
+// a plate in the box's bottom-right corner.
+func drawMapCredit(c *Canvas, box Box, credit string, px float64, fitted *float64) {
+	if credit == "" {
 		return
 	}
 	// The plate's margin, sized from the text it surrounds rather than
 	// written as a pixel count -- the same rule outlineW, coveredW, dotR and
 	// creditPx already follow in this file. A fixed 3 pixels is oversized
 	// beside the clamped-small credit on a little panel and invisible at 4K.
-	pad := maxf(2, p.creditPx*0.25)
+	pad := maxf(2, px*0.25)
 
 	// Shrunk to fit the panel, once. The credit is a fixed sentence and the
 	// box is whatever the layout gave this panel, so at a small size or a
 	// square shape the string is simply wider than the box -- measured at
 	// 1100 pixels in a 720-pixel box. Letting it overflow would push most of
 	// the obligation off the panel and draw the rest across its neighbour.
-	if p.creditFitted == 0 {
-		px, err := c.FitTextSize(p.mapCredit, p.box.W-2*pad, p.creditPx)
-		if err != nil || px <= 0 {
-			px = p.creditPx
+	if *fitted == 0 {
+		fit, err := c.FitTextSize(credit, box.W-2*pad, px)
+		if err != nil || fit <= 0 {
+			fit = px
 		}
-		p.creditFitted = px
+		*fitted = fit
 	}
-	w, h, err := c.MeasureText(p.mapCredit, p.creditFitted)
+	w, h, err := c.MeasureText(credit, *fitted)
 	if err != nil {
 		return
 	}
 	// ay of 0.5 with y as the text's CENTRE line, which is the convention
 	// every other panel here uses -- gg's anchor moves the baseline DOWN by
 	// ay*height, so anchoring at 1 puts the text below the box entirely.
-	x := p.box.X + p.box.W - pad
-	y := p.box.Y + p.box.H - pad - h/2
+	x := box.X + box.W - pad
+	y := box.Y + box.H - pad - h/2
 
 	// A plate behind the text, and Foreground on top of it.
 	//
@@ -522,7 +567,7 @@ func (p *routePainter) drawCredit(c *Canvas) {
 	// imagery because it is not the imagery.
 	c.Rect(Box{X: x - w - pad, Y: y - h/2 - pad, W: w + 2*pad, H: h + 2*pad},
 		Fade(c.Theme.Background, 0.72))
-	_ = c.Text(p.mapCredit, x, y, 1, 0.5, p.creditFitted, c.Theme.Foreground)
+	_ = c.Text(credit, x, y, 1, 0.5, *fitted, c.Theme.Foreground)
 }
 
 // Dynamic draws the covered portion, then every configured highlight's route
