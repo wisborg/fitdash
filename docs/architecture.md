@@ -1485,6 +1485,65 @@ The sky and the haze are the theme's background (`Route3D.Air`, set by `cmd` as 
 the local map's inks), so the distance dissolves into the dashboard rather than into a sky
 of its own -- osmbase's pale blue was a band across a night theme.
 
+## The flyover
+
+`--route-view flyover` flies a camera after the activity: it comes down from the 3d still's
+overview over the first seconds of video, follows from behind, and goes back up at the end.
+It is the one panel whose picture is drawn per frame, so it is where the per-frame cost the
+rest of this design removed comes back -- by choice, and confined to renders that ask.
+
+### Fixed tiles, not a map per frame
+
+A map drawn for each frame's view costs seconds a frame, and draws the same ground a little
+differently each time: the stacking of overlapping areas, the dashes of a path, a contour's
+interval and every name were decided per view, and a camera moving ten metres reshaped a
+park and moved a street's name. So the map is a **pyramid of fixed tiles** (osmbase's
+`perspective.Tiles`), each drawn once when first seen and the same in every frame that shows
+it, at the zoom each part of the picture needs -- fine under the camera, coarse toward the
+horizon. For the tiles to meet without seams they are drawn as one map:
+`tilemap.Local.Flight` measures the areas over the flight's whole ground once, fixes the
+contour interval per zoom, and lifts every name off them. The mesh's vertices sit on a
+lattice fixed to the ground, so a ridge does not wobble as the camera crosses it.
+
+Names are stood on the picture through the camera, each in the tile it is centred in,
+shown where the ground is drawn from that tile's zoom and faded as the ground blends to the
+next. A font face is not safe for two goroutines at once, and the pictures are drawn on every
+core, so each tile is drawn in faces of its own (`FaceCache.Fresh`, via
+`Local.FreshLabels`).
+
+### The frame loop stays sequential
+
+A picture is drawn by osmbase on every core, a band of rows to each, so one frame takes
+about half a second at 1920x1080 and the loop draws them in order as it always has.
+Parallel frames would have reached the same speed by changing the loop, its memory and
+every painter's contract; this changes nothing here. `Dynamic` still does not mutate the
+painter: the pyramid's cache of drawn tiles changes, but no picture depends on when a tile
+was drawn, so the static/dynamic equality holds.
+
+### The camera, planned in Prepare
+
+Every frame's camera is worked out in `Prepare`, by `route.Flight`, as a pure function of
+the GPS fixes and the timeline: where the activity is at the frame's instant, steadied over a
+second of video; the direction it is going, taken over three seconds of video; and the
+height of the ground under it, averaged over `--route-camera-smoothing`. The durations are
+**video** time because what they smooth is what the viewer sees move: at sixty times real
+time, three seconds of video is three minutes of the activity, and the camera follows the
+route's general direction rather than every switchback. A camera following the ground
+exactly bobs over every bank in hilly country; one smoothed too long sinks into a climb.
+Which is right depends on the ground, so it is a flag.
+
+The same planning frames the fetch offer, before the layout exists, at the range of panel
+shapes the 3d offer uses: the ground offered is the ground the flight sees. That ground is a
+box round every camera's view, which for a long route is far more than the corridor the
+chase camera flies over; an offer by cell along the corridor would be smaller.
+
+### What it declines
+
+As for 3d: it needs `--basemap local`, turns `--terrain` on, says when the ground is level
+for want of elevation, and draws highlights' stretches but not their zoom -- the camera
+already follows the activity. A route it cannot fly over is drawn flat, and the note says
+why.
+
 ## Absent data
 
 The two policies map onto the two phases, and the mapping follows from *when* each kind of
@@ -2183,7 +2242,7 @@ having when the code they concern is read.
 
 ## Not designed here
 
-Map imagery, TCX/GPX input and a moving 3D camera are future work. What the design must not foreclose:
+Map imagery and TCX/GPX input are future work. What the design must not foreclose:
 
 - **Map imagery.** The route Painter computes its projection in `Prepare` and `Static` draws
   the outline over whatever is beneath. The whole hook is one interface consulted **once, in
@@ -2200,8 +2259,9 @@ Map imagery, TCX/GPX input and a moving 3D camera are future work. What the desi
   actually use, which are knowable in `Prepare` (the whole-course projection, plus one per
   zooming highlight), and never per frame for the blended views in between.
 - **3D** turned out to be a different painter rather than a different panel: see "The
-  route in 3D". The flyover -- a camera that moves along the route -- is not designed yet;
-  it cannot reuse the one-picture rule, and is where per-frame rendering cost returns.
+  route in 3D", and for the camera that moves along the route, "The flyover". A
+  whole-frame flyover -- the picture filling the frame, with few readings over it -- is not
+  designed yet.
 - **GPX/TCX input** is a fitactivity change, not a fitdash one. The requirement this design
   imposes: nothing outside the single `DecodeAll` call may assume the input was FIT. No
   panel reads the source path or its extension.

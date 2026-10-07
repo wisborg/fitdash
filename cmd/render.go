@@ -54,6 +54,8 @@ type renderOptions struct {
 	routeHeading        string
 	routePitch          float64
 	routeExaggeration   float64
+	routeDistance       float64
+	routeSmoothing      time.Duration
 	power               string
 	layout              string
 	bottomBand          string
@@ -268,7 +270,7 @@ func bindRenderFlags(c *cobra.Command) {
 			"briefly and the summary prints its full notice, which whoever publishes the video must give with it")
 	f.BoolVar(&renderOpts.contours, "contours", true,
 		"with --terrain, draw contour lines, every fifth one labelled with its height; --contours=false shades the ground "+
-			"without them")
+			"without them. Off under --route-view flyover unless given")
 	f.StringVar(&renderOpts.terrainStore, "terrain-store", "",
 		"with --terrain, the directory the elevation is kept in (default: beside --basemap-store, its name ending "+
 			"-terrain, where osmbase keeps it too)")
@@ -276,18 +278,27 @@ func bindRenderFlags(c *cobra.Command) {
 		"with --terrain, where elevation the store lacks is fetched from, after asking: a host's address, or a "+
 			"directory of its archives, which reaches no network at all")
 	f.StringVar(&renderOpts.routeView, "route-view", "flat",
-		"how the route panel sees the route: \"flat\" (default), from straight above, or \"3d\", in perspective from a "+
-			"camera in the sky, the map draped over the shape of the ground and the route lying on it. 3d draws the map "+
-			"here, so it needs --basemap "+tilemap.LocalProvider+", and it shapes the ground from the elevation, so it "+
-			"turns --terrain on, with its offer to fetch what the store lacks. The camera sees far beyond the route, out "+
-			"into the haze, and the map and elevation offered are for all of that ground")
+		"how the route panel sees the route: \"flat\" (default), from straight above; \"3d\", in perspective from a "+
+			"camera in the sky, the map draped over the shape of the ground and the route lying on it; or \"flyover\", "+
+			"a camera flying after the activity over that same ground, coming down from an overview of the whole route "+
+			"at the start and going back up to it at the end. 3d and flyover draw the map here, so they need --basemap "+
+			tilemap.LocalProvider+", and they shape the ground from the elevation, so they turn --terrain on, with its "+
+			"offer to fetch what the store lacks. The camera sees far beyond the route, out into the haze, and the map "+
+			"and elevation offered are for all of that ground. A flyover draws a picture a frame, so it renders far "+
+			"slower than the rest of the dashboard: about half a second a frame at 1920x1080")
 	f.StringVar(&renderOpts.routeHeading, "route-heading", "auto",
-		"with --route-view 3d, the compass bearing the camera looks along, in degrees, 0 looking north; auto takes "+
+		"with --route-view 3d, or a flyover's overview, the compass bearing the camera looks along, in degrees, 0 looking north; auto takes "+
 			"whichever bearing shows the route largest")
 	f.Float64Var(&renderOpts.routePitch, "route-pitch", 35,
-		"with --route-view 3d, how far below the horizontal the camera looks, in degrees, from 10 to 90 (straight down)")
+		"with --route-view 3d or flyover, how far below the horizontal the camera looks, in degrees, from 10 to 90 (straight down)")
 	f.Float64Var(&renderOpts.routeExaggeration, "route-exaggeration", 1,
-		"with --route-view 3d, how many times their height hills are drawn; 1 is true to life")
+		"with --route-view 3d or flyover, how many times their height hills are drawn; 1 is true to life")
+	f.Float64Var(&renderOpts.routeDistance, "route-distance", 800,
+		"with --route-view flyover, how far behind the activity the camera follows, in metres, from 100 to 20000")
+	f.DurationVar(&renderOpts.routeSmoothing, "route-camera-smoothing", 1500*time.Millisecond,
+		"with --route-view flyover, how much VIDEO time the camera's height is smoothed over as the ground rises and "+
+			"falls under the activity: 0 follows the ground exactly, which in hilly country bobs over every bank; "+
+			"longer glides over them")
 	f.StringVar(&renderOpts.basemapCache, "basemap-cache", "",
 		"directory to keep fetched --basemap imagery in (default: a fitdash folder under your user cache directory). "+
 			"Tuning a --highlight means rendering the same activity repeatedly, and without a cache every run re-fetches "+
@@ -534,10 +545,26 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 	if route3D != nil {
 		route3D.Air = rgbaOf(theme.Background)
+		if route3D.Flyover {
+			// The ground the flight sees, for the offers to fetch, from the
+			// panel's own planning; see offerBounds. A route that cannot be
+			// flown over offers the activity's own ground, and the panel
+			// draws it flat and says why.
+			flyoverGround = nil
+			if g, err := flightOffer(*route3D, track, timeline); err == nil {
+				flyoverGround = &g
+			}
+		}
 	}
 	basemap, err := resolveBasemap(cmd, theme, track, basemapLabelFaces(cmd, fonts, h))
 	if err != nil {
 		return err
+	}
+	if local, ok := basemap.(*tilemap.Local); ok && route3D != nil && route3D.Flyover {
+		// A flyover draws its tiles in parallel and stands their names on
+		// its pictures afterwards, each tile in faces of its own; see
+		// tilemap.Local.FreshLabels.
+		local.FreshLabels(func() tilemap.LabelFaces { return basemapLabelFaces(cmd, fonts.Fresh(), h) })
 	}
 	basemapDim := resolveBasemapDim(cmd)
 
@@ -1471,7 +1498,10 @@ func writeTerrainSummary(out io.Writer, l *tilemap.Local) {
 		return
 	}
 	line := fmt.Sprintf("terrain: %.0f%% of the map shaded", covered*100)
-	if interval > 0 {
+	if finest, _ := l.ContourRange(); finest > 0 && finest < interval {
+		// A flyover's tiles: finer contours the nearer the camera.
+		line += fmt.Sprintf(", contours every %g to %g m, finer nearer the camera, every fifth labelled", finest, interval)
+	} else if interval > 0 {
 		line += fmt.Sprintf(", contours every %g m, labelled every %g m", interval, 5*interval)
 	}
 	fmt.Fprintln(out, line)

@@ -252,6 +252,17 @@ func NewFaceCache() (*FaceCache, error) {
 	return &FaceCache{font: f, faces: map[int]font.Face{}}, nil
 }
 
+// Fresh is a cache over the same font with none of its faces: faces no one
+// else draws with. A face is not safe for two goroutines to draw with at
+// once, and a flyover draws its map's tiles in parallel; see
+// tilemap.Local.FreshLabels.
+func (c *FaceCache) Fresh() *FaceCache {
+	if c == nil {
+		return nil
+	}
+	return &FaceCache{font: c.font, faces: map[int]font.Face{}}
+}
+
 // face returns a face at px pixels, rounded to a whole pixel.
 //
 // Rounding is what makes the cache effective: a size derived from a fractional

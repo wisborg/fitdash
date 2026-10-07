@@ -196,6 +196,25 @@ default, takes the bearing that shows the route largest), and `--route-pitch` an
 fitdash morning.fit --basemap local --route-view 3d
 ```
 
+`--route-view flyover` flies a camera after the activity instead: it comes down from an
+overview of the whole route over the first few seconds, follows from behind and above,
+turning with the route's direction over a few seconds of video rather than with every
+switchback, and goes back up to the overview at the end. Names stand on the picture —
+places upright, streets and contour heights along their lines, read left to right
+whichever way the camera faces — and fade in and out as the ground nears. `--route-distance`
+says how far behind it follows (800 m by default), and `--route-camera-smoothing` how much
+video its height is smoothed over as the ground rises and falls under it: `0` follows the
+ground exactly, the default `1.5s` glides over the banks a road passes. Contour lines are
+left out unless `--contours` is given: from a moving camera the shading already shows the
+hills, and lines drawn from a different zoom every few seconds only add movement. A flyover draws a
+picture every frame, so it is far slower than the rest of the dashboard — about half a
+second a frame at 1920×1080 — and it asks for the map and elevation of all the ground it
+sees, which is more than the route's.
+
+```
+fitdash morning.fit --basemap local --route-view flyover --video-duration 45s
+```
+
 ## What it is
 
 There is no input video. fitdash generates every pixel of every frame from the

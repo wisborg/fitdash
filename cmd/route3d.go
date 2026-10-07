@@ -26,19 +26,26 @@ import (
 func resolveRoute3D(cmd *cobra.Command) (*panel.Route3D, error) {
 	switch renderOpts.routeView {
 	case "flat":
-		for _, name := range []string{"route-heading", "route-pitch", "route-exaggeration"} {
+		for _, name := range []string{"route-heading", "route-pitch", "route-exaggeration", "route-distance", "route-camera-smoothing"} {
 			if cmd.Flags().Changed(name) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "--%s is only read by --route-view 3d; the route is drawn flat\n", name)
+				fmt.Fprintf(cmd.ErrOrStderr(), "--%s is only read by --route-view 3d or flyover; the route is drawn flat\n", name)
 				break
 			}
 		}
 		return nil, nil
 	case "3d":
+		for _, name := range []string{"route-distance", "route-camera-smoothing"} {
+			if cmd.Flags().Changed(name) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "--%s is only read by --route-view flyover; a 3d route is one picture\n", name)
+				break
+			}
+		}
+	case "flyover":
 	default:
-		return nil, fmt.Errorf("render: --route-view %q is invalid; use flat or 3d", renderOpts.routeView)
+		return nil, fmt.Errorf("render: --route-view %q is invalid; use flat, 3d or flyover", renderOpts.routeView)
 	}
 	if renderOpts.basemap != tilemap.LocalProvider {
-		return nil, fmt.Errorf("render: --route-view 3d draws the map here, shaped by the elevation beside your map store, so it needs --basemap %s", tilemap.LocalProvider)
+		return nil, fmt.Errorf("render: --route-view %s draws the map here, shaped by the elevation beside your map store, so it needs --basemap %s", renderOpts.routeView, tilemap.LocalProvider)
 	}
 	cfg, err := route3DConfig()
 	if err != nil {
@@ -53,8 +60,23 @@ func resolveRoute3D(cmd *cobra.Command) (*panel.Route3D, error) {
 	if !(r.Exaggeration > 0 && r.Exaggeration <= 10) {
 		return nil, fmt.Errorf("render: --route-exaggeration %g is invalid; give how many times their height hills are drawn, more than 0 and at most 10", r.Exaggeration)
 	}
+	if r.Flyover {
+		if !(r.Distance >= 100 && r.Distance <= 20000) {
+			return nil, fmt.Errorf("render: --route-distance %g is invalid; give how far behind the activity the camera follows, in metres, from 100 to 20000", r.Distance)
+		}
+		if r.Rise < 0 {
+			return nil, fmt.Errorf("render: --route-camera-smoothing %s is invalid; give 0 or a positive duration", r.Rise)
+		}
+	}
 	if !cmd.Flags().Changed("terrain") {
 		renderOpts.terrain = true
+	}
+	// A flyover leaves contour lines out unless asked for by name: seen
+	// from a few hundred metres up, the lines of one hillside are drawn
+	// from a different zoom's tiles a few seconds later, at a different
+	// interval, and the ground's shading already says where the hills are.
+	if r.Flyover && !cmd.Flags().Changed("contours") {
+		renderOpts.contours = false
 	}
 	return r, nil
 }
@@ -73,6 +95,16 @@ var route3DAspects = []float64{0.25, 0.5, 1, 2, 4}
 // The camera is the panel's own, from panel.Route3D.Camera, so the ground
 // offered is the ground drawn.
 func offerBounds(track *fitactivity.Track, padKM float64) (slice.Bounds, error) {
+	if renderOpts.routeView == "flyover" {
+		b, err := activityBounds(track, padKM)
+		if err != nil {
+			return b, err
+		}
+		if flyoverGround == nil {
+			return b, nil
+		}
+		return union(b, *flyoverGround), nil
+	}
 	if renderOpts.routeView != "3d" {
 		return activityBounds(track, padKM)
 	}
@@ -102,6 +134,9 @@ func offerBounds(track *fitactivity.Track, padKM float64) (slice.Bounds, error) 
 // ground offered and the ground drawn come from the same camera.
 func route3DConfig() (panel.Route3D, error) {
 	r := panel.Route3D{Pitch: renderOpts.routePitch, Exaggeration: renderOpts.routeExaggeration, AutoHeading: renderOpts.routeHeading == "auto"}
+	if renderOpts.routeView == "flyover" {
+		r.Flyover, r.Distance, r.Rise = true, renderOpts.routeDistance, renderOpts.routeSmoothing
+	}
 	if !r.AutoHeading {
 		h, err := strconv.ParseFloat(renderOpts.routeHeading, 64)
 		if err != nil || math.IsNaN(h) || math.IsInf(h, 0) {
@@ -110,6 +145,38 @@ func route3DConfig() (panel.Route3D, error) {
 		r.Heading = math.Mod(math.Mod(h, 360)+360, 360)
 	}
 	return r, nil
+}
+
+// flyoverGround is the ground a flyover sees, worked out by flightOffer once
+// the render's timeline exists, for offerBounds: the offers are made while
+// the basemap is opened, and they ask about all of it.
+var flyoverGround *slice.Bounds
+
+// flightOffer is the ground the flight r describes sees, over every shape
+// of panel the layout might give it -- planned by the panel's own
+// Route3D.Flight, so the ground offered is the ground drawn.
+func flightOffer(r panel.Route3D, track *fitactivity.Track, tl panel.Timeline) (slice.Bounds, error) {
+	fixes := route.FromTrack(track, len(track.Samples)+1)
+	drawn := route.FromTrack(track, 400)
+	var b slice.Bounds
+	for i, aspect := range route3DAspects {
+		cams, err := r.Flight(fixes, drawn, tl, aspect, nil)
+		if err != nil {
+			return b, err
+		}
+		g := panel.FlightGround(cams, aspect)
+		if i == 0 {
+			b = g
+		} else {
+			b = union(b, g)
+		}
+	}
+	return b, nil
+}
+
+// union is the box round a and b.
+func union(a, b slice.Bounds) slice.Bounds {
+	return slice.Bounds{West: math.Min(a.West, b.West), South: math.Min(a.South, b.South), East: math.Max(a.East, b.East), North: math.Max(a.North, b.North)}
 }
 
 // rgbaOf is a theme colour as the opaque RGBA a picture's sky is drawn in.

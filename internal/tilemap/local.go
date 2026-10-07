@@ -87,7 +87,20 @@ type Local struct {
 	// contours at; both 0 before a view is shaded.
 	terrainCovered  float64
 	contourInterval float64
+	// finestContours is the narrowest interval any view drew contours at:
+	// a flyover's tiles draw finer ones the nearer the camera they are.
+	finestContours float64
+
+	// freshLabels makes label faces no one else draws with, for a flight's
+	// tiles; see FreshLabels. Nil draws a flight's tiles without names.
+	freshLabels func() LabelFaces
 }
+
+// FreshLabels gives the map a way to make label faces of its own, as many
+// times as it asks: a flight draws its tiles in parallel and stands their
+// names on its pictures afterwards, and a font face is not safe for two to
+// draw with at once. Without it a flight is drawn without names.
+func (l *Local) FreshLabels(fresh func() LabelFaces) { l.freshLabels = fresh }
 
 // Terrain is what a local map is shaded with: the elevation, and whether
 // contour lines are drawn from it as well as shading.
@@ -333,6 +346,9 @@ func (l *Local) record(res *osm.Result) {
 			l.terrainCovered = res.TerrainCovered
 		}
 		l.contourInterval = max(l.contourInterval, res.ContourInterval)
+		if iv := res.ContourInterval; iv > 0 && (l.finestContours == 0 || iv < l.finestContours) {
+			l.finestContours = iv
+		}
 		if n := res.TerrainNotice; n != "" && !slices.Contains(l.notices, n) {
 			l.notices = append(l.notices, n)
 		}
@@ -403,6 +419,14 @@ func (l *Local) TerrainCoverage() (covered, contourInterval float64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.terrainCovered, l.contourInterval
+}
+
+// ContourRange is the narrowest and widest intervals any view drew
+// contours at, the same for a map of one interval; 0 for both before any.
+func (l *Local) ContourRange() (finest, widest float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.finestContours, l.contourInterval
 }
 
 // Name identifies this provider AND the source it draws from, in the shape

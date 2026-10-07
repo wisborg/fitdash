@@ -45,6 +45,15 @@ func (RoutePanel) Accepts(ctx *Context) bool {
 // basemap note says why, so the render summary does: a 3d render that came
 // out flat with nothing said would look like a fault.
 func (RoutePanel) Prepare(ctx *Context, box Box) Painter {
+	if ctx.Route3D != nil && ctx.Basemap != nil && ctx.Route3D.Flyover {
+		pf, why, ok := prepareFlyover(ctx, box)
+		if ok {
+			return pf
+		}
+		p := prepareFlat(ctx, box)
+		p.mapNote = joinNotes("drawn flat: "+why, p.mapNote)
+		return p
+	}
 	if ctx.Route3D != nil && ctx.Basemap != nil {
 		p3, why, ok := prepare3D(ctx, box)
 		if ok {

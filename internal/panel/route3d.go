@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"time"
 
 	"github.com/wisborg/osmbase/perspective"
 	osm "github.com/wisborg/osmbase/render"
@@ -28,6 +29,15 @@ type Route3D struct {
 	Pitch, FOV float64
 	// Exaggeration is how many times their height hills are drawn.
 	Exaggeration float64
+	// Flyover flies a camera over the route, following the activity, in
+	// place of one picture of the whole route; see flyoverPainter. Distance
+	// is how far behind the activity it follows, in metres, and Rise how
+	// much video the height it follows is averaged over, 0 following the
+	// ground exactly. Heading, AutoHeading and FOV frame the overview the
+	// flight comes down from and goes back up to.
+	Flyover  bool
+	Distance float64
+	Rise     time.Duration
 	// Air is the colour of the sky and of the haze the distance fades
 	// into: the theme's background, set by the command as it sets the
 	// local map's inks from the theme, so the map dissolves into the frame
