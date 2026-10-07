@@ -353,7 +353,9 @@ func gradientAngleFor(grade float64) float64 {
 // `%+.1f%%`, videofx's own format string for the identical figure, verbatim,
 // so the same instant of the same activity reads identically in both
 // programs (see the type doc comment's "division of labour" section).
-func formatGrade(grade float64) string { return fmt.Sprintf("%+.1f%%", grade*100) }
+func formatGrade(grade float64) string {
+	return fmt.Sprintf("%+.1f%%", unsignedZero(grade*100, 1))
+}
 
 type gradientPainter struct {
 	box Box

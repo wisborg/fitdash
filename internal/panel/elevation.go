@@ -1536,7 +1536,27 @@ func (p *elevationPainter) drawActiveMarks(c *Canvas, f Frame) {
 // profile's labels are read at a glance, and a tenth of a metre is below the
 // noise of the barometric reading behind them.
 func formatElevation(m float64, u units.Unit) string {
-	return fmt.Sprintf("%.0f %s", u.FromSI(m), u.Name)
+	return fmt.Sprintf("%.0f %s", unsignedZero(u.FromSI(m), 0), u.Name)
+}
+
+// unsignedZero is v as it will be written with the given number of
+// decimals, with the sign dropped from a figure that rounds to zero. fmt
+// keeps the sign of a negative value it rounds away: a profile dipping a few
+// decimetres below sea level was labelled "-0 m", and a gradient falling by
+// four thousandths of a percent read "-0.0%" -- a figure saying the ground is
+// below zero, or falling, by nothing. A sign belongs to a figure that
+// survives the rounding.
+//
+// The figure comes back already rounded, so fmt has nothing left to round:
+// it rounds half to even where math.Round rounds half away from zero, and
+// handed -0.5 it would still have written "-0".
+func unsignedZero(v float64, decimals int) float64 {
+	scale := math.Pow(10, float64(decimals))
+	r := math.Round(v*scale) / scale
+	if r == 0 {
+		return 0
+	}
+	return r
 }
 
 // formatDistance renders m metres in u's distance unit, or below one of it in
