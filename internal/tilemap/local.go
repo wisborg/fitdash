@@ -6,6 +6,7 @@ import (
 	"golang.org/x/image/font"
 	"image"
 	"image/color"
+	"math"
 	"slices"
 	"sync"
 
@@ -632,13 +633,39 @@ func StoreShortfallAreas(root string, areas []acquire.Area) (Shortfall, error) {
 	if err != nil {
 		return Shortfall{}, fmt.Errorf("tilemap: opening source %s of the local map store: %w", m.ID, err)
 	}
-	var s Shortfall
+	// Each tile counted once: the areas overlap by their margins, and the
+	// flight is planned for several shapes of panel, so the same tile is in
+	// many of them.
+	tiles := map[slice.TileRef]bool{}
 	for _, a := range areas {
-		held, wanted, err := src.HeldAt(a.Bounds, fetch.DrawnZoom(src, a.MaxZoom))
+		z := fetch.DrawnZoom(src, a.MaxZoom)
+		cells, err := slice.CellsForZoom(a.Bounds, z)
+		if err != nil {
+			return Shortfall{}, err
+		}
+		for _, c := range cells {
+			tiles[slice.TileRef{Z: z, X: c.X, Y: c.Y}] = true
+		}
+	}
+	var s Shortfall
+	for t := range tiles {
+		held, _, err := src.HeldAt(tileArea(t), t.Z)
 		if err != nil {
 			return Shortfall{}, fmt.Errorf("tilemap: measuring what %s holds for this flight: %w", root, err)
 		}
-		s.Cells, s.Held = s.Cells+wanted, s.Held+held
+		s.Cells++
+		s.Held += held
 	}
 	return s, nil
+}
+
+// tileArea is tile t's ground, a hair inside its edges so that it is the
+// one tile and none of its neighbours.
+func tileArea(t slice.TileRef) slice.Bounds {
+	n := math.Exp2(float64(t.Z))
+	west, east := float64(t.X)/n*360-180, float64(t.X+1)/n*360-180
+	north := math.Atan(math.Sinh(math.Pi*(1-2*float64(t.Y)/n))) * 180 / math.Pi
+	south := math.Atan(math.Sinh(math.Pi*(1-2*float64(t.Y+1)/n))) * 180 / math.Pi
+	dx, dy := (east-west)/1000, (north-south)/1000
+	return slice.Bounds{West: west + dx, East: east - dx, South: south + dy, North: north - dy}
 }

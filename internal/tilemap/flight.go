@@ -88,7 +88,13 @@ func (l *Local) Flight(ctx context.Context, region slice.Bounds, exaggeration fl
 	b := osm.Bounds{West: region.West, South: region.South, East: region.East, North: region.North}
 	o := l.opts
 	o.LiftLabels = true
-	areas, err := osm.MeasureAreas(ctx, l.source, o, b, 15)
+	// Measured as deep as a few thousand tiles of the flight's ground
+	// allow: a run's whole ground at street detail, a flight's at the detail
+	// of a country. Measured at 15 over a flight from Copenhagen to Bangkok
+	// it was millions of tiles and ran out of time, and the flight was drawn
+	// flat. An area the measure misses is ranked by what each tile holds of
+	// it, as any one map ranks it.
+	areas, err := osm.MeasureAreas(ctx, l.source, o, b, affordableZoom(region, 15))
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: measuring the map's areas over the flight: %w", err)
 	}
@@ -106,7 +112,11 @@ func (l *Local) Flight(ctx context.Context, region slice.Bounds, exaggeration fl
 		// What the pictures owe the elevation, known before any is drawn:
 		// the credit is fitted to the panel once, before the first frame,
 		// and a tile only says what it owes once it has been drawn.
-		short, _, err := l.terrain.Credit(region, flightMaxZoom+1)
+		// At as deep a zoom as a few thousand tiles of the ground allow, as
+		// the areas are measured: asked at the flight's finest, 18, over a
+		// flight across a continent, the credit enumerated billions of
+		// tiles and never came back.
+		short, _, err := l.terrain.Credit(region, affordableZoom(region, flightMaxZoom+1))
 		if err != nil {
 			return nil, fmt.Errorf("tilemap: working out what the flight owes the elevation in %s: %w", l.terrain.Root(), err)
 		}
@@ -294,6 +304,24 @@ func (f *Flight) Leveled() bool { return f.leveled }
 
 // TilesDrawn is how many tiles the flight has drawn so far.
 func (f *Flight) TilesDrawn() int { return f.tiles.Drawn() }
+
+// maxMeasuredTiles is the most tiles of a flight's ground Local.Flight reads
+// to measure the map's areas over it, or to work out what it owes the
+// elevation.
+const maxMeasuredTiles = 4096
+
+// affordableZoom is the deepest zoom, no deeper than z, at which region is
+// at most maxMeasuredTiles tiles: a run's whole ground at street detail, a
+// flight's at the detail of a country.
+func affordableZoom(region slice.Bounds, z uint8) uint8 {
+	for z > 0 {
+		if n, err := slice.CellCount(region, z); err == nil && n <= maxMeasuredTiles {
+			break
+		}
+		z--
+	}
+	return z
+}
 
 // flightOfferFrames is the most frames FlightAreas looks through: the
 // cameras of neighbouring frames see nearly the same ground, and one in so
