@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"image/color"
 	"math"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/osmbase/acquire"
+	"github.com/wisborg/osmbase/perspective"
 	"github.com/wisborg/osmbase/slice"
 
 	"github.com/wisborg/fitdash/internal/panel"
@@ -149,20 +152,29 @@ func route3DConfig() (panel.Route3D, error) {
 
 // flyoverGround is the ground a flyover sees, worked out by flightOffer once
 // the render's timeline exists, for offerBounds: the offers are made while
-// the basemap is opened, and they ask about all of it.
-var flyoverGround *slice.Bounds
+// the basemap is opened, and they ask about all of it. flyoverAreas is the
+// same ground as the areas a fetch covers, each at the detail it is seen
+// at; the offers under --route-view flyover ask about those.
+var (
+	flyoverGround *slice.Bounds
+	flyoverAreas  []acquire.Area
+)
 
 // flightOffer is the ground the flight r describes sees, over every shape
 // of panel the layout might give it -- planned by the panel's own
-// Route3D.Flight, so the ground offered is the ground drawn.
-func flightOffer(r panel.Route3D, track *fitactivity.Track, tl panel.Timeline) (slice.Bounds, error) {
+// Route3D.Flight, so the ground offered is the ground drawn -- as the box
+// round it and as the areas a fetch of it covers, each at the detail it is
+// seen at. A panel of each shape is taken as large as the frame of w by h
+// pixels holds, the detail a camera needs growing with its picture.
+func flightOffer(ctx context.Context, r panel.Route3D, track *fitactivity.Track, tl panel.Timeline, w, h int) (slice.Bounds, []acquire.Area, error) {
 	fixes := route.FromTrack(track, len(track.Samples)+1)
 	drawn := route.FromTrack(track, 400)
 	var b slice.Bounds
+	var areas []acquire.Area
 	for i, aspect := range route3DAspects {
 		cams, err := r.Flight(fixes, drawn, tl, aspect, nil)
 		if err != nil {
-			return b, err
+			return b, nil, err
 		}
 		g := panel.FlightGround(cams, aspect)
 		if i == 0 {
@@ -170,8 +182,18 @@ func flightOffer(r panel.Route3D, track *fitactivity.Track, tl panel.Timeline) (
 		} else {
 			b = union(b, g)
 		}
+		pw, ph := float64(w), float64(w)/aspect
+		if ph > float64(h) {
+			pw, ph = float64(h)*aspect, float64(h)
+		}
+		o := perspective.Options{Width: max(1, int(pw)), Height: max(1, int(ph))}
+		a, err := tilemap.FlightAreas(ctx, cams, o, (g.South+g.North)/2)
+		if err != nil {
+			return b, nil, err
+		}
+		areas = append(areas, a...)
 	}
-	return b, nil
+	return b, areas, nil
 }
 
 // union is the box round a and b.

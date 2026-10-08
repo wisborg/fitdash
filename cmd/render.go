@@ -556,9 +556,9 @@ func runRender(cmd *cobra.Command, args []string) error {
 			// panel's own planning; see offerBounds. A route that cannot be
 			// flown over offers the activity's own ground, and the panel
 			// draws it flat and says why.
-			flyoverGround = nil
-			if g, err := flightOffer(*route3D, track, timeline); err == nil {
-				flyoverGround = &g
+			flyoverGround, flyoverAreas = nil, nil
+			if g, areas, err := flightOffer(fetchContext(cmd), *route3D, track, timeline, w, h); err == nil {
+				flyoverGround, flyoverAreas = &g, areas
 			}
 		}
 	}
@@ -1061,7 +1061,11 @@ func resolveLocalBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivi
 	// data in it, so an offer made afterwards would never reach the case it
 	// most exists for -- the first render on a machine that has never
 	// fetched. See offerToFillTheStore.
-	offerToFillTheStore(cmd, store, track)
+	if renderOpts.routeView == "flyover" && len(flyoverAreas) > 0 {
+		offerFlightMap(cmd, store, flyoverAreas)
+	} else {
+		offerToFillTheStore(cmd, store, track)
+	}
 
 	relief, err := resolveTerrain(cmd, store, track)
 	if err != nil {
@@ -1106,7 +1110,11 @@ func resolveTerrain(cmd *cobra.Command, mapStore string, track *fitactivity.Trac
 	if root == "" {
 		root = terrain.Root(mapStore)
 	}
-	offerTerrain(cmd, root, track)
+	if renderOpts.routeView == "flyover" && len(flyoverAreas) > 0 {
+		offerFlightTerrain(cmd, root, flyoverAreas)
+	} else {
+		offerTerrain(cmd, root, track)
+	}
 	ts, err := terrain.Open(root)
 	if errors.Is(err, terrain.ErrNoTerrain) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "terrain: %s holds no elevation for this activity, so the map is drawn unshaded\n", root)

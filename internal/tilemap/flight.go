@@ -8,6 +8,7 @@ import (
 	"math"
 	"sync"
 
+	"github.com/wisborg/osmbase/acquire"
 	"github.com/wisborg/osmbase/perspective"
 	osm "github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
@@ -16,8 +17,11 @@ import (
 // The zooms a flight's pyramid draws tiles at. A tile is perspective.TileSize
 // pixels, twice a slippy-map tile, so a zoom 17 tile carries zoom 18's
 // detail: a house and its garden from a camera a few hundred metres off.
+// The coarsest is a continent's: a flight's overview takes in thousands of
+// kilometres, and a pyramid stopping at 11, as the first one did, drew it
+// from millions of zoom-11 tiles; a run never sees ground that far off.
 const (
-	flightMinZoom = 11
+	flightMinZoom = 3
 	flightMaxZoom = 17
 )
 
@@ -290,3 +294,54 @@ func (f *Flight) Leveled() bool { return f.leveled }
 
 // TilesDrawn is how many tiles the flight has drawn so far.
 func (f *Flight) TilesDrawn() int { return f.tiles.Drawn() }
+
+// flightOfferFrames is the most frames FlightAreas looks through: the
+// cameras of neighbouring frames see nearly the same ground, and one in so
+// many of a long flight is enough to know which.
+const flightOfferFrames = 300
+
+// FlightAreas is the ground a flight's cameras see and the detail they see
+// it at, as the areas a fetch of the map has to cover: what the frames of
+// the flight would be drawn from, worked out as their pictures would draw
+// them, over level ground -- the elevation may be fetched only after this
+// is asked -- in pictures of o's size. lat is the middle of the flight, which
+// fixes the lattices the ground is laid on, as Local.Flight's does.
+//
+// Each tile of the pyramid a frame is drawn from is an area: its ground,
+// with an eighth of a tile more each side for the strokes and the shading
+// that reach into it from beyond, at the map zoom it is drawn from -- one
+// deeper than its own, a pyramid tile being 512 pixels.
+func FlightAreas(ctx context.Context, cams []perspective.Camera, o perspective.Options, lat float64) ([]acquire.Area, error) {
+	if len(cams) == 0 {
+		return nil, nil
+	}
+	f := &Flight{lat: lat, heights: perspective.Level, leveled: true, lattices: map[int]perspective.Lattice{}}
+	step := max(1, len(cams)/flightOfferFrames)
+	var frames []int
+	for i := 0; i < len(cams); i += step {
+		frames = append(frames, i)
+	}
+	if frames[len(frames)-1] != len(cams)-1 {
+		frames = append(frames, len(cams)-1)
+	}
+	seen, err := perspective.TilesSeen(ctx, frames, func(i int) (perspective.Scene, perspective.Camera, perspective.Options, error) {
+		s, err := f.scene(cams[i], o)
+		return s, cams[i], o, err
+	}, flightMinZoom, flightMaxZoom)
+	if err != nil {
+		return nil, fmt.Errorf("tilemap: working out the ground a flight sees: %w", err)
+	}
+	areas := make([]acquire.Area, len(seen))
+	for i, t := range seen {
+		n := math.Exp2(float64(t.Z))
+		west, east := float64(t.X)/n*360-180, float64(t.X+1)/n*360-180
+		north := math.Atan(math.Sinh(math.Pi*(1-2*float64(t.Y)/n))) * 180 / math.Pi
+		south := math.Atan(math.Sinh(math.Pi*(1-2*float64(t.Y+1)/n))) * 180 / math.Pi
+		dx, dy := (east-west)/8, (north-south)/8
+		areas[i] = acquire.Area{
+			Bounds:  slice.Bounds{West: math.Max(-180, west-dx), East: math.Min(180, east+dx), South: math.Max(-85, south-dy), North: math.Min(85, north+dy)},
+			MaxZoom: t.Z + 1,
+		}
+	}
+	return areas, nil
+}

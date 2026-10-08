@@ -9,6 +9,8 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/wisborg/osmbase/acquire"
+	"github.com/wisborg/osmbase/fetch"
 	osm "github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
 	"github.com/wisborg/osmbase/terrain"
@@ -603,4 +605,40 @@ func (l *Local) Outdoors() bool { return l.outdoors }
 func OutdoorsInks() (foreground, dim, accent, highlight color.RGBA) {
 	o := osm.OutdoorsOverlay()
 	return o.Foreground, o.Dim, o.Accent, o.Highlight
+}
+
+// StoreShortfallAreas is StoreShortfall for ground given as areas, each at
+// the map zoom it is drawn at -- a flight's, from FlightAreas. It reads the
+// disk and nothing else. Cells and Held count map tiles rather than cells:
+// the tiles of each area at its zoom, as deep as the store's source can
+// hold, and those it holds.
+func StoreShortfallAreas(root string, areas []acquire.Area) (Shortfall, error) {
+	store, err := slice.Open(root)
+	if err != nil {
+		return Shortfall{Empty: true}, nil
+	}
+	sources, err := store.Sources()
+	if err != nil {
+		return Shortfall{}, fmt.Errorf("tilemap: reading the local map store %s: %w", root, err)
+	}
+	if len(sources) == 0 {
+		return Shortfall{Empty: true}, nil
+	}
+	m, err := newestSource(store, root)
+	if err != nil {
+		return Shortfall{}, err
+	}
+	src, err := store.Source(m.ID)
+	if err != nil {
+		return Shortfall{}, fmt.Errorf("tilemap: opening source %s of the local map store: %w", m.ID, err)
+	}
+	var s Shortfall
+	for _, a := range areas {
+		held, wanted, err := src.HeldAt(a.Bounds, fetch.DrawnZoom(src, a.MaxZoom))
+		if err != nil {
+			return Shortfall{}, fmt.Errorf("tilemap: measuring what %s holds for this flight: %w", root, err)
+		}
+		s.Cells, s.Held = s.Cells+wanted, s.Held+held
+	}
+	return s, nil
 }

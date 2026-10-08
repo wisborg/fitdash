@@ -992,7 +992,7 @@ func offerToFillTheStore(cmd *cobra.Command, root string, track *fitactivity.Tra
 		return
 	}
 
-	if err := fillStore(cmd, root, area); err != nil {
+	if err := fillStore(cmd, root, acquire.Request{Bounds: area, MaxZoom: acquire.AutoZoom}); err != nil {
 		// Reported, not returned. The user asked for a video; a download that
 		// failed is a reason to draw a worse map, not a reason to produce
 		// nothing. The render's own basemap summary says what got drawn.
@@ -1017,7 +1017,7 @@ func offerToFillTheStore(cmd *cobra.Command, root string, track *fitactivity.Tra
 // function renders a fetchReport, whose padding figure and flag-derived
 // fields belong to a command whose flags were never registered in this
 // process; printing it here would state a --pad the user never passed.
-func fillStore(cmd *cobra.Command, root string, area slice.Bounds) error {
+func fillStore(cmd *cobra.Command, root string, req acquire.Request) error {
 	errw := cmd.ErrOrStderr()
 
 	archive, err := openFetchArchive(errw)
@@ -1049,8 +1049,7 @@ func fillStore(cmd *cobra.Command, root string, area slice.Bounds) error {
 		display, bar = newFetchBar(errw, plan)
 		fetched = true
 	}
-	res, err := fetch.Fill(fetchContext(cmd), root, archive.Archive, credit,
-		acquire.Request{Bounds: area, MaxZoom: acquire.AutoZoom}, report,
+	res, err := fetch.Fill(fetchContext(cmd), root, archive.Archive, credit, req, report,
 		func(pr acquire.Progress) { bar.Set(pr.DoneTransfer) })
 	if fetched {
 		bar.Done()
@@ -1148,7 +1147,7 @@ func offerTerrain(cmd *cobra.Command, root string, track *fitactivity.Track) {
 		fmt.Fprintf(errw, "\n         no elevation fetched\n")
 		return
 	}
-	if err := fillTerrain(cmd, root, area, depth.Max, source); err != nil {
+	if err := fillTerrain(cmd, root, terrainArea{bounds: area, mapZoom: depth.Max}, source); err != nil {
 		fmt.Fprintf(errw, "terrain: %v\n", err)
 		fmt.Fprintf(errw, "         carrying on with what the terrain store holds\n")
 	}
@@ -1157,7 +1156,15 @@ func offerTerrain(cmd *cobra.Command, root string, track *fitactivity.Track) {
 // fillTerrain carries out the fetch offerTerrain just got consent for: the
 // sequence is osmbase's terrain.Fill, and what is here is fitdash's voice
 // around it, as fillStore is for the map.
-func fillTerrain(cmd *cobra.Command, root string, area slice.Bounds, mapZoom uint8, source string) error {
+// terrainArea is the ground a terrain fetch covers: one box at one map
+// zoom, or areas each at their own.
+type terrainArea struct {
+	bounds  slice.Bounds
+	mapZoom uint8
+	areas   []acquire.Area
+}
+
+func fillTerrain(cmd *cobra.Command, root string, area terrainArea, source string) error {
 	errw := cmd.ErrOrStderr()
 	l, err := terrain.Locate(fetchContext(cmd), source, func(index string) {
 		fmt.Fprintf(errw, "terrain: reading the list of elevation archives at %s\n", index)
@@ -1170,8 +1177,14 @@ func fillTerrain(cmd *cobra.Command, root string, area slice.Bounds, mapZoom uin
 		bar     *progress.Bar
 		fetched bool
 	)
-	res, err := terrain.Fill(fetchContext(cmd), l, root, area, mapZoom,
-		func(src string) (*fetch.Archive, error) { return fetch.Open(src, fetch.Options{}) },
+	open := func(src string) (*fetch.Archive, error) { return fetch.Open(src, fetch.Options{}) }
+	fill := func(report func(*terrain.Plan), prog func(acquire.Progress)) (terrain.Result, error) {
+		if len(area.areas) > 0 {
+			return terrain.FillAreas(fetchContext(cmd), l, root, area.areas, open, report, prog)
+		}
+		return terrain.Fill(fetchContext(cmd), l, root, area.bounds, area.mapZoom, open, report, prog)
+	}
+	res, err := fill(
 		func(p *terrain.Plan) {
 			if p.Empty() {
 				fmt.Fprintf(errw, "terrain: nothing more to fetch for this activity\n")
@@ -1201,4 +1214,102 @@ func btoi(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// offerFlightMap is offerToFillTheStore for a flyover: the ground asked
+// about is the areas the flight's cameras see, each at the detail they see
+// it at -- a corridor along the route, deep under a low camera and shallow
+// under a high one -- rather than one box round all of it at one depth,
+// which for a long route asks for far more than is drawn, and for a flight
+// across a continent for a choice between street detail over a quarter of
+// it and the whole world too coarse to fly over. See tilemap.FlightAreas.
+//
+// The rules about asking are offerToFillTheStore's: measured from the disk,
+// the host named, consent as fetch.Consent has it.
+func offerFlightMap(cmd *cobra.Command, root string, areas []acquire.Area) {
+	errw := cmd.ErrOrStderr()
+	short, err := tilemap.StoreShortfallAreas(root, areas)
+	if err != nil || (!short.Empty && short.Held >= short.Cells) {
+		return
+	}
+	deepest := uint8(0)
+	for _, a := range areas {
+		deepest = max(deepest, a.MaxZoom)
+	}
+	if short.Empty {
+		fmt.Fprintf(errw, "\nbasemap: the flyover sees the ground along the route, the nearest of it at zoom %d, and %s holds no map data yet.\n", deepest, root)
+	} else {
+		fmt.Fprintf(errw, "\nbasemap: the flyover sees the ground along the route, the nearest of it at zoom %d, and %s holds %d of the %d map tiles it is drawn from.\n",
+			deepest, root, short.Held, short.Cells)
+	}
+	source := basemapFetchOpts.source
+	if source == "" {
+		source = tilemap.DefaultArchive
+	}
+	fmt.Fprintf(errw, "         Fetching the rest contacts %s, which learns which\n", hostOf(source))
+	fmt.Fprintf(errw, "         parts of the map you asked about. Afterwards, rendering contacts nobody.\n")
+	consent := fetch.Consent{
+		Yes:        basemapFetchOpts.yes,
+		In:         cmd.InOrStdin(),
+		Answerable: func() bool { return stdinIsATerminal(cmd) },
+	}
+	switch consent.Ask(errw, "Fetch it now? [y/N] ") {
+	case fetch.Accepted:
+	case fetch.Unattended:
+		fmt.Fprintf(errw, "         nothing is attached to answer, so nothing was fetched; pass --yes to fetch without asking\n")
+		return
+	case fetch.NoAnswer:
+		fmt.Fprintf(errw, "\n         no answer, so nothing was fetched\n")
+		return
+	default:
+		fmt.Fprintf(errw, "\n         not fetched\n")
+		return
+	}
+	if err := fillStore(cmd, root, acquire.Request{Areas: areas, MaxZoom: acquire.AutoZoom}); err != nil {
+		fmt.Fprintf(errw, "basemap: %v\n", err)
+		fmt.Fprintf(errw, "         carrying on without it\n")
+	}
+}
+
+// offerFlightTerrain is offerTerrain for a flyover, over the areas its
+// cameras see; see offerFlightMap.
+func offerFlightTerrain(cmd *cobra.Command, root string, areas []acquire.Area) {
+	errw := cmd.ErrOrStderr()
+	short, lacking := terrain.MeasureAreas(root, areas)
+	if !lacking {
+		return
+	}
+	if short.Empty {
+		fmt.Fprintf(errw, "\nterrain: %s holds no elevation yet, to shape the ground the flyover sees.\n", root)
+	} else {
+		fmt.Fprintf(errw, "\nterrain: %s holds %d of the %d elevation tiles the flyover's ground needs.\n", root, short.Held, short.Wanted)
+	}
+	source := renderOpts.terrainSource
+	if strings.Contains(source, "://") {
+		fmt.Fprintf(errw, "         Fetching it contacts %s, which learns which\n", hostOf(source))
+		fmt.Fprintf(errw, "         parts of the map you asked about. Afterwards, rendering contacts nobody.\n")
+	} else {
+		fmt.Fprintf(errw, "         It would be copied from %s, contacting nobody.\n", source)
+	}
+	consent := fetch.Consent{
+		Yes:        basemapFetchOpts.yes,
+		In:         cmd.InOrStdin(),
+		Answerable: func() bool { return stdinIsATerminal(cmd) },
+	}
+	switch consent.Ask(errw, "Fetch the elevation now? [y/N] ") {
+	case fetch.Accepted:
+	case fetch.Unattended:
+		fmt.Fprintf(errw, "         nothing is attached to answer, so no elevation was fetched; pass --yes to fetch without asking\n")
+		return
+	case fetch.NoAnswer:
+		fmt.Fprintf(errw, "\n         no answer, so no elevation was fetched\n")
+		return
+	default:
+		fmt.Fprintf(errw, "\n         no elevation fetched\n")
+		return
+	}
+	if err := fillTerrain(cmd, root, terrainArea{areas: areas}, source); err != nil {
+		fmt.Fprintf(errw, "terrain: %v\n", err)
+		fmt.Fprintf(errw, "         carrying on with what the terrain store holds\n")
+	}
 }

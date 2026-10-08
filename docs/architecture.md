@@ -1547,9 +1547,17 @@ exactly bobs over every bank in hilly country; one smoothed too long sinks into 
 Which is right depends on the ground, so it is a flag.
 
 The same planning frames the fetch offer, before the layout exists, at the range of panel
-shapes the 3d offer uses: the ground offered is the ground the flight sees. That ground is a
-box round every camera's view, which for a long route is far more than the corridor the
-chase camera flies over; an offer by cell along the corridor would be smaller.
+shapes the 3d offer uses: the ground offered is the ground the flight sees, at the detail
+it sees it. A box round every camera's view at one depth was the first offer, and for a
+long route it asked for far more than is drawn; for a flight across a continent it could
+only choose between street detail over a quarter of it and the whole world too coarse to
+fly over. So the offer draws a few hundred of the frames small, over level ground -- the
+elevation may not be there yet -- for the tiles of the pyramid each would be drawn from
+(osmbase's `perspective.TilesSeen`), and asks for the map under each at the zoom it is drawn
+from (`acquire.Area`): a corridor along the route, deep under a low camera, shallow under a
+high one and toward the horizon. The elevation is offered over the same areas. The pyramid
+reaches down to zoom 3 for this: a flight's overview takes in thousands of kilometres, and
+a pyramid stopping at 11 would have drawn it from millions of tiles.
 
 ### The map's own colours
 
