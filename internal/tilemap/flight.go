@@ -34,9 +34,15 @@ const (
 // FlightMap is a map laid out for a camera flying over it: what a flyover
 // draws its pictures from. *Flight is one.
 type FlightMap interface {
-	// Picture draws the map from cam, at o's size and in its colours of
-	// sky and haze, with its names stood on it.
-	Picture(ctx context.Context, cam perspective.Camera, o perspective.Options) (*perspective.Picture, error)
+	// PlanNames works out, before any frame is drawn, how strongly each
+	// name is shown in each frame of the flight whose cameras are cams --
+	// each drawn at o -- smoothed over smooth frames either side; see
+	// perspective.NamePlan. Pictures drawn after it stand their names as
+	// planned; before it, or without it, each picture works out its own.
+	PlanNames(ctx context.Context, cams []perspective.Camera, o perspective.Options, smooth int) error
+	// Picture draws frame i of the flight from cam, at o's size and in its
+	// colours of sky and haze, with its names stood on it.
+	Picture(ctx context.Context, i int, cam perspective.Camera, o perspective.Options) (*perspective.Picture, error)
 	// Ground is the height of the ground at c, in metres, as the pictures
 	// shape it; false where it is not known.
 	Ground(c osm.Coord) (float64, bool)
@@ -67,6 +73,9 @@ type Flight struct {
 
 	mu       sync.Mutex
 	lattices map[int]perspective.Lattice
+
+	// plan is the flight's names, planned; nil before PlanNames.
+	plan *perspective.NamePlan
 }
 
 // Flight lays the map out over region, the ground every camera of a flight
@@ -186,23 +195,59 @@ func flightContourInterval(z uint8) float64 {
 	return 5
 }
 
-// Picture draws the flight from cam, at o's size and in its colours of sky
-// and haze, with the names of the tiles it is drawn from stood on it.
-func (f *Flight) Picture(ctx context.Context, cam perspective.Camera, o perspective.Options) (*perspective.Picture, error) {
+// scene is what frame i is drawn from with cam, at o's size.
+func (f *Flight) scene(cam perspective.Camera, o perspective.Options) (perspective.Scene, error) {
 	lat, err := f.lattice(cam.Distance)
 	if err != nil {
-		return nil, err
+		return perspective.Scene{}, err
 	}
 	v, err := lat.View(cam.MapBounds(float64(o.Width)/float64(o.Height)), perspective.DefaultStep)
 	if err != nil {
+		return perspective.Scene{}, err
+	}
+	return perspective.Scene{Tiles: f.tiles, View: v, Heights: f.heights, Exaggeration: f.exaggeration, Step: perspective.DefaultStep}, nil
+}
+
+// PlanNames plans the flight's names; see FlightMap.
+func (f *Flight) PlanNames(ctx context.Context, cams []perspective.Camera, o perspective.Options, smooth int) error {
+	plan, err := perspective.PlanNames(ctx, len(cams), func(i int) (perspective.Scene, perspective.Camera, perspective.Options, error) {
+		s, err := f.scene(cams[i], o)
+		return s, cams[i], o, err
+	}, smooth)
+	if err != nil {
+		return fmt.Errorf("tilemap: planning the flight's names: %w", err)
+	}
+	f.plan = plan
+	return nil
+}
+
+// Picture draws frame i of the flight from cam, at o's size and in its
+// colours of sky and haze, with its names stood on it: as planned, once
+// they are.
+func (f *Flight) Picture(ctx context.Context, i int, cam perspective.Camera, o perspective.Options) (*perspective.Picture, error) {
+	s, err := f.scene(cam, o)
+	if err != nil {
 		return nil, err
 	}
-	pic, err := perspective.RenderContext(ctx, perspective.Scene{Tiles: f.tiles, View: v, Heights: f.heights, Exaggeration: f.exaggeration, Step: perspective.DefaultStep}, cam, o)
+	pic, err := perspective.RenderContext(ctx, s, cam, o)
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: drawing the flight in perspective: %w", err)
 	}
-	pic.DrawNames(f.l.opts.Palette)
+	if f.plan != nil {
+		pic.DrawNamesPlanned(f.l.opts.Palette, f.plan, i)
+	} else {
+		pic.DrawNames(f.l.opts.Palette)
+	}
 	return pic, nil
+}
+
+// Steadiness is how much the planned names would have flickered and how
+// much they will; zeros before PlanNames. See perspective.NamePlan.
+func (f *Flight) Steadiness() (before, after float64) {
+	if f.plan == nil {
+		return 0, 0
+	}
+	return f.plan.Steadiness()
 }
 
 // lattice is the lattice for a camera distance metres off; see flightCell.

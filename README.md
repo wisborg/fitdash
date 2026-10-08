@@ -208,7 +208,7 @@ ground exactly, the default `1.5s` glides over the banks a road passes. Contour 
 left out unless `--contours` is given: from a moving camera the shading already shows the
 hills, and lines drawn from a different zoom every few seconds only add movement. A flyover draws a
 picture every frame, so it is far slower than the rest of the dashboard — about half a
-second a frame at 1920×1080 — and it asks for the map and elevation of all the ground it
+second a frame at 1920×1080, after planning the names' fading over the whole flight — and it asks for the map and elevation of all the ground it
 sees, which is more than the route's.
 
 ```

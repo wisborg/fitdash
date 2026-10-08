@@ -21,6 +21,11 @@ const (
 	flyoverSteady = time.Second
 	flyoverTurn   = 3 * time.Second
 	flyoverSwoop  = 3 * time.Second
+	// flyoverNamesSmooth is how much video either side each name's
+	// strength is averaged over: long enough that no name changes faster
+	// than the eye follows, short enough that one still arrives with its
+	// place. See perspective.NamePlan.
+	flyoverNamesSmooth = 300 * time.Millisecond
 )
 
 // Flyer is a basemap that can lay itself out for a camera flying over it;
@@ -129,6 +134,12 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	air := ctx.Route3D.Air
 	p.air = perspective.Options{Width: int(math.Ceil(box.W)), Height: int(math.Ceil(box.H)), Sky: air, Horizon: air, Haze: air}
 
+	// The names, planned over the whole flight before any frame is drawn,
+	// so none flickers. Without a plan each picture works out its own, as
+	// it can, and the note says so.
+	smooth := int(math.Round(flyoverNamesSmooth.Seconds() * ctx.Timeline.FPS()))
+	namesErr := p.flight.PlanNames(context.Background(), p.cams, p.air, smooth)
+
 	unit := math.Min(box.W, box.H)
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
@@ -146,6 +157,9 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	}
 	if p.flight.Leveled() {
 		p.mapNote += "; the ground is drawn level: there is no elevation for it"
+	}
+	if namesErr != nil {
+		p.mapNote += "; the names could not be planned, and may flicker: " + namesErr.Error()
 	}
 	if len(ctx.Highlights) > 0 {
 		start := ctx.Timeline.Start()
@@ -176,7 +190,7 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 	if p.suppressMap || f.Index < 0 || f.Index >= len(p.cams) {
 		return
 	}
-	pic, err := p.flight.Picture(context.Background(), p.cams[f.Index], p.air)
+	pic, err := p.flight.Picture(context.Background(), f.Index, p.cams[f.Index], p.air)
 	if err != nil {
 		// A frame whose map could not be drawn is not drawn as something
 		// else: the box keeps the background, and the route is still

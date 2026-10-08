@@ -1511,6 +1511,20 @@ next. A font face is not safe for two goroutines at once, and the pictures are d
 core, so each tile is drawn in faces of its own (`FaceCache.Fresh`, via
 `Local.FreshLabels`).
 
+### The names are planned before the first frame
+
+However continuously a picture works out its names' strengths, a crest or a neighbouring
+name sliding over one still changes it faster from frame to frame than the eye follows, and
+in motion that is a flicker. A painter cannot carry a name's strength from one frame to the
+next: `Dynamic` must not mutate it, and a frame drawn on its own -- `--frames` -- would come
+out differently from the same frame drawn in sequence. So `Prepare` plans the names of the
+whole flight (osmbase's `perspective.NamePlan`): every frame drawn at a quarter of its size,
+without colour, for where its names fall and how strongly, and each name's strength averaged
+over 0.3 s of video either side. `Dynamic` draws a frame's names as planned. On a 60-second
+flyover of a 3.5-hour run the mean change of a name's strength from one frame to the next
+fell from 0.0078 to 0.0034; planning cost about a third of the render, most of it drawing
+the tiles the frames then take from the cache.
+
 ### The frame loop stays sequential
 
 A picture is drawn by osmbase on every core, a band of rows to each, so one frame takes
