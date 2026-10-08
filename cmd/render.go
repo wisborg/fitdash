@@ -54,7 +54,7 @@ type renderOptions struct {
 	routeHeading        string
 	routePitch          float64
 	routeExaggeration   float64
-	routeDistance       float64
+	routeDistance       string
 	routeSmoothing      time.Duration
 	basemapPalette      string
 	power               string
@@ -294,8 +294,11 @@ func bindRenderFlags(c *cobra.Command) {
 		"with --route-view 3d or flyover, how far below the horizontal the camera looks, in degrees, from 10 to 90 (straight down)")
 	f.Float64Var(&renderOpts.routeExaggeration, "route-exaggeration", 1,
 		"with --route-view 3d or flyover, how many times their height hills are drawn; 1 is true to life")
-	f.Float64Var(&renderOpts.routeDistance, "route-distance", 800,
-		"with --route-view flyover, how far behind the activity the camera follows, in metres, from 100 to 20000")
+	f.StringVar(&renderOpts.routeDistance, "route-distance", "auto",
+		"with --route-view flyover, how far behind the activity the camera follows, in metres from 100 to 500000; "+
+			"\"auto\" (default) chooses it from how fast the ground moves in the video, so that it moves past at "+
+			"about the same pace whatever the activity and the speed-up: about 800 m for a run squeezed into a minute, "+
+			"a few hundred kilometres for a flight across a continent")
 	f.StringVar(&renderOpts.basemapPalette, "basemap-palette", "auto",
 		"the colours --basemap "+tilemap.LocalProvider+" draws in: \"theme\", derived from --theme and kept quiet so "+
 			"the route and readouts stand out, or \"outdoors\", fuller greens, bluer water and deeper hill shading, with "+

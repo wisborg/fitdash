@@ -147,8 +147,13 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	p.creditPx = maxf(9, unit*0.05)
 	p.mapCredit = p.flight.Attribution()
 
-	follow := ctx.Route3D.Distance
-	p.mapNote = fmt.Sprintf("flown over in 3d, following from %.1f km, %g° down", follow/1000, ctx.Route3D.Pitch)
+	// The distance followed from, as the flight has it past the swoop --
+	// chosen for its speed unless one was given.
+	follow := p.cams[len(p.cams)/2].Distance
+	p.mapNote = fmt.Sprintf("flown over in 3d, following from %s, %g° down", formatFollow(follow), ctx.Route3D.Pitch)
+	if ctx.Route3D.Distance == 0 {
+		p.mapNote += " (the distance chosen for how fast the ground moves)"
+	}
 	if ctx.Route3D.Rise > 0 {
 		p.mapNote += fmt.Sprintf(", gliding over the ground's rises over %s", ctx.Route3D.Rise)
 	}
@@ -245,6 +250,18 @@ func (p *flyoverPainter) place(pic *perspective.Picture, pt route.Point) (x, y f
 	}
 	_, _, seen = pic.Locate(co)
 	return x + p.box.X, y + p.box.Y, true, seen
+}
+
+// formatFollow is a distance followed from: metres under a kilometre, a
+// tenth of one under a hundred, whole ones above.
+func formatFollow(m float64) string {
+	switch {
+	case m < 1000:
+		return fmt.Sprintf("%.0f m", m)
+	case m < 100_000:
+		return fmt.Sprintf("%.1f km", m/1000)
+	}
+	return fmt.Sprintf("%.0f km", m/1000)
 }
 
 // BasemapNote says how the route was flown over, and anything declined.

@@ -201,3 +201,53 @@ func TestFlightSwoopClosesOnTheActivity(t *testing.T) {
 		t.Errorf("halfway through the swoop the activity is %.2f of the way it started from the middle, want about a half", r)
 	}
 }
+
+// eastward is n frame positions moving east at metres a frame from 151.10,
+// standing still for stopped frames in the middle.
+func eastward(n int, metres float64, stopped int) (lat, lon []float64) {
+	lon0 := 151.10
+	perDeg := 111_320 * math.Cos(-33.70*math.Pi/180)
+	x := 0.0
+	for i := range n {
+		if i < n/2 || i >= n/2+stopped {
+			x += metres
+		}
+		lat, lon = append(lat, -33.70), append(lon, lon0+x/perDeg)
+	}
+	return lat, lon
+}
+
+// The distance follows from how fast the ground moves in the video: the
+// runs the flyover was judged on, about 360 metres of ground a second of
+// video, are followed from about 800 metres; stops do not count, being not
+// the speed of the ground but its absence; and the ends hold.
+func TestAutoDistance(t *testing.T) {
+	lat, lon := eastward(300, 12, 0) // 12 m a frame at 30 fps: 360 m/s
+	if d := AutoDistance(lat, lon, 30); math.Abs(d-800) > 10 {
+		t.Errorf("360 m/s of video followed from %.0f m, want about 800", d)
+	}
+	lat, lon = eastward(300, 12, 140) // nearly half the video stopped
+	if d := AutoDistance(lat, lon, 30); math.Abs(d-800) > 10 {
+		t.Errorf("with stops, followed from %.0f m, want about 800 still", d)
+	}
+	lat, lon = eastward(300, 0, 0)
+	if d := AutoDistance(lat, lon, 30); d != AutoDistanceMin {
+		t.Errorf("nothing moving followed from %.0f m, want the nearest, %.0f", d, AutoDistanceMin)
+	}
+	lat, lon = eastward(300, 50_000, 0) // 1,500 km a second of video
+	if d := AutoDistance(lat, lon, 30); d != AutoDistanceMax {
+		t.Errorf("1,500 km/s followed from %.0f m, want the furthest, %.0f", d, AutoDistanceMax)
+	}
+}
+
+// A flight given no distance follows from the one chosen for it.
+func TestFlightChoosesItsDistance(t *testing.T) {
+	o := flightOpts()
+	o.Distance = 0
+	cams := Flight(lRoute(), flightFrames, atFrame, overviewCam, flatGround, o)
+	// 2 m/s of activity, a second of it a frame at 30 fps: 60 m/s of video,
+	// under the nearest the camera comes.
+	if d := cams[600].Distance; d != AutoDistanceMin {
+		t.Errorf("followed from %.0f m, want %.0f", d, AutoDistanceMin)
+	}
+}

@@ -2,6 +2,7 @@ package route
 
 import (
 	"math"
+	"slices"
 	"time"
 
 	"github.com/wisborg/osmbase/perspective"
@@ -15,7 +16,8 @@ import (
 // the camera turns with the route's general direction rather than with
 // every switchback.
 type FlightOptions struct {
-	// Distance is from the camera to the point it follows, in metres; Pitch
+	// Distance is from the camera to the point it follows, in metres, 0 to
+	// choose it from how fast the ground moves in the video (AutoDistance); Pitch
 	// how far it looks below the horizontal, and FOV its field of view, in
 	// degrees, 0 for perspective.DefaultFOV.
 	Distance, Pitch, FOV float64
@@ -65,6 +67,9 @@ func Flight(fixes []Point, frames int, at func(i int) time.Time, overview perspe
 		lat[i], lon[i] = positionAt(fixes, at(i))
 	}
 	lat, lon = movingAverage(lat, frameCount(o.Steady)/2), movingAverage(lon, frameCount(o.Steady)/2)
+	if o.Distance == 0 {
+		o.Distance = AutoDistance(lat, lon, o.FPS)
+	}
 
 	// The direction of travel: from where the activity is half the turning
 	// window before to where it is half after, held where it does not move.
@@ -159,6 +164,46 @@ func Flight(fixes []Point, frames int, at func(i int) time.Time, overview perspe
 		cams[j] = blendCamera(overview, cams[j], t)
 	}
 	return cams
+}
+
+// The camera's distance when it is chosen: so that the ground under it moves
+// autoPace of the distance each second of video, between the ends.
+//
+// The pace is what both runs the flyover was first judged on came to: a
+// synthetic 7 km run in 20 seconds and a 21 km trail run in 60, each about
+// 360 metres of ground a second of video, followed from 800 metres. A flight
+// across a continent at the speed-up a minute of video takes moves a
+// hundred and fifty kilometres a second, which the same pace follows from
+// three hundred; a walk drawn at its own speed would be followed from a few
+// metres, and is held at the nearest end.
+const (
+	autoPace        = 0.45 // of the distance, a second of video
+	AutoDistanceMin = 150.0
+	AutoDistanceMax = 400_000.0
+)
+
+// AutoDistance is the distance to follow from, in metres, for an activity
+// at lat, lon in each frame of a video at fps: the typical speed of the
+// ground in the video -- the median over the frames where it moves at all
+// -- over autoPace, held between AutoDistanceMin and AutoDistanceMax. One
+// distance for the whole video: a camera that closed in where the activity
+// slowed would move toward the viewer and away again for no reason the
+// viewer could see.
+func AutoDistance(lat, lon []float64, fps float64) float64 {
+	var speeds []float64
+	for i := 1; i < len(lat); i++ {
+		north := (lat[i] - lat[i-1]) * 110_574
+		east := (lon[i] - lon[i-1]) * 111_320 * math.Cos(lat[i]*math.Pi/180)
+		if v := math.Hypot(north, east) * fps; v > 0.01 {
+			speeds = append(speeds, v)
+		}
+	}
+	if len(speeds) == 0 {
+		return AutoDistanceMin
+	}
+	slices.Sort(speeds)
+	d := speeds[len(speeds)/2] / autoPace
+	return math.Max(AutoDistanceMin, math.Min(AutoDistanceMax, d))
 }
 
 // groundSamples is the most times Flight reads the ground's height.

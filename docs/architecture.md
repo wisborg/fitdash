@@ -1546,6 +1546,17 @@ route's general direction rather than every switchback. A camera following the g
 exactly bobs over every bank in hilly country; one smoothed too long sinks into a climb.
 Which is right depends on the ground, so it is a flag.
 
+How far behind the camera follows is chosen, by default, from how fast the ground moves in
+the video: the median speed of the point followed, in metres a second of video, over a pace
+of 0.45 -- calibrated on the two runs the flyover was first judged on, both about 360 m/s
+of video and followed from 800 m. The same pace puts a flight from Copenhagen to Bangkok in a
+minute 380 km up. One distance for the whole video: one that closed in where the activity
+slowed would move toward the viewer and away again for no reason the viewer could see. At
+those heights the ground is still drawn flat around each frame's target, so a flight's
+horizon is straight; and a pyramid, a credit and a measure of the map's areas over a
+continent are each taken at the deepest zoom a few thousand tiles of it allow, where at a
+run's zooms they ran for minutes and did not finish.
+
 The same planning frames the fetch offer, before the layout exists, at the range of panel
 shapes the 3d offer uses: the ground offered is the ground the flight sees, at the detail
 it sees it. A box round every camera's view at one depth was the first offer, and for a

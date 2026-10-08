@@ -202,14 +202,18 @@ turning with the route's direction over a few seconds of video rather than with 
 switchback, and goes back up to the overview at the end. Names stand on the picture —
 places upright, streets and contour heights along their lines, read left to right
 whichever way the camera faces — and fade in and out as the ground nears. `--route-distance`
-says how far behind it follows (800 m by default), and `--route-camera-smoothing` how much
+says how far behind it follows; by default it is chosen from how fast the ground moves in
+the video, so it passes at about the same pace whatever the speed-up: about 800 m for a run
+squeezed into a minute, a few hundred kilometres for a flight across a continent — a GPX,
+TCX or KML of one flies like any activity. `--route-camera-smoothing` says how much
 video its height is smoothed over as the ground rises and falls under it: `0` follows the
 ground exactly, the default `1.5s` glides over the banks a road passes. Contour lines are
 left out unless `--contours` is given: from a moving camera the shading already shows the
 hills, and lines drawn from a different zoom every few seconds only add movement. A flyover draws a
 picture every frame, so it is far slower than the rest of the dashboard — about half a
-second a frame at 1920×1080, after planning the names' fading over the whole flight — and it asks for the map and elevation of all the ground it
-sees, which is more than the route's.
+second a frame at 1920×1080, after planning the names' fading over the whole flight — and it
+asks for the map and elevation of the ground it sees, at the detail it sees it: a corridor
+along the route, finer under the camera than toward the horizon.
 
 ```
 fitdash morning.fit --basemap local --route-view flyover --video-duration 45s
