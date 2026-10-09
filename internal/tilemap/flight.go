@@ -43,7 +43,7 @@ type FlightMap interface {
 	// each drawn at o -- smoothed over smooth frames either side; see
 	// perspective.NamePlan. Pictures drawn after it stand their names as
 	// planned; before it, or without it, each picture works out its own.
-	PlanNames(ctx context.Context, cams []perspective.Camera, o perspective.Options, smooth int) error
+	PlanNames(ctx context.Context, cams []perspective.Camera, o perspective.Options, smooth int, progress func(done, total int)) error
 	// Picture draws frame i of the flight from cam, at o's size and in its
 	// colours of sky and haze, with its names stood on it.
 	Picture(ctx context.Context, i int, cam perspective.Camera, o perspective.Options) (*perspective.Picture, error)
@@ -223,11 +223,11 @@ func (f *Flight) scene(cam perspective.Camera, o perspective.Options) (perspecti
 }
 
 // PlanNames plans the flight's names; see FlightMap.
-func (f *Flight) PlanNames(ctx context.Context, cams []perspective.Camera, o perspective.Options, smooth int) error {
+func (f *Flight) PlanNames(ctx context.Context, cams []perspective.Camera, o perspective.Options, smooth int, progress func(done, total int)) error {
 	plan, err := perspective.PlanNames(ctx, len(cams), func(i int) (perspective.Scene, perspective.Camera, perspective.Options, error) {
 		s, err := f.scene(cams[i], o)
 		return s, cams[i], o, err
-	}, smooth, nil)
+	}, smooth, progress)
 	if err != nil {
 		return fmt.Errorf("tilemap: planning the flight's names: %w", err)
 	}
@@ -339,7 +339,7 @@ const flightOfferFrames = 300
 // with an eighth of a tile more each side for the strokes and the shading
 // that reach into it from beyond, at the map zoom it is drawn from -- one
 // deeper than its own, a pyramid tile being 512 pixels.
-func FlightAreas(ctx context.Context, cams []perspective.Camera, o perspective.Options, lat float64) ([]acquire.Area, error) {
+func FlightAreas(ctx context.Context, cams []perspective.Camera, o perspective.Options, lat float64, progress func(done, total int)) ([]acquire.Area, error) {
 	if len(cams) == 0 {
 		return nil, nil
 	}
@@ -355,7 +355,7 @@ func FlightAreas(ctx context.Context, cams []perspective.Camera, o perspective.O
 	seen, err := perspective.TilesSeen(ctx, frames, func(i int) (perspective.Scene, perspective.Camera, perspective.Options, error) {
 		s, err := f.scene(cams[i], o)
 		return s, cams[i], o, err
-	}, flightMinZoom, flightMaxZoom, nil)
+	}, flightMinZoom, flightMaxZoom, progress)
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: working out the ground a flight sees: %w", err)
 	}

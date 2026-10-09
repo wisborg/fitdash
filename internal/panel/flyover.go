@@ -138,7 +138,11 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	// so none flickers. Without a plan each picture works out its own, as
 	// it can, and the note says so.
 	smooth := int(math.Round(flyoverNamesSmooth.Seconds() * ctx.Timeline.FPS()))
-	namesErr := p.flight.PlanNames(context.Background(), p.cams, p.air, smooth)
+	var progress func(done, total int)
+	if ctx.PrepareProgress != nil {
+		progress = func(done, total int) { ctx.PrepareProgress("planning names", done, total) }
+	}
+	namesErr := p.flight.PlanNames(context.Background(), p.cams, p.air, smooth, progress)
 
 	unit := math.Min(box.W, box.H)
 	p.outlineW = maxf(1.5, unit*0.008)

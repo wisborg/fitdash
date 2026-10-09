@@ -236,6 +236,12 @@ type Context struct {
 	// worse than one that started without one.
 	BasemapProgress func(done, total int)
 
+	// PrepareProgress, when non-nil, is told how far a long piece of a
+	// panel's preparation has got, by name -- a flyover planning its names
+	// over every frame, which on a long flight takes minutes before the
+	// first frame is drawn.
+	PrepareProgress func(label string, done, total int)
+
 	// Highlights is the resolved, sorted, clipped set of --highlight ranges,
 	// or nil when none were given. Panels read it in Accepts (a highlight
 	// panel declines outright with none configured, which is a fact about

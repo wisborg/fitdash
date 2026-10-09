@@ -1030,39 +1030,77 @@ func fillStore(cmd *cobra.Command, root string, req acquire.Request) error {
 		return err
 	}
 
-	var (
-		display *progress.Display
-		bar     *progress.Bar
-		fetched bool
-	)
-	report := func(plan *acquire.Plan) {
-		if plan.Empty() {
-			// Reachable: the shortfall is measured in whole cells, and a cell
-			// can be incomplete in zooms this fetch was never going to take.
-			fmt.Fprintf(errw, "basemap: nothing more to fetch for this activity\n")
-			return
+	// A flight's areas can be more than one plan takes -- a corridor across
+	// a continent, followed close by at either end -- so they are fetched
+	// as several plans in turn, each a stretch of the route; see
+	// acquire.SplitAreas. A box, or areas within one plan, is one batch.
+	batches := [][]acquire.Area{req.Areas}
+	if len(req.Areas) > 0 {
+		batches, err = acquire.SplitAreas(req.Areas, storeCellZoom(root), archive.Reader().Header().MaxZoom)
+		if err != nil {
+			return err
 		}
-		fmt.Fprintf(errw, "basemap: %d of %d areas, zooms %d to %d, %d tiles, %s to download\n",
-			plan.CellsToFetch, len(plan.Cells), plan.Zoom.Min, plan.Zoom.Max, plan.Tiles, humanBytes(plan.Transfer))
-		// The trace and the bar cannot share a stream; see openFetchArchive.
-		archive.Silence()
-		display, bar = newFetchBar(errw, plan)
-		fetched = true
 	}
-	res, err := fetch.Fill(fetchContext(cmd), root, archive.Archive, credit, req, report,
-		func(pr acquire.Progress) { bar.Set(pr.DoneTransfer) })
-	if fetched {
-		bar.Done()
-		display.Stop()
+	var total acquire.Result
+	for i, batch := range batches {
+		part := ""
+		if len(batches) > 1 {
+			part = fmt.Sprintf("part %d of %d: ", i+1, len(batches))
+		}
+		var (
+			display *progress.Display
+			bar     *progress.Bar
+			fetched bool
+		)
+		report := func(plan *acquire.Plan) {
+			if plan.Empty() {
+				// Reachable: the shortfall is measured in whole cells, and a
+				// cell can be incomplete in zooms this fetch was never going
+				// to take.
+				if len(batches) == 1 {
+					fmt.Fprintf(errw, "basemap: nothing more to fetch for this activity\n")
+				}
+				return
+			}
+			fmt.Fprintf(errw, "basemap: %s%d of %d areas, zooms %d to %d, %d tiles, %s to download\n",
+				part, plan.CellsToFetch, len(plan.Cells), plan.Zoom.Min, plan.Zoom.Max, plan.Tiles, humanBytes(plan.Transfer))
+			// The trace and the bar cannot share a stream; see openFetchArchive.
+			archive.Silence()
+			display, bar = newFetchBar(errw, plan)
+			fetched = true
+		}
+		r := req
+		if len(req.Areas) > 0 {
+			r.Areas = batch
+		}
+		res, err := fetch.Fill(fetchContext(cmd), root, archive.Archive, credit, r, report,
+			func(pr acquire.Progress) { bar.Set(pr.DoneTransfer) })
+		if fetched {
+			bar.Done()
+			display.Stop()
+		}
+		if err != nil {
+			return err
+		}
+		total.Written += res.Written
+		total.Transfer += res.Transfer
 	}
-	if err != nil {
-		return err
-	}
-	if fetched {
+	if total.Written > 0 {
 		fmt.Fprintf(errw, "basemap: fetched %d tiles, %s, crediting %s\n",
-			res.Written, humanBytes(res.Transfer), osm.PlainCredit(credit))
+			total.Written, humanBytes(total.Transfer), osm.PlainCredit(credit))
+	} else if len(batches) > 1 {
+		fmt.Fprintf(errw, "basemap: nothing more to fetch for this activity\n")
 	}
 	return nil
+}
+
+// storeCellZoom is the cell zoom of the store at root, or the zoom one made
+// there would have: what a fetch into it is planned in.
+func storeCellZoom(root string) uint8 {
+	if st, err := slice.Open(root); err == nil {
+		return st.CellZoom()
+	}
+	return slice.DefaultCellZoom
 }
 
 // stdinIsATerminal reports whether there is somebody there to answer a

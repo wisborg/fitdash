@@ -299,7 +299,7 @@ func TestNewProgress_QuietReturnsNils(t *testing.T) {
 	d.Stop()
 }
 
-// TestNewFetchProgress_OnlyAppearsWhereSilenceWouldLookLikeAHang pins the
+// TestNewPrepareProgress_OnlyAppearsWhereSilenceWouldLookLikeAHang pins the
 // three ways the map-imagery line declines to exist, each for its own reason.
 //
 // The line covers the seconds before the first frame, while the route panel
@@ -311,40 +311,39 @@ func TestNewProgress_QuietReturnsNils(t *testing.T) {
 // not use the feature; and a redirected stderr is a log, which cannot look
 // like it has hung and already gets the summary's own line about whether
 // imagery was fetched.
-func TestNewFetchProgress_OnlyAppearsWhereSilenceWouldLookLikeAHang(t *testing.T) {
+func TestNewPrepareProgress_OnlyAppearsWhereSilenceWouldLookLikeAHang(t *testing.T) {
 	defer func(v bool) { renderOpts.quiet = v }(renderOpts.quiet)
-	provider := &basemapSummaryProvider{}
 
 	cases := []struct {
 		name     string
 		quiet    bool
-		basemap  tilemap.Provider
+		waits    bool
 		wantNils bool
 	}{
-		{"--quiet", true, provider, true},
-		{"no basemap configured", false, nil, true},
+		{"--quiet", true, true, true},
+		{"nothing to wait for", false, false, true},
 		// A bytes.Buffer is not a terminal, so this stands for a redirected
 		// stderr. It is also why the other two cases cannot be told apart
 		// from this one by output alone -- all three write nothing -- and
 		// why the nils are what is asserted.
-		{"stderr is not a terminal", false, provider, true},
+		{"stderr is not a terminal", false, true, true},
 	}
 	// The basemap and liveness conditions read on their own, because with
 	// stderr redirected the display is never live and that alone would
 	// account for every case below -- so the table underneath would pass
 	// with the basemap check deleted.
 	for _, c := range []struct {
-		name    string
-		basemap tilemap.Provider
-		live    bool
-		want    bool
+		name  string
+		waits bool
+		live  bool
+		want  bool
 	}{
-		{"a basemap and a terminal", provider, true, true},
-		{"a basemap, but stderr is a log", provider, false, false},
-		{"a terminal, but no basemap", nil, true, false},
-		{"neither", nil, false, false},
+		{"a wait and a terminal", true, true, true},
+		{"a wait, but stderr is a log", true, false, false},
+		{"a terminal, but nothing to wait for", false, true, false},
+		{"neither", false, false, false},
 	} {
-		if got := wantFetchProgress(c.basemap, c.live); got != c.want {
+		if got := wantFetchProgress(c.waits, c.live); got != c.want {
 			t.Errorf("wantFetchProgress(%s) = %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -356,16 +355,17 @@ func TestNewFetchProgress_OnlyAppearsWhereSilenceWouldLookLikeAHang(t *testing.T
 			var buf bytes.Buffer
 			cmd.SetErr(&buf)
 
-			d, bar := newFetchProgress(cmd, c.basemap)
-			if (d == nil) != c.wantNils || (bar == nil) != c.wantNils {
-				t.Fatalf("display nil = %v, bar nil = %v; want both nil = %v", d == nil, bar == nil, c.wantNils)
+			p := newPrepareProgress(cmd, c.waits)
+			bar := p.bar("map imagery", "views", 4)
+			if (p.d == nil) != c.wantNils || (bar == nil) != c.wantNils {
+				t.Fatalf("display nil = %v, bar nil = %v; want both nil = %v", p.d == nil, bar == nil, c.wantNils)
 			}
 			// The nils must be usable, or runRender needs a guard around
 			// every call -- including the callback it hands to the panel,
 			// which runs on the fetch's own goroutines.
 			bar.SetTotal(4)
 			bar.Set(2)
-			d.Stop()
+			p.stop()
 			if buf.Len() != 0 {
 				t.Errorf("wrote %q to a non-terminal; the fetch line is for a terminal that has gone quiet, not for a log", buf.String())
 			}

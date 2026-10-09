@@ -1585,7 +1585,15 @@ elevation may not be there yet -- for the tiles of the pyramid each would be dra
 from (`acquire.Area`): a corridor along the route, deep under a low camera, shallow under a
 high one and toward the horizon. The elevation is offered over the same areas. The pyramid
 reaches down to zoom 3 for this: a flight's overview takes in thousands of kilometres, and
-a pyramid stopping at 11 would have drawn it from millions of tiles.
+a pyramid stopping at 11 would have drawn it from millions of tiles. A flight's corridor,
+followed close by at either airport and from high above in between, can come to more cells
+than one fetch plan takes, so the map is fetched as several plans in turn, each a stretch of
+the route (`acquire.SplitAreas`), rather than the limit being raised.
+
+Both the offer's look through the frames and the flyover's planning of its names take
+minutes on a long flight, before anything else is said, so each has a progress line of its
+own on a terminal (`Context.PrepareProgress` for the panel's). A terminal that goes quiet
+that long looks like a program that has hung.
 
 ### The map's own colours
 

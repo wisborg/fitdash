@@ -41,7 +41,7 @@ func (f flatFlyer) Flight(context.Context, slice.Bounds, float64) (tilemap.Fligh
 
 type flatFlight struct{ tiles *perspective.Tiles }
 
-func (*flatFlight) PlanNames(context.Context, []perspective.Camera, perspective.Options, int) error {
+func (*flatFlight) PlanNames(context.Context, []perspective.Camera, perspective.Options, int, func(int, int)) error {
 	return nil
 }
 

@@ -179,7 +179,10 @@ var (
 // round it and as the areas a fetch of it covers, each at the detail it is
 // seen at. A panel of each shape is taken as large as the frame of w by h
 // pixels holds, the detail a camera needs growing with its picture.
-func flightOffer(ctx context.Context, r panel.Route3D, track *fitactivity.Track, tl panel.Timeline, w, h int) (slice.Bounds, []acquire.Area, error) {
+//
+// progress, when not nil, is told how many frames of how many have been
+// looked through, over every shape together.
+func flightOffer(ctx context.Context, r panel.Route3D, track *fitactivity.Track, tl panel.Timeline, w, h int, progress func(done, total int)) (slice.Bounds, []acquire.Area, error) {
 	fixes := route.FromTrack(track, len(track.Samples)+1)
 	drawn := route.FromTrack(track, 400)
 	var b slice.Bounds
@@ -200,7 +203,13 @@ func flightOffer(ctx context.Context, r panel.Route3D, track *fitactivity.Track,
 			pw, ph = float64(h)*aspect, float64(h)
 		}
 		o := perspective.Options{Width: max(1, int(pw)), Height: max(1, int(ph))}
-		a, err := tilemap.FlightAreas(ctx, cams, o, (g.South+g.North)/2)
+		var shape func(done, total int)
+		if progress != nil {
+			shape = func(done, total int) {
+				progress(i*total+done, len(route3DAspects)*total)
+			}
+		}
+		a, err := tilemap.FlightAreas(ctx, cams, o, (g.South+g.North)/2, shape)
 		if err != nil {
 			return b, nil, err
 		}
