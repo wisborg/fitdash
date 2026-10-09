@@ -1547,12 +1547,29 @@ exactly bobs over every bank in hilly country; one smoothed too long sinks into 
 Which is right depends on the ground, so it is a flag.
 
 How far behind the camera follows is chosen, by default, from how fast the ground moves in
-the video: the median speed of the point followed, in metres a second of video, over a pace
-of 0.45 -- calibrated on the two runs the flyover was first judged on, both about 360 m/s
-of video and followed from 800 m. The same pace puts a flight from Copenhagen to Bangkok in a
-minute 380 km up. One distance for the whole video: one that closed in where the activity
-slowed would move toward the viewer and away again for no reason the viewer could see. At
-those heights the ground is still drawn flat around each frame's target, so a flight's
+the video: the speed of the point followed, in metres a second of video, over a pace of 0.45
+-- calibrated on the two runs the flyover was first judged on, both about 360 m/s of video
+and followed from 800 m. The same pace follows a flight from Copenhagen to Bangkok at cruise
+from about 380 km. It was first one distance for the whole video, from the median speed, on
+the reasoning that a camera closing in where the activity slowed would move for no reason
+the viewer could see; a flight showed the reason is usually plain -- taxiing at the gate and
+cruising at 900 km/h are a thousand times apart -- so it is now chosen in each frame from
+the speed around it, smoothed in proportion over three seconds, and held to doubling or
+halving in no less than two (`steady` keeps the single distance). Where the activity stands
+still the speed says nothing about how far to stand off; a frame's speed is the mean over the
+moving frames around it, so the camera does not swoop down to every traffic light. A
+`--highlight` that slows the video brings the camera closer over it, which is what its
+`zoom=` asks for on the flat map.
+
+The heading was the bearing across the turning window, and on laps of a park or across a
+turnaround -- a parkrun is both, and at 120x a three-second window is three minutes of
+running -- the window's ends lie close together in any direction, and the camera swung
+round by ninety degrees from frame to frame. Each frame's direction is now weighed by how
+straight the route runs across the window, averaged over it, and turned toward at a rate
+scaled by that weight: along a straight at up to 45 degrees a second, round laps hardly at
+all, through a turnaround in a few seconds.
+
+At a flight's heights the ground is still drawn flat around each frame's target, so its
 horizon is straight; and a pyramid, a credit and a measure of the map's areas over a
 continent are each taken at the deepest zoom a few thousand tiles of it allow, where at a
 run's zooms they ran for minutes and did not finish.

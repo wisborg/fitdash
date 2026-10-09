@@ -48,7 +48,7 @@ func (r Route3D) Flight(fixes, drawn []route.Point, tl Timeline, aspect float64,
 		ground = func(osm.Coord) (float64, bool) { return 0, false }
 	}
 	cams := route.Flight(fixes, tl.Frames(), tl.At, overview, ground, route.FlightOptions{
-		Distance: r.Distance, Pitch: r.Pitch, FOV: r.FOV, FPS: tl.FPS(),
+		Distance: r.Distance, SteadyDistance: r.SteadyDistance, Pitch: r.Pitch, FOV: r.FOV, FPS: tl.FPS(),
 		Steady: flyoverSteady, Turn: flyoverTurn, Rise: r.Rise, Swoop: flyoverSwoop,
 	})
 	if cams == nil {
@@ -147,12 +147,24 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	p.creditPx = maxf(9, unit*0.05)
 	p.mapCredit = p.flight.Attribution()
 
-	// The distance followed from, as the flight has it past the swoop --
-	// chosen for its speed unless one was given.
-	follow := p.cams[len(p.cams)/2].Distance
-	p.mapNote = fmt.Sprintf("flown over in 3d, following from %s, %g° down", formatFollow(follow), ctx.Route3D.Pitch)
-	if ctx.Route3D.Distance == 0 {
-		p.mapNote += " (the distance chosen for how fast the ground moves)"
+	// The distance followed from past the swoops: one, or the range of
+	// them when each frame chose its own.
+	swoop := min(int(math.Round(flyoverSwoop.Seconds()*ctx.Timeline.FPS())), len(p.cams)/3)
+	near, far := math.Inf(1), 0.0
+	for _, c := range p.cams[swoop : len(p.cams)-swoop] {
+		near, far = math.Min(near, c.Distance), math.Max(far, c.Distance)
+	}
+	follow := "from " + formatFollow(near)
+	if far > near*1.05 {
+		follow = "from " + formatFollow(near) + " to " + formatFollow(far)
+	}
+	p.mapNote = fmt.Sprintf("flown over in 3d, following %s, %g° down", follow, ctx.Route3D.Pitch)
+	switch {
+	case ctx.Route3D.Distance > 0:
+	case ctx.Route3D.SteadyDistance:
+		p.mapNote += " (one distance, chosen for how fast the ground moves)"
+	default:
+		p.mapNote += " (the distance chosen in each frame for how fast the ground moves there)"
 	}
 	if ctx.Route3D.Rise > 0 {
 		p.mapNote += fmt.Sprintf(", gliding over the ground's rises over %s", ctx.Route3D.Rise)

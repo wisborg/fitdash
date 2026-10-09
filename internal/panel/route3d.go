@@ -37,7 +37,10 @@ type Route3D struct {
 	// flight comes down from and goes back up to.
 	Flyover  bool
 	Distance float64
-	Rise     time.Duration
+	// SteadyDistance, with Distance 0, chooses one distance for the whole
+	// video rather than one for each frame; see route.FlightOptions.
+	SteadyDistance bool
+	Rise           time.Duration
 	// Air is the colour of the sky and of the haze the distance fades
 	// into: the theme's background, set by the command as it sets the
 	// local map's inks from the theme, so the map dissolves into the frame

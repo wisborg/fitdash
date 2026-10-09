@@ -65,7 +65,7 @@ func resolveRoute3D(cmd *cobra.Command) (*panel.Route3D, error) {
 	}
 	if r.Flyover {
 		if r.Distance != 0 && !(r.Distance >= 100 && r.Distance <= 500_000) {
-			return nil, fmt.Errorf("render: --route-distance %q is invalid; give how far behind the activity the camera follows, in metres, from 100 to 500000, or auto", renderOpts.routeDistance)
+			return nil, fmt.Errorf("render: --route-distance %q is invalid; give how far behind the activity the camera follows, in metres, from 100 to 500000, auto or steady", renderOpts.routeDistance)
 		}
 		if r.Rise < 0 {
 			return nil, fmt.Errorf("render: --route-camera-smoothing %s is invalid; give 0 or a positive duration", r.Rise)
@@ -141,7 +141,11 @@ func route3DConfig() (panel.Route3D, error) {
 		r.Flyover, r.Rise = true, renderOpts.routeSmoothing
 		// auto is 0, chosen by the flight; anything unreadable is NaN, for
 		// resolveRoute3D to refuse in the distance's own words.
-		if renderOpts.routeDistance != "auto" {
+		switch renderOpts.routeDistance {
+		case "auto":
+		case "steady":
+			r.SteadyDistance = true
+		default:
 			d, err := strconv.ParseFloat(renderOpts.routeDistance, 64)
 			if err != nil {
 				d = math.NaN()

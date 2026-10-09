@@ -202,10 +202,14 @@ turning with the route's direction over a few seconds of video rather than with 
 switchback, and goes back up to the overview at the end. Names stand on the picture —
 places upright, streets and contour heights along their lines, read left to right
 whichever way the camera faces — and fade in and out as the ground nears. `--route-distance`
-says how far behind it follows; by default it is chosen from how fast the ground moves in
-the video, so it passes at about the same pace whatever the speed-up: about 800 m for a run
-squeezed into a minute, a few hundred kilometres for a flight across a continent — a GPX,
-TCX or KML of one flies like any activity. `--route-camera-smoothing` says how much
+says how far behind it follows; by default it is chosen in each frame from how fast the
+ground moves in the video there, so it passes at about the same pace whatever the speed-up:
+about 800 m for a run squeezed into a minute, a few hundred kilometres for a flight at
+cruise and close by on the runway — a GPX, TCX or KML of one flies like any activity — and
+closer over a stretch a `--highlight` slows with `speedup=` or `video=`. It changes no
+faster than doubling in two seconds; `steady` keeps one distance for the whole video. The
+camera turns with the direction of travel where the route has one and holds its course round
+laps and turnarounds, swinging round a turnaround over a few seconds. `--route-camera-smoothing` says how much
 video its height is smoothed over as the ground rises and falls under it: `0` follows the
 ground exactly, the default `1.5s` glides over the banks a road passes. Contour lines are
 left out unless `--contours` is given: from a moving camera the shading already shows the

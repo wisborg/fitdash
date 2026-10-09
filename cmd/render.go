@@ -296,9 +296,11 @@ func bindRenderFlags(c *cobra.Command) {
 		"with --route-view 3d or flyover, how many times their height hills are drawn; 1 is true to life")
 	f.StringVar(&renderOpts.routeDistance, "route-distance", "auto",
 		"with --route-view flyover, how far behind the activity the camera follows, in metres from 100 to 500000; "+
-			"\"auto\" (default) chooses it from how fast the ground moves in the video, so that it moves past at "+
-			"about the same pace whatever the activity and the speed-up: about 800 m for a run squeezed into a minute, "+
-			"a few hundred kilometres for a flight across a continent")
+			"\"auto\" (default) chooses it in each frame from how fast the ground moves in the video there, so that "+
+			"it passes at about the same pace whatever the activity and the speed-up -- about 800 m for a run squeezed "+
+			"into a minute, a few hundred kilometres for a flight at cruise, closer on the runway -- changing no faster "+
+			"than doubling in two seconds, and closer over a stretch a --highlight slows; \"steady\" chooses one "+
+			"distance the same way for the whole video")
 	f.StringVar(&renderOpts.basemapPalette, "basemap-palette", "auto",
 		"the colours --basemap "+tilemap.LocalProvider+" draws in: \"theme\", derived from --theme and kept quiet so "+
 			"the route and readouts stand out, or \"outdoors\", fuller greens, bluer water and deeper hill shading, with "+

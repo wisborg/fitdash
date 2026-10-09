@@ -17,10 +17,13 @@ import (
 // every switchback.
 type FlightOptions struct {
 	// Distance is from the camera to the point it follows, in metres, 0 to
-	// choose it from how fast the ground moves in the video (AutoDistance); Pitch
+	// choose it in each frame from how fast the ground moves in the video
+	// there (see autoDistances), or once for the whole video with
+	// SteadyDistance (AutoDistance); Pitch
 	// how far it looks below the horizontal, and FOV its field of view, in
 	// degrees, 0 for perspective.DefaultFOV.
 	Distance, Pitch, FOV float64
+	SteadyDistance       bool
 	// FPS is the video's frame rate, which turns the durations into frames.
 	FPS float64
 	// Steady is how much video the position the camera follows is averaged
@@ -67,39 +70,21 @@ func Flight(fixes []Point, frames int, at func(i int) time.Time, overview perspe
 		lat[i], lon[i] = positionAt(fixes, at(i))
 	}
 	lat, lon = movingAverage(lat, frameCount(o.Steady)/2), movingAverage(lon, frameCount(o.Steady)/2)
-	if o.Distance == 0 {
-		o.Distance = AutoDistance(lat, lon, o.FPS)
-	}
-
-	// The direction of travel: from where the activity is half the turning
-	// window before to where it is half after, held where it does not move.
-	half := max(1, frameCount(o.Turn)/2)
-	heading := make([]float64, frames)
-	prev := math.NaN()
-	for i := range frames {
-		a, b := max(0, i-half), min(frames-1, i+half)
-		if h, ok := bearing(lat[a], lon[a], lat[b], lon[b]); ok {
-			prev = h
+	distance := make([]float64, frames)
+	switch {
+	case o.Distance > 0:
+		for i := range distance {
+			distance[i] = o.Distance
 		}
-		heading[i] = prev
-	}
-	// Before the activity first moves, the direction it first moves in.
-	first := math.NaN()
-	for _, h := range heading {
-		if !math.IsNaN(h) {
-			first = h
-			break
+	case o.SteadyDistance:
+		d := AutoDistance(lat, lon, o.FPS)
+		for i := range distance {
+			distance[i] = d
 		}
+	default:
+		distance = autoDistances(lat, lon, o.FPS)
 	}
-	if math.IsNaN(first) {
-		first = overview.Heading
-	}
-	for i := range heading {
-		if !math.IsNaN(heading[i]) {
-			break
-		}
-		heading[i] = first
-	}
+	heading := headings(lat, lon, frameCount(o.Turn), o.FPS, overview.Heading)
 
 	// The height of the point followed, averaged; unknown stretches take
 	// the nearest known height either side, so the average is not dragged
@@ -141,7 +126,7 @@ func Flight(fixes []Point, frames int, at func(i int) time.Time, overview perspe
 	for i := range frames {
 		cams[i] = perspective.Camera{
 			Target:   osm.Coord{Lat: lat[i], Lon: lon[i]},
-			Distance: o.Distance, Heading: heading[i], Pitch: o.Pitch, FOV: o.FOV,
+			Distance: distance[i], Heading: heading[i], Pitch: o.Pitch, FOV: o.FOV,
 		}
 		if known {
 			cams[i].TargetHeight, cams[i].HasTargetHeight = height[i], true
@@ -228,19 +213,8 @@ func positionAt(fixes []Point, t time.Time) (lat, lon float64) {
 	return a.Lat + (b.Lat-a.Lat)*f, a.Lon + (b.Lon-a.Lon)*f
 }
 
-// bearing is the compass bearing from one place to another, in degrees;
-// false when they are less than a metre apart, where there is no telling.
-func bearing(lat0, lon0, lat1, lon1 float64) (float64, bool) {
-	north := (lat1 - lat0) * 110_574
-	east := (lon1 - lon0) * 111_320 * math.Cos(lat0*math.Pi/180)
-	if math.Hypot(north, east) < 1 {
-		return 0, false
-	}
-	return math.Mod(math.Atan2(east, north)*180/math.Pi+360, 360), true
-}
-
-// movingAverage is v averaged over k either side of each value, fewer at
-// the ends.
+// movingAverage is v averaged over k either side of each value, as many
+// either side as there are on both near the ends.
 func movingAverage(v []float64, k int) []float64 {
 	if k <= 0 {
 		return v
@@ -251,7 +225,12 @@ func movingAverage(v []float64, k int) []float64 {
 	}
 	out := make([]float64, len(v))
 	for i := range v {
-		a, b := max(0, i-k), min(len(v)-1, i+k)
+		// As far either side as there is on both: a window cut short on
+		// one side only leans the average toward the other, which bends
+		// a straight line at the start of a video into a curve and reads
+		// as slowing down where nothing did.
+		r := min(k, i, len(v)-1-i)
+		a, b := i-r, i+r
 		out[i] = (sum[b+1] - sum[a]) / float64(b-a+1)
 	}
 	return out
@@ -320,4 +299,183 @@ func lens(fov float64) float64 {
 func smoothstep(t float64) float64 {
 	t = math.Max(0, math.Min(1, t))
 	return t * t * (3 - 2*t)
+}
+
+// headings is the compass bearing the camera looks along in each frame: the
+// direction of travel, held where the route gives no direction, turned
+// gently.
+//
+// The direction of travel was the bearing from where the activity is half
+// the turning window before a frame to where it is half after. That is a
+// direction only where the route runs roughly straight across the window.
+// On laps of a park or across a turnaround -- a parkrun is both, and at a
+// hundred and twenty times real time a 3-second window is three minutes of
+// running -- the two ends of it are close together in any direction, and
+// the camera swung round by ninety degrees from one frame to the next.
+//
+// So each frame's direction is weighed by how much of a direction it is:
+// how far the activity gets across the window as a share of how far it
+// runs, squared -- near 1 along a straight, near 0 round a loop or back on
+// itself. The weighted directions are averaged over the turning window
+// either side, so the camera starts turning ahead of a bend as much as it
+// ends after it, and holds its course where the route is no guide.
+// Last, its turning is held to maxTurnRate, both ways through the video, so
+// that a turnaround is a swing of a few seconds and never a flip.
+func headings(lat, lon []float64, turn int, fps, fallback float64) []float64 {
+	n := len(lat)
+	half := max(1, turn/2)
+	step := make([]float64, n) // metres from the frame before
+	for i := 1; i < n; i++ {
+		step[i] = metresBetween(lat[i-1], lon[i-1], lat[i], lon[i])
+	}
+	run := make([]float64, n+1)
+	for i := range n {
+		run[i+1] = run[i] + step[i]
+	}
+	vx, vy := make([]float64, n), make([]float64, n)
+	for i := range n {
+		a, b := max(0, i-half), min(n-1, i+half)
+		east, north := offsetMetres(lat[a], lon[a], lat[b], lon[b])
+		chord := math.Hypot(east, north)
+		path := run[b+1] - run[a+1]
+		if chord < 1 || path <= 0 {
+			continue
+		}
+		w := math.Pow(math.Min(1, chord/path), 2)
+		vx[i], vy[i] = w*east/chord, w*north/chord
+	}
+	// Averaged over the window, twice -- near enough a bell curve, with an
+	// edge: a bend further off than the window does not reach the camera
+	// at all, where an exponential's tail turned it a degree toward a
+	// corner ten seconds away.
+	for range 2 {
+		vx, vy = movingAverage(vx, half), movingAverage(vy, half)
+	}
+	// The camera starts along the first direction there is -- the
+	// overview's with none at all -- and turns toward each frame's as fast
+	// as maxTurnRate times how much of a direction it is: in full where the
+	// route runs straight, hardly at all round laps, where the averaged
+	// direction is weak and wanders. Turning toward a weak direction at full
+	// rate, the camera still turned through more than two full circles in
+	// eight laps of a park.
+	h := make([]float64, n)
+	cur := fallback
+	for i := range n {
+		if s := math.Hypot(vx[i], vy[i]); s > 1e-6 {
+			cur = math.Atan2(vx[i], vy[i]) * 180 / math.Pi
+			break
+		}
+	}
+	limit := maxTurnRate / fps
+	for i := range n {
+		if s := math.Hypot(vx[i], vy[i]); s > 1e-6 {
+			want := math.Atan2(vx[i], vy[i]) * 180 / math.Pi
+			l := limit * math.Min(1, s/confidentDirection)
+			cur += math.Max(-l, math.Min(l, math.Remainder(want-cur, 360)))
+		}
+		h[i] = math.Mod(math.Mod(cur, 360)+360, 360)
+	}
+	return h
+}
+
+// maxTurnRate is the fastest the camera turns, in degrees a second of
+// video: a turnaround takes about four seconds. It turns that fast only
+// toward a direction at least confidentDirection strong -- the averaged,
+// weighted direction of travel, which is 1 on a long straight.
+const (
+	maxTurnRate        = 45.0
+	confidentDirection = 0.5
+)
+
+// autoDistances is the distance to follow from in each frame, chosen from
+// how fast the ground moves in the video there: the local speed over
+// autoPace, as AutoDistance takes the typical one, so that a flight is
+// followed from close by on the runway and from high above at cruise, and
+// a run slowed by a highlight is followed from closer while it plays.
+//
+// Smoothed in proportion, not in metres -- what reads as a steady zoom is a
+// steady ratio a frame -- over distanceSmooth either side, and held to
+// doubling or halving in no less than distanceDoubling: from a gate to
+// cruise is ten doublings, which take twenty seconds of video at most,
+// however fast the climb plays. Where the activity stands still the speed
+// says nothing of how far to stand off -- it is not slow, it is stopped --
+// and those frames take the distance either side of them, so the camera
+// does not swoop down to every traffic light.
+func autoDistances(lat, lon []float64, fps float64) []float64 {
+	n := len(lat)
+	// The speed in each frame is the mean over the moving frames within
+	// distanceSmooth of it: a stop is not counted at all, and the frames
+	// slowing into it and out of it are outweighed by those moving on.
+	// Taken frame by frame, the stopped ones bridged, those few slow frames
+	// either side of a stop still pulled a cruising camera down to a
+	// third of its height.
+	moving := make([]float64, n+1) // metres moved, frames moving: running sums
+	count := make([]float64, n+1)
+	for i := range n {
+		moving[i+1], count[i+1] = moving[i], count[i]
+		if i == 0 {
+			continue
+		}
+		if step := metresBetween(lat[i-1], lon[i-1], lat[i], lon[i]); step*fps > stoppedSpeed {
+			moving[i+1] += step
+			count[i+1]++
+		}
+	}
+	w := max(1, int(math.Round(distanceSmooth.Seconds()*fps)))
+	logd := make([]float64, n)
+	known := false
+	for i := range n {
+		logd[i] = math.NaN()
+		a, b := max(0, i-w), min(n-1, i+w)
+		if c := count[b+1] - count[a]; c > 0 {
+			v := (moving[b+1] - moving[a]) / c * fps
+			logd[i] = math.Log(math.Max(AutoDistanceMin, math.Min(AutoDistanceMax, v/autoPace)))
+			known = true
+		}
+	}
+	if !known {
+		for i := range logd {
+			logd[i] = math.Log(AutoDistanceMin)
+		}
+	} else {
+		fillGaps(logd)
+	}
+	k := 1 - math.Exp(-1/(distanceSmooth.Seconds()*fps))
+	for i := 1; i < n; i++ {
+		logd[i] = logd[i-1] + k*(logd[i]-logd[i-1])
+	}
+	for i := n - 2; i >= 0; i-- {
+		logd[i] = logd[i+1] + k*(logd[i]-logd[i+1])
+	}
+	limit := math.Ln2 / (distanceDoubling.Seconds() * fps)
+	clamp := func(d float64) float64 { return math.Max(-limit, math.Min(limit, d)) }
+	for i := 1; i < n; i++ {
+		logd[i] = logd[i-1] + clamp(logd[i]-logd[i-1])
+	}
+	for i := n - 2; i >= 0; i-- {
+		logd[i] = logd[i+1] + clamp(logd[i]-logd[i+1])
+	}
+	out := make([]float64, n)
+	for i := range logd {
+		out[i] = math.Exp(logd[i])
+	}
+	return out
+}
+
+// How the distance in each frame is smoothed: see autoDistances. A speed
+// under stoppedSpeed, in metres a second of video, is standing still.
+const (
+	distanceSmooth   = 3 * time.Second
+	distanceDoubling = 2 * time.Second
+	stoppedSpeed     = 0.5
+)
+
+// offsetMetres is how far east and north one place is of another.
+func offsetMetres(lat0, lon0, lat1, lon1 float64) (east, north float64) {
+	return (lon1 - lon0) * 111_320 * math.Cos(lat0*math.Pi/180), (lat1 - lat0) * 110_574
+}
+
+// metresBetween is the distance between two places.
+func metresBetween(lat0, lon0, lat1, lon1 float64) float64 {
+	return math.Hypot(offsetMetres(lat0, lon0, lat1, lon1))
 }

@@ -247,7 +247,133 @@ func TestFlightChoosesItsDistance(t *testing.T) {
 	cams := Flight(lRoute(), flightFrames, atFrame, overviewCam, flatGround, o)
 	// 2 m/s of activity, a second of it a frame at 30 fps: 60 m/s of video,
 	// under the nearest the camera comes.
-	if d := cams[600].Distance; d != AutoDistanceMin {
+	if d := cams[600].Distance; math.Abs(d-AutoDistanceMin) > 1e-6 {
 		t.Errorf("followed from %.0f m, want %.0f", d, AutoDistanceMin)
+	}
+}
+
+// course is fixes a second apart through the given east, north offsets.
+func course(at [][2]float64) []Point {
+	pts := make([]Point, len(at))
+	for i, p := range at {
+		pts[i] = fixAt(p[0], p[1], i)
+	}
+	return pts
+}
+
+// headingSteps is how far the camera turns from each frame to the next.
+func headingSteps(cams []perspective.Camera) []float64 {
+	out := make([]float64, len(cams))
+	for i := 1; i < len(cams); i++ {
+		out[i] = math.Abs(math.Remainder(cams[i].Heading-cams[i-1].Heading, 360))
+	}
+	return out
+}
+
+// Out and back: the camera swings round at the turnaround, no faster than
+// it turns anywhere, and follows the way back -- where the bearing across
+// the turning window flipped it in a frame.
+func TestFlightSwingsRoundATurnaround(t *testing.T) {
+	var at [][2]float64
+	for i := 0; i <= 600; i++ {
+		at = append(at, [2]float64{float64(2 * i), 0})
+	}
+	for i := 1; i <= 600; i++ {
+		at = append(at, [2]float64{1200 - float64(2*i), 0})
+	}
+	o := flightOpts()
+	o.Swoop = 0 // the swoop turns from the overview's heading by its own rule
+	cams := Flight(course(at), len(at), atFrame, overviewCam, flatGround, o)
+	for i, d := range headingSteps(cams) {
+		if d > maxTurnRate/30+1e-3 {
+			t.Fatalf("frame %d: the camera turned %.1f° in a frame", i, d)
+		}
+	}
+	if h := cams[300].Heading; math.Abs(h-90) > 1 {
+		t.Errorf("going out, the camera looks along %.1f°, want east", h)
+	}
+	if h := cams[900].Heading; math.Abs(math.Remainder(h-270, 360)) > 1 {
+		t.Errorf("coming back, the camera looks along %.1f°, want west", h)
+	}
+}
+
+// Laps of a small park between two straights: the camera holds its course
+// round them rather than spinning with the laps.
+func TestFlightHoldsItsCourseRoundLaps(t *testing.T) {
+	var at [][2]float64
+	for i := 0; i < 300; i++ {
+		at = append(at, [2]float64{float64(2 * i), 0})
+	}
+	const r = 25.0 // a lap of 160 m, 80 s at 2 m/s
+	start := len(at)
+	for i := 0; i < 640; i++ {
+		a := float64(i) * 2 / r
+		at = append(at, [2]float64{600 + r*math.Sin(a), r - r*math.Cos(a)})
+	}
+	end := len(at)
+	for i := 1; i <= 300; i++ {
+		at = append(at, [2]float64{600, float64(2 * i)})
+	}
+	cams := Flight(course(at), len(at), atFrame, overviewCam, flatGround, flightOpts())
+	turned := 0.0
+	for i, d := range headingSteps(cams) {
+		if i > start && i < end {
+			turned += d
+		}
+	}
+	// Eight laps followed would be 2,880°; the camera has one turn to
+	// make, east to north, and some wandering.
+	if turned > 270 {
+		t.Errorf("round eight laps the camera turned %.0f° in all", turned)
+	}
+}
+
+// slowFastSlow is a flight's shape: a crawl, a cruise a hundred times as
+// fast with a stop in the middle of it, a crawl.
+func slowFastSlow() []Point {
+	var at [][2]float64
+	x := 0.0
+	for i := 0; i < 2400; i++ {
+		v := 5.0
+		if i >= 600 && i < 1800 {
+			v = 500
+			if i >= 1150 && i < 1250 {
+				v = 0
+			}
+		}
+		x += v
+		at = append(at, [2]float64{x, 0})
+	}
+	return course(at)
+}
+
+// Chosen in each frame, the distance is close where the activity crawls and
+// far where it cruises, changes by no more than a doubling in
+// distanceDoubling, and is not drawn down by a stop.
+func TestFlightDistanceFollowsTheSpeed(t *testing.T) {
+	o := flightOpts()
+	o.Distance, o.Swoop = 0, 0
+	cams := Flight(slowFastSlow(), 2400, atFrame, overviewCam, flatGround, o)
+	near, far := cams[100].Distance, cams[1000].Distance
+	// A second of activity a frame at 30 fps: 150 m/s of video crawling,
+	// 15 km/s cruising -- 333 m and 33 km at the pace.
+	if math.Abs(near/(150/autoPace)-1) > 0.1 || math.Abs(far/(15000/autoPace)-1) > 0.1 {
+		t.Errorf("followed from %.0f m crawling and %.0f m cruising, want about %.0f and %.0f", near, far, 150/autoPace, 15000/autoPace)
+	}
+	limit := math.Ln2 / (distanceDoubling.Seconds() * 30)
+	for i := 1; i < len(cams); i++ {
+		if d := math.Abs(math.Log(cams[i].Distance / cams[i-1].Distance)); d > limit+1e-9 {
+			t.Fatalf("frame %d: the distance changed by %.3f of a doubling in a frame", i, d/math.Ln2)
+		}
+	}
+	if d := cams[1200].Distance; d < 0.8*far {
+		t.Errorf("stopped mid-cruise, followed from %.0f m, down from %.0f", d, far)
+	}
+	o.SteadyDistance = true
+	steady := Flight(slowFastSlow(), 2400, atFrame, overviewCam, flatGround, o)
+	for i, c := range steady {
+		if c.Distance != steady[0].Distance {
+			t.Fatalf("frame %d: a steady distance changed, %.0f to %.0f", i, steady[0].Distance, c.Distance)
+		}
 	}
 }
