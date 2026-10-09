@@ -662,7 +662,7 @@ func newTransferBar(w io.Writer, total int64) (*progress.Display, *progress.Bar)
 
 func newBar(w io.Writer, label string, total int64) (*progress.Display, *progress.Bar) {
 	d := progress.New(w, progress.Options{Palette: progress.DefaultGradient()})
-	return d, d.Bar(progress.BarSpec{Label: label, Total: total, Unit: "B"})
+	return d, d.Bar(progress.BarSpec{Label: label, Total: total, Unit: "B", Bytes: true})
 }
 
 // writeFetchPlan states the cost before anything is downloaded.
