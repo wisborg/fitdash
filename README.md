@@ -229,8 +229,11 @@ where it passed 200 km/h. The time the aircraft stood at the gate before it firs
 after it last stopped, is left out; the taxi and roll at each end get about twelve seconds of
 video, and the pace eases from there to the base rate over a few seconds as the aircraft
 climbs away or comes in, so the camera comes down to the taxiways and rises with the climb.
-The video added and the time left out are in the summary, and `--video-duration` compresses
-what is left. `--airports on` does the same for any route view, `off` for none.
+A journey of several flights — one recording, or several merged — is paced at every airport,
+the stopovers as much as the two ends, and the time on the ground between flights is left out
+with a card saying so as it passes. The video added and the time left out are in the summary,
+and `--video-duration` compresses what is left. `--airports on` does the same for any route
+view, `off` for none.
 
 Under `3d` and `flyover` the map is drawn in osmbase's **outdoors** palette — fuller greens,
 bluer water, deeper hill shading — and the route in the dark navy and crimson made for it,

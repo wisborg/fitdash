@@ -184,6 +184,10 @@ type Cut struct {
 	// own start. Set by whoever builds the timeline; the rest is resolved.
 	From, To time.Duration
 
+	// Word is what the cut's notice calls the stretch, when it was not a
+	// pause: "ON THE GROUND" for a flight's stopover. Empty is a pause.
+	Word string
+
 	// FirstFrame, LastFrame are the frames this cut's notice occupies.
 	// FirstFrame is the first frame AFTER the removed stretch -- the frame
 	// the splice lands on -- and LastFrame is cutNoticeVideo of video time
@@ -687,6 +691,9 @@ func unionCuts(a, b []Cut) []Cut {
 		last := &out[len(out)-1]
 		if c.From <= last.To {
 			last.To = max(last.To, c.To)
+			if c.Word != "" {
+				last.Word = c.Word
+			}
 			continue
 		}
 		out = append(out, c)

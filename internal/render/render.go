@@ -689,6 +689,16 @@ func (r *Renderer) drawHighlightBorder(c *panel.Canvas, f panel.Frame) {
 // the spacing lived.
 const cutNoticeWord = "PAUSED "
 
+// noticeWord is what cut's card calls it: the cut's own word when it has
+// one -- "ON THE GROUND" for a flight's stopover, which was not a pause --
+// and cutNoticeWord otherwise, with the trailing space either way.
+func noticeWord(cut panel.Cut) string {
+	if cut.Word != "" {
+		return cut.Word + " "
+	}
+	return cutNoticeWord
+}
+
 const (
 	cutNoticeTextFraction   = 0.55
 	cutNoticePadXFraction   = 0.70
@@ -720,7 +730,7 @@ const cutNoticeSamples = 9
 type cutNotice struct {
 	box   panel.Box
 	px    float64
-	wordW float64
+	wordW []float64 // each cut's word's width
 	padX  float64
 	pad   float64 // border thickness
 }
@@ -779,9 +789,17 @@ func (r *Renderer) resolveCutNotice() error {
 			clockW = w
 		}
 	}
-	wordW, textH, err := c.MeasureText(cutNoticeWord, px)
-	if err != nil {
-		return err
+	// Each cut's own word -- a pause's, or a flight's stopover -- measured
+	// for laying out its duration after it, the card as wide as the widest.
+	cuts := r.ctx.Timeline.Cuts()
+	wordWs := make([]float64, len(cuts))
+	var wordW, textH float64
+	for i, cut := range cuts {
+		w, h, err := c.MeasureText(noticeWord(cut), px)
+		if err != nil {
+			return err
+		}
+		wordWs[i], wordW, textH = w, max(wordW, w), max(textH, h)
 	}
 
 	padX, padY := px*cutNoticePadXFraction, px*cutNoticePadYFraction
@@ -834,7 +852,7 @@ func (r *Renderer) resolveCutNotice() error {
 		}
 	}
 
-	r.notice = cutNotice{box: best, px: px, wordW: wordW, padX: padX, pad: border}
+	r.notice = cutNotice{box: best, px: px, wordW: wordWs, padX: padX, pad: border}
 	return nil
 }
 
@@ -969,8 +987,8 @@ func (r *Renderer) drawCutNotice(c *panel.Canvas, f panel.Frame) {
 	// centred strings that would separate as the duration's own width
 	// changed.
 	textY := n.box.Y + n.box.H/2
-	_ = c.Text(cutNoticeWord, n.box.X+n.padX, textY, 0, 0.5, n.px, col)
-	_ = c.Text(panel.FormatClock(cuts[f.Cut].Removed()), n.box.X+n.padX+n.wordW, textY, 0, 0.5, n.px, panel.Fade(c.Theme.Foreground, w))
+	_ = c.Text(noticeWord(cuts[f.Cut]), n.box.X+n.padX, textY, 0, 0.5, n.px, col)
+	_ = c.Text(panel.FormatClock(cuts[f.Cut].Removed()), n.box.X+n.padX+n.wordW[f.Cut], textY, 0, 0.5, n.px, panel.Fade(c.Theme.Foreground, w))
 }
 
 // Render draws a complete frame from scratch: background, static content, then

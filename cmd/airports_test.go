@@ -18,19 +18,29 @@ import (
 // cruise, the landing, a five-minute taxi in and fifteen minutes at the
 // arrival gate.
 func syntheticFlight() *fitactivity.Track {
-	type leg struct {
-		d, every time.Duration
-		speed    float64
-	}
-	legs := []leg{
-		{20 * time.Minute, 10 * time.Minute, 0},
-		{6 * time.Minute, 5 * time.Second, 5},
-		{1 * time.Minute, 2 * time.Second, 40},
-		{90 * time.Minute, 10 * time.Second, 230},
-		{1 * time.Minute, 2 * time.Second, 70},
-		{5 * time.Minute, 5 * time.Second, 6},
-		{15 * time.Minute, 5 * time.Second, 0},
-	}
+	return syntheticTrack(flightLegs...)
+}
+
+// flightLeg is a stretch of a synthetic track: d long at speed m/s due
+// east, with a fix every every; speed 0 is a stand.
+type flightLeg struct {
+	d, every time.Duration
+	speed    float64
+}
+
+// flightLegs are syntheticFlight's.
+var flightLegs = []flightLeg{
+	{20 * time.Minute, 10 * time.Minute, 0},
+	{6 * time.Minute, 5 * time.Second, 5},
+	{1 * time.Minute, 2 * time.Second, 40},
+	{90 * time.Minute, 10 * time.Second, 230},
+	{1 * time.Minute, 2 * time.Second, 70},
+	{5 * time.Minute, 5 * time.Second, 6},
+	{15 * time.Minute, 5 * time.Second, 0},
+}
+
+// syntheticTrack lays legs end to end from a fixed point.
+func syntheticTrack(legs ...flightLeg) *fitactivity.Track {
 	t := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
 	east := 0.0
 	tr := &fitactivity.Track{}
@@ -67,16 +77,17 @@ func TestAirports_PaceAFlight(t *testing.T) {
 	const base, fps = 400.0, 30.0
 
 	p := findAirports(track, timer)
-	if !p.found {
+	if !p.found() {
 		t.Fatal("the flight was not recognised")
 	}
 	if len(p.leave) != 2 || p.leave[0].From != 0 || !near(p.leave[0].To, 20*time.Minute) || !near(p.leave[1].From, 123*time.Minute) {
 		t.Fatalf("left out %v, want the gate before 20m and the arrival gate from 2h3m", p.leave)
 	}
 	p = paceAirports(p, timer, base, nil)
-	if p.departure[1] <= p.departure[0] || p.arrival[1] <= p.arrival[0] {
-		t.Fatalf("departure %v, arrival %v: both airports should be paced", p.departure, p.arrival)
+	if len(p.paced) != 2 || p.paced[0].name != "departure" || p.paced[1].name != "arrival" {
+		t.Fatalf("paced %v: both airports should be", p.paced)
 	}
+	dep, arr := p.paced[0], p.paced[1]
 	for i := 1; i < len(p.paces); i++ {
 		if p.paces[i].From < p.paces[i-1].To {
 			t.Fatalf("pace %d %v overlaps the one before it %v", i, p.paces[i], p.paces[i-1])
@@ -92,17 +103,17 @@ func TestAirports_PaceAFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, s := range map[string][2]time.Duration{"departure": p.departure, "arrival": p.arrival} {
-		video := time.Duration(float64(tl.IndexAt(s[1])-tl.IndexAt(s[0])) / fps * float64(time.Second))
+	for _, s := range p.paced {
+		video := time.Duration(float64(tl.IndexAt(s.to)-tl.IndexAt(s.from)) / fps * float64(time.Second))
 		if video < airportVideo-time.Second/2 || video > airportVideo+time.Second/2 {
-			t.Errorf("the %s takes %v of video, want about %v", name, video, airportVideo)
+			t.Errorf("the %s takes %v of video, want about %v", s.name, video, airportVideo)
 		}
 	}
 	// The ease after the departure climbs: each step faster than the one
 	// before, as the aircraft goes faster.
 	var ease []panel.Pacing
 	for _, pc := range p.paces {
-		if pc.From >= p.departure[1] && pc.To <= p.arrival[0] && pc.From < 60*time.Minute {
+		if pc.From >= dep.to && pc.To <= arr.from && pc.From < 60*time.Minute {
 			ease = append(ease, pc)
 		}
 	}
@@ -127,11 +138,8 @@ func TestAirports_HighlightTakesItsAirport(t *testing.T) {
 	p := findAirports(track, timer)
 	h := panel.Highlight{Name: "push", From: 21 * time.Minute, To: 23 * time.Minute, Video: 5 * time.Second}
 	p = paceAirports(p, timer, 400, []panel.Highlight{h})
-	if p.departure != [2]time.Duration{} {
-		t.Errorf("the departure was paced over a highlight: %v", p.departure)
-	}
-	if p.arrival[1] <= p.arrival[0] {
-		t.Error("the arrival was dropped with the departure")
+	if len(p.paced) != 1 || p.paced[0].name != "arrival" {
+		t.Errorf("paced %v, want the arrival alone: the departure is the highlight's", p.paced)
 	}
 	if len(p.dropped) != 1 || p.dropped[0] != "departure" {
 		t.Errorf("dropped %v, want [departure]", p.dropped)
@@ -203,5 +211,44 @@ func TestAirportsWanted(t *testing.T) {
 	renderOpts.airports = "sometimes"
 	if _, err := airportsWanted(); err == nil || !strings.Contains(err.Error(), "--airports") {
 		t.Errorf("an unknown --airports was accepted: %v", err)
+	}
+}
+
+// Two flights with a stopover between: all four airports are paced, the
+// stand at the stopover is left out with a seam that says the aircraft was
+// on the ground, and the gates at either end with none.
+func TestAirports_StopoverIsAnAirportToo(t *testing.T) {
+	legs := append(append(append([]flightLeg{}, flightLegs[:6]...),
+		flightLeg{2 * time.Hour, 15 * time.Minute, 0}),
+		flightLegs[1:]...)
+	track := syntheticTrack(legs...)
+	timer := fitactivity.BuildTimerModel(track)
+	p := paceAirports(findAirports(track, timer), timer, 400, nil)
+	if len(p.legs) != 2 {
+		t.Fatalf("%d legs, want 2", len(p.legs))
+	}
+	var names []string
+	for _, s := range p.paced {
+		names = append(names, s.name)
+	}
+	if got, want := strings.Join(names, ","), "leg 1 departure,leg 1 arrival,leg 2 departure,leg 2 arrival"; got != want {
+		t.Errorf("paced %s, want %s", got, want)
+	}
+	if len(p.leave) != 3 {
+		t.Fatalf("left out %v, want the gate, the stopover and the arrival gate", p.leave)
+	}
+	if p.leave[0].Word != "" || p.leave[2].Word != "" || p.leave[1].Word != groundWord {
+		t.Errorf("left out %v: only the stopover is a seam on the ground", p.leave)
+	}
+	// Each end of the stand is found to within half a minute.
+	if d := p.leave[1].Removed() - 2*time.Hour; d < -time.Minute || d > time.Minute {
+		t.Errorf("the stopover leaves out %v, want 2h to within a minute", p.leave[1].Removed())
+	}
+	tl, err := panel.NewTimelineForActivityPaced(timer, 30, 400, nil, panel.PausesFreeze, p.paces, p.leave)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cuts := tl.Cuts(); len(cuts) != 1 || cuts[0].Word != groundWord {
+		t.Errorf("seams %v, want the stopover's alone", cuts)
 	}
 }

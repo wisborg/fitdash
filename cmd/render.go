@@ -304,8 +304,9 @@ func bindRenderFlags(c *cobra.Command) {
 			"distance the same way for the whole video")
 	f.StringVar(&renderOpts.airports, "airports", airportsAuto,
 		"what to do with a flight's airports: \"on\" finds them -- a track that held 400 km/h for five minutes is a "+
-			"flight -- leaves out the time the aircraft stood at the gate before it first moved and after it last "+
-			"stopped, and gives each airport's taxi and roll about 12 seconds of video, easing to the base rate as the "+
+			"flight, and a journey of several, merged or not, has a stopover between each -- leaves out the time the "+
+			"aircraft stood at the gate before it first moved, on the ground at each stopover (marked on screen as it "+
+			"passes) and after it last stopped, and gives each airport's taxi and roll about 12 seconds of video, easing to the base rate as the "+
 			"aircraft climbs away or comes in, so the cruise's compression does not pass them in a frame; \"auto\" "+
 			"(default) does that under --route-view flyover, whose camera can then come down to the taxiways, and "+
 			"nothing otherwise; \"off\" renders a flight like any other activity. The time left out and the video "+

@@ -2219,8 +2219,12 @@ the threshold is set against, and above a light aircraft, which is therefore not
 Take-off and landing are where speed, measured over half a minute either side to average out
 a window seat's GPS, passes 200 km/h. The taxi reaches back from take-off to the last stand —
 five minutes within 150 m, or five minutes with no fix at all, which is how a phone logs a
-parked aircraft — and forward from landing to the first. A recording of several flights is
-paced at its first take-off and last landing only.
+parked aircraft — and forward from landing to the first. A recording of several flights — or
+several files of one journey, merged — is a leg per stretch above take-off speed that holds
+the cruise somewhere (a fast train between two flights is ground), and every airport is
+paced, a stopover's as much as the journey's ends. The stand at a stopover is left out too,
+but it is a splice, with a seam: its card says ON THE GROUND rather than PAUSED, because
+nobody paused — `Cut.Word` carries the word.
 
 ### `--dry-run`: everything except the encode
 

@@ -4,17 +4,18 @@ import (
 	"time"
 )
 
-// Airports is where a flight was on the ground at either end: when it began
-// to move after standing at the gate, when it took off, when it landed and
-// when it stopped again. A flight recorded from the seat carries both ends --
-// the taxi out and the taxi in -- and between them hours at hundreds of
-// kilometres an hour, so a render paced for the cruise passes the airports in
-// a frame or two.
+// Leg is one flight of a recording, and where it was on the ground at
+// either end: when it began to move after standing at the gate, when it
+// took off, when it landed and when it stopped again. A flight recorded from
+// the seat carries both ends -- the taxi out and the taxi in -- and between
+// them hours at hundreds of kilometres an hour, so a render paced for the
+// cruise passes the airports in a frame or two. A recording of a journey
+// carries several, with a stopover between each and the next.
 //
 // A zero time is an end the recording does not show: one started after
 // take-off has no Moving and no TakeOff, one stopped before the aircraft
 // stood still again has no Stopped.
-type Airports struct {
+type Leg struct {
 	// Moving is when the aircraft began to move after its last long stand
 	// before take-off -- the gate, or a remote stand -- and is the first fix
 	// when the recording began with it already moving.
@@ -27,6 +28,9 @@ type Airports struct {
 
 	// Stopped is when the aircraft came to its first long stand after
 	// landing, and is the last fix when the recording ended still moving.
+	// Between two legs with no stand found -- an aircraft that never stood
+	// still for long, or a recording with no fix to tell -- a leg's Stopped
+	// and the next one's Moving are the same instant, halfway between.
 	Stopped time.Time
 }
 
@@ -71,16 +75,19 @@ const (
 	airportStep = 5 * time.Second
 )
 
-// FindAirports finds where a flight was on the ground, from its fixes;
-// false when the fixes are not a flight's -- nothing held cruiseSpeed for
-// cruiseHold -- or are too few to tell.
-func FindAirports(fixes []Point) (Airports, bool) {
+// FindAirports finds the flights of a recording, in order, and where each
+// was on the ground, from its fixes; none when the fixes are not a flight's
+// -- nothing held cruiseSpeed for cruiseHold -- or are too few to tell.
+//
+// A flight is a stretch above takeOffSpeed that somewhere holds the cruise;
+// one that never does -- a fast train between two flights -- is ground.
+func FindAirports(fixes []Point) []Leg {
 	if len(fixes) < 2 {
-		return Airports{}, false
+		return nil
 	}
 	start, end := fixes[0].Time, fixes[len(fixes)-1].Time
 	if end.Sub(start) < cruiseHold {
-		return Airports{}, false
+		return nil
 	}
 	n := int(end.Sub(start)/airportStep) + 1
 	at := func(i int) time.Time { return start.Add(time.Duration(i) * airportStep) }
@@ -97,102 +104,130 @@ func FindAirports(fixes []Point) (Airports, bool) {
 		}
 	}
 
-	// A flight: some stretch at cruiseSpeed throughout.
-	hold, run, flying := int(cruiseHold/airportStep), 0, false
-	for _, v := range speed {
-		if v >= cruiseSpeed {
-			run++
-			if run >= hold {
-				flying = true
-				break
-			}
-		} else {
-			run = 0
+	// The flights: each stretch above takeOffSpeed, kept when it holds the
+	// cruise somewhere.
+	type span struct{ from, to int } // grid indices, inclusive
+	var flights []span
+	hold := int(cruiseHold / airportStep)
+	for i := 0; i < n; {
+		if speed[i] < takeOffSpeed {
+			i++
+			continue
 		}
+		j, run, cruising := i, 0, false
+		for ; j < n && speed[j] >= takeOffSpeed; j++ {
+			if speed[j] >= cruiseSpeed {
+				run++
+				cruising = cruising || run >= hold
+			} else {
+				run = 0
+			}
+		}
+		if cruising {
+			flights = append(flights, span{i, j - 1})
+		}
+		i = j
 	}
-	if !flying {
-		return Airports{}, false
+	if len(flights) == 0 {
+		return nil
 	}
 
-	var a Airports
-	first, last := -1, -1
-	for i, v := range speed {
-		if v >= takeOffSpeed {
-			if first < 0 {
-				first = i
+	stand := int(standTime / airportStep)
+	legs := make([]Leg, len(flights))
+	for k, f := range flights {
+		// The ground this leg's ends are looked for in: back to the
+		// previous flight's landing, on to the next one's take-off.
+		lo, hi := 0, n-1
+		loFix, hiFix := start, end
+		if k > 0 {
+			lo, loFix = flights[k-1].to+1, at(flights[k-1].to+1)
+		}
+		if k < len(flights)-1 {
+			hi, hiFix = flights[k+1].from-1, at(flights[k+1].from-1)
+		}
+		l := &legs[k]
+		if f.from > 0 {
+			l.TakeOff = at(f.from)
+			l.Moving = loFix
+			if k > 0 {
+				l.Moving = time.Time{} // settled below, with the previous leg's Stopped
 			}
-			last = i
+			// The latest stand before take-off, and the last moment the
+			// aircraft was still near where it stood -- measured from the
+			// stand's start, where it has certainly not yet moved. Within
+			// standRadius is still standing, so this comes out late by the
+			// time the taxi takes to cover it: half a minute at a walking-
+			// pace pushback's end, and the same early at the far end.
+			for s := f.from - stand; s >= lo; s-- {
+				if standing(lat, lon, s, s+stand) {
+					e := s + stand
+					for e < f.from && metresBetween(lat[s], lon[s], lat[e], lon[e]) <= standRadius {
+						e++
+					}
+					l.Moving = at(e - 1)
+					break
+				}
+			}
+			for j := len(fixes) - 1; j > 0; j-- {
+				if !fixes[j].Time.Before(l.TakeOff) {
+					continue
+				}
+				if fixes[j].Time.Before(loFix) {
+					break
+				}
+				if fixes[j].Time.Sub(fixes[j-1].Time) >= standTime {
+					if fixes[j].Time.After(l.Moving) {
+						l.Moving = fixes[j].Time
+					}
+					break
+				}
+			}
+		}
+		if f.to < n-1 {
+			l.Landing = at(f.to)
+			if k == len(flights)-1 {
+				l.Stopped = hiFix
+			}
+			// The earliest stand after landing, and the first moment the
+			// aircraft was already near where it stood. Measured from the
+			// stand's end, where it has certainly stopped: its start can be
+			// up to standRadius short of the stop.
+			for s := f.to + 1; s+stand <= hi; s++ {
+				if standing(lat, lon, s, s+stand) {
+					e := s + stand
+					b := e
+					for b > f.to && metresBetween(lat[e], lon[e], lat[b], lon[b]) <= standRadius {
+						b--
+					}
+					l.Stopped = at(b + 1)
+					break
+				}
+			}
+			for j := 0; j < len(fixes)-1; j++ {
+				if !fixes[j].Time.After(l.Landing) {
+					continue
+				}
+				if fixes[j].Time.After(hiFix) {
+					break
+				}
+				if fixes[j+1].Time.Sub(fixes[j].Time) >= standTime {
+					if l.Stopped.IsZero() || fixes[j].Time.Before(l.Stopped) {
+						l.Stopped = fixes[j].Time
+					}
+					break
+				}
+			}
 		}
 	}
-	// A recording that begins at speed shows no take-off: it was already
-	// flying, or on its roll, at its first fix. Likewise at the end.
-	if first > 0 && speed[0] < takeOffSpeed {
-		a.TakeOff = at(first)
-		a.Moving = start
-		stand := int(standTime / airportStep)
-		// The latest stand before take-off, and the last moment the
-		// aircraft was still near where it stood -- measured from the
-		// stand's start, where it has certainly not yet moved. Within
-		// standRadius is still standing, so this comes out late by the
-		// time the taxi takes to cover it: half a minute at a walking-pace
-		// pushback's end, and the same early at the far end.
-		for s := first - stand; s >= 0; s-- {
-			if standing(lat, lon, s, s+stand) {
-				e := s + stand
-				for e < first && metresBetween(lat[s], lon[s], lat[e], lon[e]) <= standRadius {
-					e++
-				}
-				a.Moving = at(e - 1)
-				break
-			}
-		}
-		for j := len(fixes) - 1; j > 0; j-- {
-			if !fixes[j].Time.Before(a.TakeOff) {
-				continue
-			}
-			if fixes[j].Time.Sub(fixes[j-1].Time) >= standTime {
-				if fixes[j].Time.After(a.Moving) {
-					a.Moving = fixes[j].Time
-				}
-				break
-			}
+	// A stopover with no stand found either way: the two legs meet halfway.
+	for k := 0; k+1 < len(legs); k++ {
+		a, b := &legs[k], &legs[k+1]
+		if a.Stopped.IsZero() || b.Moving.IsZero() || b.Moving.Before(a.Stopped) {
+			mid := a.Landing.Add(b.TakeOff.Sub(a.Landing) / 2)
+			a.Stopped, b.Moving = mid, mid
 		}
 	}
-	if last < n-1 && speed[n-1] < takeOffSpeed {
-		a.Landing = at(last)
-		a.Stopped = end
-		stand := int(standTime / airportStep)
-		// The earliest stand after landing, and the first moment the
-		// aircraft was already near where it stood. Measured from the
-		// stand's end, where it has certainly stopped: its start can be up
-		// to standRadius short of the stop.
-		for s := last + 1; s+stand < n; s++ {
-			if standing(lat, lon, s, s+stand) {
-				e := s + stand
-				b := e
-				for b > last && metresBetween(lat[e], lon[e], lat[b], lon[b]) <= standRadius {
-					b--
-				}
-				a.Stopped = at(b + 1)
-				break
-			}
-		}
-		for j := 0; j < len(fixes)-1; j++ {
-			if !fixes[j].Time.After(a.Landing) {
-				continue
-			}
-			if fixes[j+1].Time.Sub(fixes[j].Time) >= standTime {
-				if fixes[j].Time.Before(a.Stopped) {
-					a.Stopped = fixes[j].Time
-				}
-				break
-			}
-		}
-	}
-	if a.TakeOff.IsZero() && a.Landing.IsZero() {
-		return Airports{}, false
-	}
-	return a, true
+	return legs
 }
 
 // standing reports whether every position from a to b is within standRadius

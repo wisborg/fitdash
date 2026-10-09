@@ -64,10 +64,11 @@ func TestFindAirportsFindsBothEnds(t *testing.T) {
 		leg{15 * time.Minute, 5 * time.Second, 0}, // arrival gate
 	)
 	start := fixes[0].Time
-	a, ok := FindAirports(fixes)
-	if !ok {
-		t.Fatal("a flight was not recognised")
+	legs := FindAirports(fixes)
+	if len(legs) != 1 {
+		t.Fatalf("%d flights found, want 1", len(legs))
 	}
+	a := legs[0]
 	if !near(a.Moving, start, 20*time.Minute, 30*time.Second) {
 		t.Errorf("moving at %v, want 20m: the gate, logged as fixes ten minutes apart, is a stand", a.Moving.Sub(start))
 	}
@@ -95,10 +96,11 @@ func TestFindAirportsKeepsAHoldInTheTaxi(t *testing.T) {
 		leg{60 * time.Minute, 10 * time.Second, 230},
 	)
 	start := fixes[0].Time
-	a, ok := FindAirports(fixes)
-	if !ok {
-		t.Fatal("a flight was not recognised")
+	legs := FindAirports(fixes)
+	if len(legs) != 1 {
+		t.Fatalf("%d flights found, want 1", len(legs))
 	}
+	a := legs[0]
 	if !near(a.Moving, start, 10*time.Minute, 30*time.Second) {
 		t.Errorf("moving at %v, want 10m: the hold is part of the taxi", a.Moving.Sub(start))
 	}
@@ -114,10 +116,11 @@ func TestFindAirportsStartedInTheAir(t *testing.T) {
 		leg{1 * time.Minute, 2 * time.Second, 70},
 		leg{5 * time.Minute, 5 * time.Second, 6},
 	)
-	a, ok := FindAirports(fixes)
-	if !ok {
-		t.Fatal("a flight was not recognised")
+	legs := FindAirports(fixes)
+	if len(legs) != 1 {
+		t.Fatalf("%d flights found, want 1", len(legs))
 	}
+	a := legs[0]
 	if !a.Moving.IsZero() || !a.TakeOff.IsZero() {
 		t.Errorf("moving %v, take-off %v: the recording began in the cruise", a.Moving, a.TakeOff)
 	}
@@ -135,8 +138,67 @@ func TestFindAirportsIgnoresTrainsAndCars(t *testing.T) {
 			leg{60 * time.Minute, 5 * time.Second, speed},
 			leg{10 * time.Minute, 5 * time.Second, 0},
 		)
-		if _, ok := FindAirports(fixes); ok {
+		if legs := FindAirports(fixes); len(legs) > 0 {
 			t.Errorf("a %s at %.0f km/h was taken for a flight", name, speed*3.6)
 		}
+	}
+}
+
+// A journey of two flights: each leg has its own airports, and the
+// stopover between them is the first leg's arrival and the second's
+// departure, with the stand between left to neither.
+func TestFindAirportsFindsAStopover(t *testing.T) {
+	fixes := track(40,
+		leg{20 * time.Minute, 10 * time.Minute, 0},
+		leg{6 * time.Minute, 5 * time.Second, 5},
+		leg{1 * time.Minute, 2 * time.Second, 40},
+		leg{60 * time.Minute, 10 * time.Second, 230},
+		leg{1 * time.Minute, 2 * time.Second, 70},
+		leg{5 * time.Minute, 5 * time.Second, 6},   // taxi in
+		leg{90 * time.Minute, 15 * time.Minute, 0}, // the stopover, sparse
+		leg{4 * time.Minute, 5 * time.Second, 5},   // taxi out again
+		leg{1 * time.Minute, 2 * time.Second, 40},
+		leg{60 * time.Minute, 10 * time.Second, 230},
+		leg{1 * time.Minute, 2 * time.Second, 70},
+		leg{5 * time.Minute, 5 * time.Second, 6},
+		leg{15 * time.Minute, 5 * time.Second, 0},
+	)
+	start := fixes[0].Time
+	legs := FindAirports(fixes)
+	if len(legs) != 2 {
+		t.Fatalf("%d flights found, want 2", len(legs))
+	}
+	if !near(legs[0].Stopped, start, 93*time.Minute, 30*time.Second) {
+		t.Errorf("first leg stopped at %v, want 1h33m, the stopover's gate", legs[0].Stopped.Sub(start))
+	}
+	if !near(legs[1].Moving, start, 183*time.Minute, 30*time.Second) {
+		t.Errorf("second leg moving at %v, want 3h3m, the pushback after the stopover", legs[1].Moving.Sub(start))
+	}
+	if !legs[0].Landing.Before(legs[0].Stopped) || !legs[1].Moving.Before(legs[1].TakeOff) {
+		t.Errorf("the stopover's ends are out of order: %+v", legs)
+	}
+	if !near(legs[1].Stopped, start, 254*time.Minute, 30*time.Second) {
+		t.Errorf("second leg stopped at %v, want 4h14m", legs[1].Stopped.Sub(start))
+	}
+}
+
+// A fast train between two flights is ground, not a third flight.
+func TestFindAirportsTrainIsNotAFlight(t *testing.T) {
+	fixes := track(0,
+		leg{10 * time.Minute, 5 * time.Second, 0},
+		leg{3 * time.Minute, 5 * time.Second, 5},
+		leg{1 * time.Minute, 2 * time.Second, 40},
+		leg{60 * time.Minute, 10 * time.Second, 230},
+		leg{1 * time.Minute, 2 * time.Second, 70},
+		leg{3 * time.Minute, 5 * time.Second, 6},
+		leg{10 * time.Minute, 5 * time.Second, 0},
+		leg{40 * time.Minute, 5 * time.Second, 300 / 3.6}, // the train
+		leg{10 * time.Minute, 5 * time.Second, 0},
+		leg{3 * time.Minute, 5 * time.Second, 5},
+		leg{1 * time.Minute, 2 * time.Second, 40},
+		leg{60 * time.Minute, 10 * time.Second, 230},
+	)
+	if legs := FindAirports(fixes); len(legs) != 2 {
+		t.Errorf("%d flights found, want 2: the train between them is not one", len(legs))
 	}
 }

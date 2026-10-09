@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wisborg/fitactivity"
@@ -47,19 +48,26 @@ const (
 )
 
 // airportPlan is what --airports does to a render: the stretches left out
-// at the gate, and the airports' paced stretches with their eases.
+// at the gates, and the airports' paced stretches with their eases.
 type airportPlan struct {
-	found    bool
-	airports route.Airports
-	leave    []panel.Cut
-	paces    []panel.Pacing
+	legs  []route.Leg
+	leave []panel.Cut
+	paces []panel.Pacing
 
-	// departure and arrival are the airports' own stretches, without the
-	// eases, as offsets; zero when not paced. dropped names an airport left
-	// at the base rate because a --highlight covers it.
-	departure, arrival [2]time.Duration
-	dropped            []string
+	// paced is each airport given its own stretch, without its ease, for the
+	// summary; dropped names each a --highlight covers and paces instead.
+	paced   []airportStretch
+	dropped []string
 }
+
+// airportStretch is one airport's ground stretch, as offsets.
+type airportStretch struct {
+	name     string
+	from, to time.Duration
+}
+
+// found reports whether the activity is a flight at all.
+func (p airportPlan) found() bool { return len(p.legs) > 0 }
 
 // left is the time the plan leaves out.
 func (p airportPlan) left() time.Duration {
@@ -69,6 +77,10 @@ func (p airportPlan) left() time.Duration {
 	}
 	return d
 }
+
+// groundWord is what a stopover's seam is called on screen: the aircraft
+// stood at an airport, which is not a pause anybody took.
+const groundWord = "ON THE GROUND"
 
 // airportsWanted reads --airports: whether a flight's airports are to be
 // found and paced.
@@ -84,83 +96,96 @@ func airportsWanted() (bool, error) {
 	return false, fmt.Errorf("render: --airports %q is invalid; use auto, on or off", renderOpts.airports)
 }
 
-// findAirports finds a flight's airports in the track and the time to leave
-// out at its gates, as offsets from the activity's window start. The paces
-// come later, once the base rate is known: see paceAirports.
+// findAirports finds a flight's legs in the track and the time to leave out
+// at its gates, as offsets from the activity's window start: before the
+// aircraft first moved, between each stop and the next pushback -- a seam
+// whose card says the aircraft was on the ground -- and after it last
+// stopped. The paces come later, once the base rate is known: see
+// paceAirports.
 func findAirports(track *fitactivity.Track, timer *fitactivity.TimerModel) airportPlan {
-	a, ok := route.FindAirports(route.FromTrack(track, len(track.Samples)+1))
-	if !ok {
+	legs := route.FindAirports(route.FromTrack(track, len(track.Samples)+1))
+	if len(legs) == 0 {
 		return airportPlan{}
 	}
 	start, end := timer.Window()
-	p := airportPlan{found: true, airports: a}
-	if !a.Moving.IsZero() && a.Moving.After(start) {
-		p.leave = append(p.leave, panel.Cut{From: 0, To: a.Moving.Sub(start)})
+	p := airportPlan{legs: legs}
+	if first := legs[0].Moving; !first.IsZero() && first.After(start) {
+		p.leave = append(p.leave, panel.Cut{From: 0, To: first.Sub(start)})
 	}
-	if !a.Stopped.IsZero() && a.Stopped.Before(end) {
-		p.leave = append(p.leave, panel.Cut{From: a.Stopped.Sub(start), To: end.Sub(start)})
+	for k := 0; k+1 < len(legs); k++ {
+		if stop, move := legs[k].Stopped, legs[k+1].Moving; move.After(stop) {
+			p.leave = append(p.leave, panel.Cut{From: stop.Sub(start), To: move.Sub(start), Word: groundWord})
+		}
+	}
+	if last := legs[len(legs)-1].Stopped; !last.IsZero() && last.Before(end) {
+		p.leave = append(p.leave, panel.Cut{From: last.Sub(start), To: end.Sub(start)})
 	}
 	return p
 }
 
-// paceAirports gives each airport of p its own stretch of video at base
-// rate base, eased to the base rate on the side toward the flight, and
+// paceAirports gives each airport of p -- every departure and arrival, a
+// stopover's as much as the journey's ends -- its own stretch of video at
+// base rate base, eased to the base rate on the side toward the flight, and
 // leaves an airport any highlight overlaps at the base rate. An airport
 // whose ground stretch would take less than airportVideo even at the base
 // rate is already slow enough, and is left as it is.
 func paceAirports(p airportPlan, timer *fitactivity.TimerModel, base float64, highlights []panel.Highlight) airportPlan {
-	if !p.found {
+	if !p.found() {
 		return p
 	}
 	start, end := timer.Window()
 	span := end.Sub(start)
-	a := p.airports
-
-	var dep, arr []panel.Pacing
-	// The ease of each may reach no further than halfway to the other's
-	// stretch, so a short flight's two eases meet rather than overlap.
-	depEnd, arrStart := time.Duration(-1), time.Duration(-1)
-	if !a.TakeOff.IsZero() {
-		depEnd = min(a.TakeOff.Sub(start)+airportMargin, span)
-	}
-	if !a.Landing.IsZero() {
-		arrStart = max(a.Landing.Sub(start)-airportMargin, 0)
-	}
-	limitAfter, limitBefore := span, time.Duration(0)
-	if depEnd >= 0 && arrStart >= 0 {
-		mid := (depEnd + arrStart) / 2
-		limitAfter, limitBefore = mid, mid
-	}
-	if depEnd >= 0 {
-		from := time.Duration(0)
-		if !a.Moving.IsZero() {
-			from = max(a.Moving.Sub(start), 0)
+	name := func(k int, what string) string {
+		if len(p.legs) == 1 {
+			return what
 		}
-		if core, ok := airportPacing(from, depEnd, base); ok {
-			dep = append([]panel.Pacing{core}, easeAfter(depEnd, limitAfter, core.Rate, base)...)
-			p.departure = [2]time.Duration{from, depEnd}
+		return fmt.Sprintf("leg %d %s", k+1, what)
+	}
+	var paces []panel.Pacing
+	for k, l := range p.legs {
+		// Each of a leg's two eases may reach no further than halfway to
+		// the other's stretch, so a short flight's eases meet rather than
+		// overlap.
+		depEnd, arrStart := time.Duration(-1), time.Duration(-1)
+		if !l.TakeOff.IsZero() {
+			depEnd = min(l.TakeOff.Sub(start)+airportMargin, span)
+		}
+		if !l.Landing.IsZero() {
+			arrStart = max(l.Landing.Sub(start)-airportMargin, 0)
+		}
+		limitAfter, limitBefore := span, time.Duration(0)
+		if depEnd >= 0 && arrStart >= 0 {
+			mid := (depEnd + arrStart) / 2
+			limitAfter, limitBefore = mid, mid
+		}
+		if depEnd >= 0 {
+			from := max(l.Moving.Sub(start), 0)
+			if core, ok := airportPacing(from, depEnd, base); ok {
+				dep := append([]panel.Pacing{core}, easeAfter(depEnd, limitAfter, core.Rate, base)...)
+				paces = p.add(paces, dep, airportStretch{name(k, "departure"), from, depEnd}, highlights)
+			}
+		}
+		if arrStart >= 0 {
+			to := min(l.Stopped.Sub(start), span)
+			if core, ok := airportPacing(arrStart, to, base); ok {
+				arr := append(easeBefore(arrStart, limitBefore, core.Rate, base), core)
+				paces = p.add(paces, arr, airportStretch{name(k, "arrival"), arrStart, to}, highlights)
+			}
 		}
 	}
-	if arrStart >= 0 {
-		to := span
-		if !a.Stopped.IsZero() {
-			to = min(a.Stopped.Sub(start), span)
-		}
-		if core, ok := airportPacing(arrStart, to, base); ok {
-			arr = append(easeBefore(arrStart, limitBefore, core.Rate, base), core)
-			p.arrival = [2]time.Duration{arrStart, to}
-		}
-	}
-	if overlapsAny(dep, highlights) {
-		dep, p.departure = nil, [2]time.Duration{}
-		p.dropped = append(p.dropped, "departure")
-	}
-	if overlapsAny(arr, highlights) {
-		arr, p.arrival = nil, [2]time.Duration{}
-		p.dropped = append(p.dropped, "arrival")
-	}
-	p.paces = append(dep, arr...)
+	p.paces = paces
 	return p
+}
+
+// add appends an airport's paces to paces and records it as paced, or, when
+// a highlight overlaps any of them, records it as left to the highlight.
+func (p *airportPlan) add(paces, airport []panel.Pacing, s airportStretch, highlights []panel.Highlight) []panel.Pacing {
+	if overlapsAny(airport, highlights) {
+		p.dropped = append(p.dropped, s.name)
+		return paces
+	}
+	p.paced = append(p.paced, s)
+	return append(paces, airport...)
 }
 
 // airportPacing is the stretch from..to given airportVideo, or false when
@@ -245,40 +270,32 @@ func pausedWithin(timer *fitactivity.TimerModel, start time.Time, c panel.Cut) t
 
 // writeAirportSummary reports what --airports did: which ground stretches
 // it paced and at what rate, and how long at the gates it left out -- time
-// the render does not show, said in the one place it can be.
+// the render does not show, said in the one place it can be besides a
+// stopover's own card.
 func writeAirportSummary(out io.Writer, p airportPlan, tl panel.Timeline, wanted bool) {
 	if !wanted || renderOpts.quiet {
 		return
 	}
-	if !p.found {
+	if !p.found() {
 		if renderOpts.airports == airportsOn {
 			fmt.Fprintf(out, "airports: --airports on, but this activity is not a flight -- nothing held 400 km/h for five minutes -- so nothing was paced\n")
 		}
 		return
 	}
-	stretch := func(name string, s [2]time.Duration) string {
-		if s[1] <= s[0] {
-			return ""
-		}
-		frames := tl.IndexAt(s[1]) - tl.IndexAt(s[0])
-		rate := (s[1] - s[0]).Seconds() / (float64(frames) / tl.FPS())
-		return fmt.Sprintf("%s %s-%s -> %ss (%sx)", name, panel.FormatClock(s[0]), panel.FormatClock(s[1]),
-			strconv.FormatFloat(float64(frames)/tl.FPS(), 'f', 1, 64), formatMultiplier(rate))
-	}
 	var parts []string
-	if s := stretch("departure", p.departure); s != "" {
-		parts = append(parts, s)
-	}
-	if s := stretch("arrival", p.arrival); s != "" {
-		parts = append(parts, s)
+	for _, s := range p.paced {
+		frames := tl.IndexAt(s.to) - tl.IndexAt(s.from)
+		video := float64(frames) / tl.FPS()
+		parts = append(parts, fmt.Sprintf("%s %s-%s -> %ss (%sx)", s.name, panel.FormatClock(s.from), panel.FormatClock(s.to),
+			strconv.FormatFloat(video, 'f', 1, 64), formatMultiplier((s.to-s.from).Seconds()/video)))
 	}
 	if len(parts) > 0 {
-		line := parts[0]
-		if len(parts) > 1 {
-			line += ", " + parts[1]
+		flights := "a flight"
+		if len(p.legs) > 1 {
+			flights = fmt.Sprintf("%d flights", len(p.legs))
 		}
-		fmt.Fprintf(out, "airports: %s, easing to the base rate toward the flight; %s of video added\n",
-			line, panel.FormatClock(tl.PacedExtra()))
+		fmt.Fprintf(out, "airports: %s; %s, easing to the base rate toward the flight; %s of video added\n",
+			flights, strings.Join(parts, ", "), panel.FormatClock(tl.PacedExtra()))
 	} else if len(p.dropped) == 0 {
 		fmt.Fprintf(out, "airports: a flight, but the base rate already gives its airports their time; nothing was paced\n")
 	}
@@ -286,9 +303,14 @@ func writeAirportSummary(out io.Writer, p airportPlan, tl panel.Timeline, wanted
 		fmt.Fprintf(out, "airports: the %s is covered by a --highlight, which paces it instead\n", d)
 	}
 	for _, c := range p.leave {
-		where := "after the aircraft stopped at the arrival gate"
-		if c.From == 0 {
+		var where string
+		switch {
+		case c.Word != "":
+			where = "on the ground at a stopover, marked on screen as it passes"
+		case c.From == 0:
 			where = "standing before the aircraft first moved"
+		default:
+			where = "after the aircraft stopped at the arrival gate"
 		}
 		fmt.Fprintf(out, "airports: %s %s left out (%s-%s)\n", panel.FormatClock(c.Removed()), where,
 			panel.FormatClock(c.From), panel.FormatClock(c.To))
