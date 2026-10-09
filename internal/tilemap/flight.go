@@ -227,7 +227,7 @@ func (f *Flight) PlanNames(ctx context.Context, cams []perspective.Camera, o per
 	plan, err := perspective.PlanNames(ctx, len(cams), func(i int) (perspective.Scene, perspective.Camera, perspective.Options, error) {
 		s, err := f.scene(cams[i], o)
 		return s, cams[i], o, err
-	}, smooth)
+	}, smooth, nil)
 	if err != nil {
 		return fmt.Errorf("tilemap: planning the flight's names: %w", err)
 	}
@@ -355,7 +355,7 @@ func FlightAreas(ctx context.Context, cams []perspective.Camera, o perspective.O
 	seen, err := perspective.TilesSeen(ctx, frames, func(i int) (perspective.Scene, perspective.Camera, perspective.Options, error) {
 		s, err := f.scene(cams[i], o)
 		return s, cams[i], o, err
-	}, flightMinZoom, flightMaxZoom)
+	}, flightMinZoom, flightMaxZoom, nil)
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: working out the ground a flight sees: %w", err)
 	}
