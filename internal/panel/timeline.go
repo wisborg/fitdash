@@ -7,8 +7,10 @@
 package panel
 
 import (
+	"cmp"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -85,6 +87,10 @@ type Timeline struct {
 	// maxRate is the coarsest rate any segment runs at, cached for the same
 	// reason frames is. See MaxSpeedup.
 	maxRate float64
+
+	// pacedExtra is the video the paces add beyond what their stretches
+	// would have taken at the base rate. See PacedExtra.
+	pacedExtra time.Duration
 }
 
 // segment is one stretch of the render at one rate.
@@ -121,6 +127,22 @@ type segment struct {
 	// that is not a highlight's own -- the ordinary stretch of the render
 	// around and between them.
 	highlight int
+}
+
+// Pacing is a stretch of the activity rendered at its own rate without being
+// a highlight: nothing is named, marked or washed, the stretch simply takes
+// more video (or less) than the base rate would give it. A flight's taxi
+// at either airport is the case it exists for -- minutes that pass in a
+// frame at a cruise's compression, and that a flyover can only come down
+// close to if they are given time on screen. See cmd's resolveAirports.
+//
+// Rate is the stretch's own speedup, as Highlight.Rate resolves one; From
+// and To are offsets on the activity's elapsed clock, as a highlight's are.
+// Paces must be sorted, must not overlap one another or any highlight, and
+// must lie within the timeline.
+type Pacing struct {
+	From, To time.Duration
+	Rate     float64
 }
 
 // --pauses' legal values -- what the render does with the activity's paused
@@ -236,7 +258,7 @@ func NewTimeline(start time.Time, d time.Duration, fps, speedup float64) (Timeli
 // something that was never resolved, not a second copy of that validation
 // aimed at a user.
 func NewSegmentedTimeline(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight) (Timeline, error) {
-	return NewCutTimeline(start, d, fps, rate, highlights, nil)
+	return NewPacedTimeline(start, d, fps, rate, highlights, nil, nil)
 }
 
 // NewCutTimeline is NewSegmentedTimeline with stretches of the activity
@@ -261,6 +283,14 @@ func NewSegmentedTimeline(start time.Time, d time.Duration, fps, rate float64, h
 // that keeps a named highlight from silently occupying no video is exactly
 // the rule a cut must NOT get.
 func NewCutTimeline(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight, cuts []Cut) (Timeline, error) {
+	return NewPacedTimeline(start, d, fps, rate, highlights, nil, cuts)
+}
+
+// NewPacedTimeline is NewCutTimeline with stretches paced at their own
+// rates besides the highlights' -- see Pacing -- and is where every
+// constructor's checks live. NewCutTimeline is exactly this called with no
+// paces.
+func NewPacedTimeline(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight, paces []Pacing, cuts []Cut) (Timeline, error) {
 	if start.IsZero() {
 		return Timeline{}, fmt.Errorf("panel: timeline has no start instant")
 	}
@@ -281,7 +311,23 @@ func NewCutTimeline(start time.Time, d time.Duration, fps, rate float64, highlig
 			return Timeline{}, fmt.Errorf("panel: cut %d overlaps the previous one", i)
 		}
 	}
-	return newTimelineFromSegments(start, d, fps, rate, highlights, cuts)
+	for i, p := range paces {
+		if p.From < 0 || p.To > d || p.To <= p.From {
+			return Timeline{}, fmt.Errorf("panel: pace %d [%v,%v) is out of the timeline's own bounds [0,%v)", i, p.From, p.To, d)
+		}
+		if i > 0 && p.From < paces[i-1].To {
+			return Timeline{}, fmt.Errorf("panel: pace %d overlaps the previous one", i)
+		}
+		if err := checkRate(p.Rate); err != nil {
+			return Timeline{}, fmt.Errorf("panel: pace %d: %w", i, err)
+		}
+		for _, h := range highlights {
+			if p.From < h.To && h.From < p.To {
+				return Timeline{}, fmt.Errorf("panel: pace %d overlaps highlight %q", i, h.Name)
+			}
+		}
+	}
+	return newTimelineFromSegments(start, d, fps, rate, highlights, paces, cuts)
 }
 
 // checkFPS and checkRate are the two input checks NewCutTimeline makes -- and
@@ -315,7 +361,7 @@ func checkRate(rate float64) error {
 // segment's rounding happened to land -- see the segment.start field comment
 // for why that anchoring is what keeps rounding error from accumulating
 // across segments.
-func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight, cuts []Cut) (Timeline, error) {
+func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64, highlights []Highlight, paces []Pacing, cuts []Cut) (Timeline, error) {
 	for i, h := range highlights {
 		if h.From < 0 || h.To > d || h.To <= h.From {
 			return Timeline{}, fmt.Errorf("panel: highlight %d (%q) [%v,%v) is out of the timeline's own bounds [0,%v)",
@@ -326,14 +372,25 @@ func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64
 		}
 	}
 
+	// The highlights and the paces together, in order: each a stretch at
+	// its own rate, a highlight's carrying its index.
+	marks := make([]bound, 0, len(highlights)+len(paces))
+	for i, h := range highlights {
+		marks = append(marks, bound{from: h.From, to: h.To, rate: h.Rate(rate), highlight: i, cut: NoCut})
+	}
+	for _, p := range paces {
+		marks = append(marks, bound{from: p.From, to: p.To, rate: p.Rate, highlight: NoHighlight, cut: NoCut, paced: true})
+	}
+	slices.SortFunc(marks, func(a, b bound) int { return cmp.Compare(a.from, b.from) })
+
 	var bounds []bound
 	cursor := time.Duration(0)
-	for i, h := range highlights {
-		if h.From > cursor {
-			bounds = append(bounds, bound{from: cursor, to: h.From, rate: rate, highlight: NoHighlight, cut: NoCut})
+	for _, m := range marks {
+		if m.from > cursor {
+			bounds = append(bounds, bound{from: cursor, to: m.from, rate: rate, highlight: NoHighlight, cut: NoCut})
 		}
-		bounds = append(bounds, bound{from: h.From, to: h.To, rate: h.Rate(rate), highlight: i, cut: NoCut})
-		cursor = h.To
+		bounds = append(bounds, m)
+		cursor = m.to
 	}
 	if cursor < d {
 		bounds = append(bounds, bound{from: cursor, to: d, rate: rate, highlight: NoHighlight, cut: NoCut})
@@ -366,6 +423,7 @@ func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64
 	kept := make([]Cut, 0, len(cuts))
 	frameCursor := 0
 	var maxRate float64
+	var pacedExtra float64
 	for _, b := range bounds {
 		// A cut preceding the FIRST surviving bound removed a stretch that
 		// began at the activity's own start: there is no earlier frame for
@@ -398,6 +456,9 @@ func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64
 		if b.rate > maxRate {
 			maxRate = b.rate
 		}
+		if b.paced {
+			pacedExtra += float64(n)/fps - length.Seconds()/rate
+		}
 	}
 
 	return Timeline{
@@ -409,6 +470,8 @@ func newTimelineFromSegments(start time.Time, d time.Duration, fps, rate float64
 		origin:  start,
 		span:    d,
 		cuts:    resolveCutNotices(kept, fps, frameCursor),
+
+		pacedExtra: time.Duration(math.Round(pacedExtra * float64(time.Second))),
 	}, nil
 }
 
@@ -423,6 +486,9 @@ type bound struct {
 	// IMMEDIATELY before this bound, or NoCut when this bound follows on
 	// from the previous one with nothing taken out between them.
 	cut int
+
+	// paced is whether this bound is a Pacing's.
+	paced bool
 }
 
 // subtractCuts removes every cut's span from bounds, splitting a bound that
@@ -450,7 +516,7 @@ func subtractCuts(bounds []bound, cuts []Cut) []bound {
 				continue // entirely before what is left of this bound, or after it
 			}
 			if c.From > cursor {
-				out = append(out, bound{from: cursor, to: c.From, rate: b.rate, highlight: b.highlight, cut: pending})
+				out = append(out, bound{from: cursor, to: c.From, rate: b.rate, highlight: b.highlight, cut: pending, paced: b.paced})
 				pending = NoCut
 			}
 			pending = i
@@ -462,7 +528,7 @@ func subtractCuts(bounds []bound, cuts []Cut) []bound {
 			}
 		}
 		if cursor < b.to {
-			out = append(out, bound{from: cursor, to: b.to, rate: b.rate, highlight: b.highlight, cut: pending})
+			out = append(out, bound{from: cursor, to: b.to, rate: b.rate, highlight: b.highlight, cut: pending, paced: b.paced})
 			pending = NoCut
 		}
 	}
@@ -579,6 +645,16 @@ func NewTimelineForActivityWithHighlights(timer *fitactivity.TimerModel, fps, sp
 // is the failure every other value-taking flag in this project refuses at
 // the point the user typed it.
 func NewTimelineForActivityWithPauses(timer *fitactivity.TimerModel, fps, speedup float64, highlights []Highlight, pauses string) (Timeline, error) {
+	return NewTimelineForActivityPaced(timer, fps, speedup, highlights, pauses, nil, nil)
+}
+
+// NewTimelineForActivityPaced is NewTimelineForActivityWithPauses with
+// stretches paced at their own rates (see Pacing) and stretches left out
+// besides the pauses: leave, as offsets from the activity's start, sorted
+// and not overlapping one another. A flight's time standing at the gate is
+// what leave is for, at the start and the end; a pause it overlaps under
+// --pauses skip is removed once.
+func NewTimelineForActivityPaced(timer *fitactivity.TimerModel, fps, speedup float64, highlights []Highlight, pauses string, paces []Pacing, leave []Cut) (Timeline, error) {
 	start, end, err := activityWindow(timer)
 	if err != nil {
 		return Timeline{}, err
@@ -587,13 +663,35 @@ func NewTimelineForActivityWithPauses(timer *fitactivity.TimerModel, fps, speedu
 	if d <= 0 {
 		return Timeline{}, fmt.Errorf("panel: activity spans %v; there is nothing to render", d)
 	}
+	var cuts []Cut
 	switch pauses {
 	case "", PausesFreeze:
-		return NewSegmentedTimeline(start, d, fps, speedup, highlights)
 	case PausesSkip:
-		return NewCutTimeline(start, d, fps, speedup, highlights, cutsForPauses(timer, start))
+		cuts = cutsForPauses(timer, start)
+	default:
+		return Timeline{}, fmt.Errorf("panel: unknown pause handling %q; use %s or %s", pauses, PausesFreeze, PausesSkip)
 	}
-	return Timeline{}, fmt.Errorf("panel: unknown pause handling %q; use %s or %s", pauses, PausesFreeze, PausesSkip)
+	return NewPacedTimeline(start, d, fps, speedup, highlights, paces, unionCuts(cuts, leave))
+}
+
+// unionCuts is the stretches either a or b leaves out, each sorted and
+// non-overlapping, as one sorted list with the overlaps merged.
+func unionCuts(a, b []Cut) []Cut {
+	if len(b) == 0 {
+		return a
+	}
+	all := append(slices.Clone(a), b...)
+	slices.SortFunc(all, func(x, y Cut) int { return cmp.Compare(x.From, y.From) })
+	out := all[:1]
+	for _, c := range all[1:] {
+		last := &out[len(out)-1]
+		if c.From <= last.To {
+			last.To = max(last.To, c.To)
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // cutsForPauses turns the activity's paused intervals into cuts, as offsets
@@ -693,6 +791,11 @@ func autoSmoothingFor(rate float64) time.Duration {
 
 // Frames is the number of frames in the render.
 func (t Timeline) Frames() int { return t.frames }
+
+// PacedExtra is the video the paces add: the time their stretches take on
+// screen beyond what the base rate alone would have given them, for the
+// summary's base-plus-extras decomposition. Zero with no paces.
+func (t Timeline) PacedExtra() time.Duration { return t.pacedExtra }
 
 // FPS is the frame rate, which the encoder must be given the same value of --
 // the container's timestamps and the dashboard's own clock have to derive from

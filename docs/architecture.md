@@ -2189,6 +2189,39 @@ smaller than what a viewer can perceive at any frame rate this project targets. 
 by a test that walks every seam of a render rather than asserted in prose, because it is not
 something a future reader would otherwise re-derive by inspection.
 
+### Timeline: a flight's airports
+
+A flight squeezed into a minute runs at several hundred times real time, which suits the
+cruise and passes the airports in a frame: ten minutes of taxiing and the take-off roll were
+under a second of video, and a flyover's camera, whose distance follows how fast the ground
+moves on screen, stayed tens of kilometres up while the aircraft shot along the runway. So
+`--airports` (on by default under `--route-view flyover`) gives the airports time of their own.
+
+It needs nothing new of the timeline's arithmetic. An airport is a `Pacing`: a stretch at its
+own rate, like a highlight's, but nobody's highlight — nothing is named, marked or washed,
+and `PacedExtra` reports the video it adds as its own term in the summary's decomposition. The
+taxi and roll at each end take about twelve seconds; the rate then eases to the base rate in
+short steps that double it every second of video, which is about as fast as the camera's
+distance may follow, so the camera rises with the climb rather than being left behind by an
+aircraft that has gone a hundred times faster in one frame. A highlight over an airport wins:
+the airport is left at the base rate and the summary says so.
+
+The time the aircraft stood at the gate before it first moved, and after it last stopped, is
+left out as a `Cut` at the activity's start and end — the case "Timeline: cut" already marks
+with no seam, because nothing is spliced to anything — and `--video-duration` compresses
+what is left. Unlike a pause it is not opt-in under the flag, and it is said in the summary,
+which is the one place time that has no frame can be said: twenty minutes of a few fixes
+from a parked aircraft are not the activity anybody made the video of.
+
+Where the airports are is `route.FindAirports`, from the GPS alone. A flight is a track that
+held 400 km/h for five minutes — above the fastest trains in service, which is the confusion
+the threshold is set against, and above a light aircraft, which is therefore not recognised.
+Take-off and landing are where speed, measured over half a minute either side to average out
+a window seat's GPS, passes 200 km/h. The taxi reaches back from take-off to the last stand —
+five minutes within 150 m, or five minutes with no fix at all, which is how a phone logs a
+parked aircraft — and forward from landing to the first. A recording of several flights is
+paced at its first take-off and last landing only.
+
 ### `--dry-run`: everything except the encode
 
 `--dry-run` resolves the whole render and prints the summary without writing a video or a

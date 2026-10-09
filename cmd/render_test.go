@@ -498,7 +498,7 @@ func TestResolveSpeedup_TakesEitherFlagButNotBoth(t *testing.T) {
 				}
 			}
 
-			got, err := resolveSpeedup(cmd, timer, panel.PausesFreeze)
+			got, err := resolveSpeedup(cmd, timer, panel.PausesFreeze, nil)
 			if c.wantErr != "" {
 				if err == nil {
 					t.Fatalf("resolveSpeedup = %v, want an error mentioning %q", got, c.wantErr)
@@ -2560,11 +2560,11 @@ func TestResolveSpeedup_SkipCompressesTheRunningTimeNotTheElapsedSpan(t *testing
 	}
 	renderOpts.videoDur = video
 
-	frozen, err := resolveSpeedup(cmd, timer, panel.PausesFreeze)
+	frozen, err := resolveSpeedup(cmd, timer, panel.PausesFreeze, nil)
 	if err != nil {
 		t.Fatalf("resolveSpeedup(freeze): %v", err)
 	}
-	skipped, err := resolveSpeedup(cmd, timer, panel.PausesSkip)
+	skipped, err := resolveSpeedup(cmd, timer, panel.PausesSkip, nil)
 	if err != nil {
 		t.Fatalf("resolveSpeedup(skip): %v", err)
 	}

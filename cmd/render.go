@@ -51,6 +51,7 @@ type renderOptions struct {
 	terrainStore        string
 	terrainSource       string
 	routeView           string
+	airports            string
 	routeHeading        string
 	routePitch          float64
 	routeExaggeration   float64
@@ -301,6 +302,14 @@ func bindRenderFlags(c *cobra.Command) {
 			"into a minute, a few hundred kilometres for a flight at cruise, closer on the runway -- changing no faster "+
 			"than doubling in two seconds, and closer over a stretch a --highlight slows; \"steady\" chooses one "+
 			"distance the same way for the whole video")
+	f.StringVar(&renderOpts.airports, "airports", airportsAuto,
+		"what to do with a flight's airports: \"on\" finds them -- a track that held 400 km/h for five minutes is a "+
+			"flight -- leaves out the time the aircraft stood at the gate before it first moved and after it last "+
+			"stopped, and gives each airport's taxi and roll about 12 seconds of video, easing to the base rate as the "+
+			"aircraft climbs away or comes in, so the cruise's compression does not pass them in a frame; \"auto\" "+
+			"(default) does that under --route-view flyover, whose camera can then come down to the taxiways, and "+
+			"nothing otherwise; \"off\" renders a flight like any other activity. The time left out and the video "+
+			"added are in the summary, and --video-duration compresses what is left")
 	f.StringVar(&renderOpts.basemapPalette, "basemap-palette", "auto",
 		"the colours --basemap "+tilemap.LocalProvider+" draws in: \"theme\", derived from --theme and kept quiet so "+
 			"the route and readouts stand out, or \"outdoors\", fuller greens, bluer water and deeper hill shading, with "+
@@ -485,7 +494,19 @@ func runRender(cmd *cobra.Command, args []string) error {
 	activity := track.SourcePath
 
 	timer := fitactivity.BuildTimerModel(track)
-	speedup, err := resolveSpeedup(cmd, timer, pauses)
+	// A flight's airports are found before the speed-up is worked out,
+	// because the time standing at its gates is left out of the render, and
+	// --video-duration compresses what is left; they are paced after, at
+	// the base rate that gives. See airportPlan.
+	wantAirports, err := airportsWanted()
+	if err != nil {
+		return err
+	}
+	var airports airportPlan
+	if wantAirports {
+		airports = findAirports(track, timer)
+	}
+	speedup, err := resolveSpeedup(cmd, timer, pauses, airports.leave)
 	if err != nil {
 		return err
 	}
@@ -509,7 +530,8 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// byte-identical to NewTimelineForActivity, which is the whole point of
 	// funnelling every case through one segment builder rather than
 	// branching here on which features were asked for.
-	timeline, err := panel.NewTimelineForActivityWithPauses(timer, renderOpts.fps, speedup, highlights, pauses)
+	airports = paceAirports(airports, timer, speedup, highlights)
+	timeline, err := panel.NewTimelineForActivityPaced(timer, renderOpts.fps, speedup, highlights, pauses, airports.paces, airports.leave)
 	if err != nil {
 		return err
 	}
@@ -649,6 +671,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		highlights: highlights, labels: labels,
 		elevation: rctx.Elevation, elevationSource: elevSource,
 		units: rctx.Units, speedReadout: rctx.SpeedReadout,
+		airports: airports, wantAirports: wantAirports,
 	}
 	if renderOpts.dryRun {
 		return runDryRun(cmd, r, activity, rctx, in)
@@ -705,6 +728,11 @@ type renderInputs struct {
 	// as this bundle.
 	elevation       *fitactivity.ElevationModel
 	elevationSource string
+
+	// airports is what --airports did, for writeAirportSummary, and
+	// wantAirports whether it was asked to do anything.
+	airports     airportPlan
+	wantAirports bool
 
 	// units and speedReadout are rctx.Units and rctx.SpeedReadout, carried
 	// for writeUnitsSummary for elevation's reason above.
@@ -932,7 +960,7 @@ func resolveElevationTuning(track *fitactivity.Track, u units.Set) (fitactivity.
 // express the same intention in opposite directions, and silently preferring
 // whichever the code checks first would let a user pass both and get a video
 // of a length they did not ask for, with nothing saying which flag won.
-func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses string) (float64, error) {
+func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses string, leave []panel.Cut) (float64, error) {
 	// Ask cobra whether the flag was TYPED, rather than comparing against its
 	// default. Comparing meant `--speedup 1 --video-duration 3m` slipped past
 	// the exclusivity check and silently took the duration branch -- exactly
@@ -959,6 +987,15 @@ func resolveSpeedup(cmd *cobra.Command, timer *fitactivity.TimerModel, pauses st
 		// nothing would say why.
 		if pauses == panel.PausesSkip {
 			activity -= timer.PausedTotal()
+		}
+		// The same for time left out besides the pauses -- a flight
+		// standing at its gates -- less any pause inside it, which was
+		// taken off already.
+		for _, c := range leave {
+			activity -= c.Removed()
+			if pauses == panel.PausesSkip {
+				activity += pausedWithin(timer, start, c)
+			}
 		}
 		if activity <= 0 {
 			return 0, fmt.Errorf("render: the activity has no duration to compress")
@@ -1443,11 +1480,12 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	// following in writeHighlightSummary below.
 	fmt.Fprintf(out, "%d frames, %s of activity in %s of video%s, %s fps, %dx%d\n",
 		in.tl.Frames(), panel.FormatClock(in.tl.ActivityDuration()), panel.FormatClock(in.tl.Duration()),
-		baseSpeedupNote(in.tl.BaseSpeedup(), len(in.highlights) > 0), strconv.FormatFloat(in.tl.FPS(), 'f', -1, 64), in.w, in.h)
+		baseSpeedupNote(in.tl.BaseSpeedup(), len(in.highlights) > 0 || in.tl.PacedExtra() > 0), strconv.FormatFloat(in.tl.FPS(), 'f', -1, 64), in.w, in.h)
 
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)
+	writeAirportSummary(cmd.ErrOrStderr(), in.airports, in.tl, in.wantAirports)
 	writeGaugeSummary(cmd, r, ctx)
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
@@ -1973,10 +2011,17 @@ func writeHighlightSummary(cmd *cobra.Command, tl panel.Timeline, track *fitacti
 	// Everything Duration() runs beyond that is highlight time. Both are
 	// rounded the same way Timeline.Duration itself rounds, so the three
 	// figures are consistent with each other and with the line above them.
+	//
+	// A flight's paced airports are video beyond the base too, and are
+	// named as their own term rather than counted as highlight time.
 	base := time.Duration(math.Round(tl.ActivityDuration().Seconds() / tl.BaseSpeedup() * float64(time.Second)))
-	extra := tl.Duration() - base
-	fmt.Fprintf(out, "%s base + %s of highlights = %s of video\n",
-		panel.FormatClock(base), panel.FormatClock(extra), panel.FormatClock(tl.Duration()))
+	extra := tl.Duration() - base - tl.PacedExtra()
+	airports := ""
+	if tl.PacedExtra() > 0 {
+		airports = fmt.Sprintf(" + %s of airports", panel.FormatClock(tl.PacedExtra()))
+	}
+	fmt.Fprintf(out, "%s base + %s of highlights%s = %s of video\n",
+		panel.FormatClock(base), panel.FormatClock(extra), airports, panel.FormatClock(tl.Duration()))
 
 	lines := make([]string, len(highlights))
 	for i, h := range highlights {
@@ -2341,6 +2386,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)
+	writeAirportSummary(cmd.ErrOrStderr(), in.airports, in.tl, in.wantAirports)
 	writeGaugeSummary(cmd, r, ctx)
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)

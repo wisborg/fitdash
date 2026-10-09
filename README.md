@@ -223,6 +223,15 @@ along the route, finer under the camera than toward the horizon.
 fitdash morning.fit --basemap local --route-view flyover --video-duration 45s
 ```
 
+A flight's airports pass in a frame at the compression its cruise needs, so a flyover finds
+them: a track that held 400 km/h for five minutes is a flight, and its take-off and landing are
+where it passed 200 km/h. The time the aircraft stood at the gate before it first moved, and
+after it last stopped, is left out; the taxi and roll at each end get about twelve seconds of
+video, and the pace eases from there to the base rate over a few seconds as the aircraft
+climbs away or comes in, so the camera comes down to the taxiways and rises with the climb.
+The video added and the time left out are in the summary, and `--video-duration` compresses
+what is left. `--airports on` does the same for any route view, `off` for none.
+
 Under `3d` and `flyover` the map is drawn in osmbase's **outdoors** palette — fuller greens,
 bluer water, deeper hill shading — and the route in the dark navy and crimson made for it,
 because there the map is the picture rather than the quiet ground under a small route. The
