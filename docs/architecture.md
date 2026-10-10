@@ -1525,14 +1525,17 @@ flyover of a 3.5-hour run the mean change of a name's strength from one frame to
 fell from 0.0078 to 0.0034; planning cost about a third of the render, most of it drawing
 the tiles the frames then take from the cache.
 
-### The frame loop stays sequential
+### Frames drawn several at once
 
-A picture is drawn by osmbase on every core, a band of rows to each, so one frame takes
-about half a second at 1920x1080 and the loop draws them in order as it always has.
-Parallel frames would have reached the same speed by changing the loop, its memory and
-every painter's contract; this changes nothing here. `Dynamic` still does not mutate the
-painter: the pyramid's cache of drawn tiles changes, but no picture depends on when a tile
-was drawn, so the static/dynamic equality holds.
+A picture is drawn by osmbase on every core, a band of rows to each, and for a while that
+was thought enough: the loop drew frames in order, one at a time. Measured on an
+eleven-hour flight, it was not -- the render used two and a half of eight cores, because
+the parts of a frame around the filling (the mesh laid under it, its names stood on it,
+the dashboard's text over it) are each one goroutine's work. So `render.Run` draws several
+frames at once; see "Per-render and per-frame state" for what that rests on. `Dynamic`
+still does not mutate the painter: the pyramid's cache of drawn tiles changes, but no
+picture depends on when a tile was drawn, so frames drawn in any order are the same
+frames.
 
 ### The camera, planned in Prepare
 
@@ -1911,8 +1914,41 @@ invitation to build the wrong thing. The measurement is also no longer asserted 
 which side of that tension a panel picks is a panel's decision and pinning the ratio would
 make the next smoothly-animating panel look like a regression.
 
-Parallel frame rendering is not built. The door is held open by one rule, that `Dynamic`
-must not mutate the Painter, and nothing more.
+### Several frames at once
+
+`Run` draws several frames at once and hands them to the sink, and to progress, in order,
+as the sequential loop did. How many is `--concurrency`: `auto` by default, a frame for each
+core, held to the pixels of eight 1080p frames in flight (`render.AutoConcurrency`). On an
+eight-core machine, drawing an eleven-hour flight's 1,333 frames took 500 s one at a time,
+304 s two at a time, 252 s four, 237 s six and 222 s eight -- still gaining at one a core,
+which is why that is the default. Memory is what bounds it: a flyover's picture is drawn at
+twice the size each way with a depth and a zoom for every pixel, about 130 MB a frame in
+flight at 1080p and four times that at 4K. At 1080p eight frames came to no more than one at
+the render's peak, which its preparation sets; at 4K eight would add four gigabytes, so
+`auto` draws two there, and a machine with less memory or a busier one can ask for fewer. Each worker takes the next frame, restores
+the static base into a buffer from a small pool and draws the dynamic layer; the calling
+goroutine writes. It rests on the rule that was kept to hold this door open -- `Dynamic`
+must not change its Painter -- and on three things besides:
+
+- **Faces.** A font face is not safe for two goroutines to draw with, and every canvas drew
+  with the renderer's one `FaceCache`, so each worker has faces of its own
+  (`FaceCache.Fresh`).
+- **The sink.** It is called from one goroutine only, including `Selector.Wants`, which
+  records what it was asked as well as answering; which frames are wanted is asked of
+  every frame, in order, before any is drawn.
+- **The rule actually held.** It had not been tested, and turning frames loose found it
+  broken in three places, each harmless one frame at a time: the route panel stored each
+  frame's viewport in its painter, fitted its map credit's size on the first frame that
+  drew it, and its zoomed basemap cached a resampled image while drawing. The viewport is
+  passed along now, the credit is fitted in `Static`, and the cache is behind a lock --
+  what it holds is the same picture whichever frame asks first.
+
+`TestRun_FramesDrawnAtOnce...` draws every frame of the real landscape layout, and of a
+wash with a selective sink, through `Run` and again through `Render`, and requires them to
+agree to the byte and to reach the sink in order; run under `-race`, it is what found the
+route panel's two. A painter that caches in `Dynamic` still passes it without `-race`,
+because what it caches is usually the same either way -- which is why the rule is a rule
+and not merely a test.
 
 ### Marking a highlight: one base per colour, and one index rule
 

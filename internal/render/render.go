@@ -14,6 +14,8 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/wisborg/fitactivity"
@@ -40,6 +42,10 @@ var markerPanelName = panel.MarkerPanel{}.Name()
 // Renderer draws one activity through one layout.
 type Renderer struct {
 	ctx *panel.Context
+
+	// concurrency is how many frames Run draws at once; 0 is
+	// AutoConcurrency's choice. See SetConcurrency.
+	concurrency int
 
 	// maxGap is how far Frame's sample lookup will interpolate across
 	// missing data before reporting the instant as absent: the track's own
@@ -603,7 +609,14 @@ func blendBases(dst, base, wash *image.RGBA, weight float64) {
 //
 // This is the fast path the loop uses: copy the base, draw what moves.
 func (r *Renderer) RenderDynamic(img *image.RGBA, f panel.Frame) error {
-	c, err := r.canvas(img)
+	return r.renderDynamicWith(img, f, r.faces)
+}
+
+// renderDynamicWith is RenderDynamic drawing text in faces of the caller's:
+// Run draws several frames at once, and a face is not safe for two
+// goroutines to draw with, so each of its workers has faces of its own.
+func (r *Renderer) renderDynamicWith(img *image.RGBA, f panel.Frame, faces *panel.FaceCache) error {
+	c, err := panel.NewCanvas(img, r.basePx, r.theme, faces)
 	if err != nil {
 		return err
 	}
@@ -1092,55 +1105,183 @@ func Run(ctx context.Context, r *Renderer, sink encode.Sink, progress func(i, n 
 		}
 	}
 
-	// One frame buffer, reused. A fresh RGBA per frame is 33 MB at 4K, which
-	// over 45,000 frames is not a leak but is an enormous amount of garbage.
-	buf := image.NewRGBA(image.Rect(0, 0, r.ctx.Width, r.ctx.Height))
-
 	// A sink that only needs some frames says so, and the ones it does not
 	// need are never drawn. That is what makes --frames a preview rather than
 	// a full render with almost all of its output discarded: it took 36
 	// seconds to produce five PNGs before this.
+	//
+	// Asked here, of every frame in order, before any frame is drawn: the
+	// sink is only ever called from this goroutine, and Wants records what
+	// it was asked as well as answering.
 	selector, selective := sink.(encode.Selector)
+	want := make([]bool, n)
+	for i := range want {
+		want[i] = !selective || selector.Wants(i)
+	}
+	wanted := func(i int) bool { return want[i] }
 
-	for i := 0; i < n; i++ {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("render: cancelled after %d of %d frames: %w", i, n, err)
+	// Several frames are drawn at once, and written in order. A frame drawn
+	// alone left most of the machine idle: a flyover's picture fills across
+	// every core, but the mesh laid under it, its names stood on it and the
+	// dashboard's text drawn over it are each one goroutine's work, and a
+	// dashboard without a flyover is nothing but that. Frames are
+	// independent -- Dynamic does not change its Painter, and Frame(i) only
+	// reads -- so each worker draws whole frames, with faces of its own, into
+	// buffers from a small pool, and this goroutine hands them to the sink
+	// and to progress in order, as the loop always did.
+	workers := r.Concurrency()
+	pool := make(chan *image.RGBA, workers+1)
+	for range cap(pool) {
+		// A buffer reused rather than one a frame: a fresh RGBA is 33 MB at
+		// 4K, which over 45,000 frames is not a leak but is an enormous
+		// amount of garbage.
+		pool <- image.NewRGBA(image.Rect(0, 0, r.ctx.Width, r.ctx.Height))
+	}
+	type result struct {
+		buf *image.RGBA
+		err error
+	}
+	type job struct {
+		i    int
+		buf  *image.RGBA
+		done chan result
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan job)
+	order := make(chan job, cap(pool))
+	var wg sync.WaitGroup
+	for range workers {
+		faces := r.faces.Fresh()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				f := r.Frame(j.i)
+				// Restore the static base rather than redrawing it: copying
+				// pixels is the entire reason the static layer exists, and at
+				// 45,000 frames the difference between a copy and
+				// re-rasterizing every axis and label is the difference
+				// between a render and an afternoon. Under wash, inside a
+				// highlight, the base is blended toward that highlight's OWN
+				// wash base -- r.washBaseFor(f.Interval), the table entry for
+				// its own resolved colour -- by IntervalWeight first. See
+				// blendBases and renderBase, which apply exactly the same rule
+				// so this loop and Render agree frame for frame.
+				if r.washBases != nil && f.Interval != panel.NoHighlight {
+					blendBases(j.buf, base, r.washBaseFor(f.Interval), f.IntervalWeight)
+				} else {
+					draw.Draw(j.buf, j.buf.Bounds(), base, image.Point{}, draw.Src)
+				}
+				err := r.renderDynamicWith(j.buf, f, faces)
+				j.done <- result{j.buf, err}
+			}
+		}()
+	}
+	// The frames handed out in order, each also queued for writing in the
+	// same order; a frame not wanted is queued with nothing to wait for.
+	go func() {
+		defer close(order)
+		defer close(jobs)
+		for i := 0; i < n; i++ {
+			if !wanted(i) {
+				select {
+				case order <- job{i: i}:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			var buf *image.RGBA
+			select {
+			case buf = <-pool:
+			case <-ctx.Done():
+				return
+			}
+			j := job{i: i, buf: buf, done: make(chan result, 1)}
+			select {
+			case order <- j:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case jobs <- j:
+			case <-ctx.Done():
+				return
+			}
 		}
-		if selective && !selector.Wants(i) {
+	}()
+	defer wg.Wait()
+	defer cancel()
+
+	for j := range order {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("render: cancelled after %d of %d frames: %w", j.i, n, err)
+		}
+		if j.done == nil {
 			// Offered to the sink anyway, so it can tell how long the render
 			// was -- and reported to progress, so the bar tracks position in
 			// the activity rather than how many frames happened to be wanted.
 			if progress != nil {
-				progress(i+1, n)
+				progress(j.i+1, n)
 			}
 			continue
 		}
-		f := r.Frame(i)
-
-		// Restore the static base rather than redrawing it: copying pixels is
-		// the entire reason the static layer exists, and at 45,000 frames the
-		// difference between a copy and re-rasterizing every axis and label is
-		// the difference between a render and an afternoon. Under wash, inside
-		// a highlight, the base is blended toward that highlight's OWN wash
-		// base -- r.washBaseFor(f.Interval), the table entry for its own
-		// resolved colour -- by IntervalWeight first. See blendBases and
-		// renderBase, which apply exactly the same rule so this loop and
-		// Render agree frame for frame.
-		if r.washBases != nil && f.Interval != panel.NoHighlight {
-			blendBases(buf, base, r.washBaseFor(f.Interval), f.IntervalWeight)
-		} else {
-			draw.Draw(buf, buf.Bounds(), base, image.Point{}, draw.Src)
+		var res result
+		select {
+		case res = <-j.done:
+		case <-ctx.Done():
+			return fmt.Errorf("render: cancelled after %d of %d frames: %w", j.i, n, ctx.Err())
 		}
-
-		if err := r.RenderDynamic(buf, f); err != nil {
-			return fmt.Errorf("render: drawing frame %d of %d: %w", i, n, err)
+		if res.err != nil {
+			return fmt.Errorf("render: drawing frame %d of %d: %w", j.i, n, res.err)
 		}
-		if err := sink.WriteFrame(i, buf); err != nil {
-			return fmt.Errorf("render: writing frame %d of %d: %w", i, n, err)
+		if err := sink.WriteFrame(j.i, res.buf); err != nil {
+			return fmt.Errorf("render: writing frame %d of %d: %w", j.i, n, err)
 		}
+		pool <- res.buf
 		if progress != nil {
-			progress(i+1, n)
+			progress(j.i+1, n)
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("render: cancelled after %d frames: %w", n, err)
+	}
 	return nil
+}
+
+// SetConcurrency sets how many frames Run draws at once; 0, the default,
+// is AutoConcurrency's choice for this render.
+func (r *Renderer) SetConcurrency(n int) { r.concurrency = max(0, n) }
+
+// Concurrency is how many frames Run draws at once.
+func (r *Renderer) Concurrency() int {
+	if r.concurrency > 0 {
+		return r.concurrency
+	}
+	return AutoConcurrency(r.ctx.Width, r.ctx.Height)
+}
+
+// autoPixelsInFlight is how many pixels of frames AutoConcurrency lets be in
+// flight at once: eight frames of 1920x1080.
+const autoPixelsInFlight = 8 * 1920 * 1080
+
+// AutoConcurrency is how many frames of w by h pixels to draw at once: one
+// per core, and no more than autoPixelsInFlight allows.
+//
+// Measured drawing an eleven-hour flight as a flyover at 1920x1080 on eight
+// cores, against one frame at a time: two at once took 61% of the time, four
+// 50%, six 47% and eight 44% -- still gaining at one a core, so that is the
+// default. What it costs is memory: each frame in flight holds its own
+// buffers, and a flyover's picture is drawn at twice the size each way with
+// a depth and a zoom for every pixel, about 130 MB a frame at 1080p and four
+// times that at 4K. At 1080p eight came to no more than one at its peak,
+// which the preparation sets; at 4K eight would add four gigabytes, so the
+// count is held to the pixels of eight 1080p frames -- two at 4K.
+func AutoConcurrency(w, h int) int {
+	n := runtime.GOMAXPROCS(0)
+	if px := w * h; px > 0 {
+		n = min(n, autoPixelsInFlight/px)
+	}
+	return max(1, n)
 }

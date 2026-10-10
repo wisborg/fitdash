@@ -3707,3 +3707,17 @@ func TestLabelFaces_NilResolvesToNoFaceRatherThanPanicking(t *testing.T) {
 		t.Error("a nil font cache produced a resolver; there is nothing for it to resolve with")
 	}
 }
+
+// --concurrency: auto, or a number of frames from one.
+func TestParseConcurrency(t *testing.T) {
+	for v, want := range map[string]int{"auto": 0, "1": 1, "8": 8} {
+		if got, err := parseConcurrency(v); err != nil || got != want {
+			t.Errorf("parseConcurrency(%q) = %d, %v; want %d", v, got, err, want)
+		}
+	}
+	for _, v := range []string{"0", "-2", "many", ""} {
+		if _, err := parseConcurrency(v); err == nil {
+			t.Errorf("parseConcurrency(%q) accepted", v)
+		}
+	}
+}

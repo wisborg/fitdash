@@ -52,6 +52,7 @@ type renderOptions struct {
 	terrainSource       string
 	routeView           string
 	airports            string
+	concurrency         string
 	routeHeading        string
 	routePitch          float64
 	routeExaggeration   float64
@@ -233,6 +234,12 @@ func bindRenderFlags(c *cobra.Command) {
 	f.StringVarP(&renderOpts.output, "output", "o", "", "write to this exact path instead of deriving one")
 	f.StringVar(&renderOpts.size, "size", "1920x1080", "output resolution; width and height must both be even")
 	f.Float64Var(&renderOpts.fps, "fps", 30, "frames per second")
+	f.StringVar(&renderOpts.concurrency, "concurrency", "auto",
+		"how many frames to draw at once: \"auto\" (default) is one for each core, held to as many as eight "+
+			"1920x1080 frames' pixels -- a flyover holds a large picture for every frame in flight, about 130 MB "+
+			"a frame at 1080p, so a 4K render draws fewer at once -- or a number from 1, which draws them one "+
+			"at a time. Frames are written in order whatever the number, and the video is the same; only the "+
+			"time it takes and the memory it holds change")
 	f.IntVar(&renderOpts.crf, "crf", encode.DefaultCRF,
 		"H.264 quality; lower is better (18-28 is the useful range). 0 is x264's lossless and is not offered: "+
 			"0 is this program's \"unset\" value internally, so it would silently mean the default. Use 1 for near-lossless")
@@ -477,6 +484,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	concurrency, err := parseConcurrency(renderOpts.concurrency)
+	if err != nil {
+		return err
+	}
 	pauses, err := parsePauses(renderOpts.pauses)
 	if err != nil {
 		return err
@@ -667,6 +678,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	r.SetConcurrency(concurrency)
 
 	in := renderInputs{
 		track: track, sources: sources, basemap: basemap, basemapDim: basemapDim, tl: timeline, w: w, h: h,
@@ -1310,6 +1322,19 @@ func basemapCacheDir() string {
 	}
 }
 
+// parseConcurrency reads --concurrency: 0 for auto, or how many frames to
+// draw at once.
+func parseConcurrency(v string) (int, error) {
+	if v == "auto" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("render: --concurrency %q is invalid; use auto or a number of frames from 1", v)
+	}
+	return n, nil
+}
+
 // basemapOff is the --basemap value that draws no imagery, and the default.
 const basemapOff = "none"
 
@@ -1416,6 +1441,20 @@ func (p *prepareProgress) stop() {
 	}
 }
 
+// writeConcurrencySummary says how many frames were drawn at once, and
+// whether that was chosen or asked for.
+func writeConcurrencySummary(out io.Writer, r *render.Renderer) {
+	how := "auto"
+	if renderOpts.concurrency != "auto" {
+		how = "--concurrency"
+	}
+	verb := "drawn"
+	if renderOpts.dryRun {
+		verb = "would be drawn"
+	}
+	fmt.Fprintf(out, "%s %d frame%s at a time (%s)\n", verb, r.Concurrency(), plural(r.Concurrency()), how)
+}
+
 // formatMultiplier renders a compression factor for display, rounded to two
 // decimals and trimmed to none when it lands on a whole number. Shared by
 // speedupNote and the highlight table (see writeHighlightSummary) so a
@@ -1486,6 +1525,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 		in.tl.Frames(), panel.FormatClock(in.tl.ActivityDuration()), panel.FormatClock(in.tl.Duration()),
 		baseSpeedupNote(in.tl.BaseSpeedup(), len(in.highlights) > 0 || in.tl.PacedExtra() > 0), strconv.FormatFloat(in.tl.FPS(), 'f', -1, 64), in.w, in.h)
 
+	writeConcurrencySummary(out, r)
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)

@@ -229,6 +229,10 @@ along the route, finer under the camera than toward the horizon.
 fitdash morning.fit --basemap local --route-view flyover --video-duration 45s
 ```
 
+Frames are drawn several at once, one for each core by default; `--concurrency` sets how
+many, for a machine with less memory to spare (each 4K flyover frame in flight holds about
+half a gigabyte) or more work to share it with. The video is the same whatever the number.
+
 A flight's airports pass in a frame at the compression its cruise needs, so a flyover finds
 them: a track that held 400 km/h for five minutes is a flight, and its take-off and landing are
 where it passed 200 km/h. The time the aircraft stood at the gate before it first moved, and
