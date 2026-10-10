@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 
@@ -14,6 +15,8 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/opentype"
+
+	osm "github.com/wisborg/osmbase/render"
 )
 
 // Theme is the palette every panel draws from.
@@ -229,14 +232,26 @@ func linearizeSRGB(c float64) float64 {
 // fps -- so the cache is not an optimisation so much as the difference between
 // a render finishing and not.
 //
-// It is NOT goroutine-safe by contract, and the mutex below is belt and braces
-// rather than a licence to share one across goroutines. Nothing in a render
-// writes to it concurrently: a Painter's Dynamic method must not mutate, and
-// the two Canvases of one render are used one at a time.
+// Its faces are NOT safe for two goroutines to draw with at once -- a face
+// draws each glyph into a buffer of its own -- and the mutex below guards the
+// cache, not the faces. Everything that draws at the same time as something
+// else has a cache of its own (Fresh): each of the frames render.Run draws at
+// once, each tile of a flyover's map.
+//
+// A cache made with fallback fonts (NewFaceCacheWith) draws each letter from
+// the first of its fonts that has it, Go Mono first; see Missing.
 type FaceCache struct {
 	mu    sync.Mutex
-	font  *opentype.Font
+	fonts []*opentype.Font // Go Mono, then any fallbacks
 	faces map[int]font.Face
+	made  *madeFaces
+}
+
+// madeFaces is every fallback face the caches of one family made, shared
+// with their Fresh copies, for Missing.
+type madeFaces struct {
+	mu    sync.Mutex
+	faces []*osm.Fallback
 }
 
 // NewFaceCache returns a cache over the embedded monospace face.
@@ -245,11 +260,21 @@ type FaceCache struct {
 // proportional face the readout jitters horizontally as digits swap width.
 // That movement reads as instability in the data rather than in the typography.
 func NewFaceCache() (*FaceCache, error) {
+	return NewFaceCacheWith()
+}
+
+// NewFaceCacheWith is NewFaceCache with fonts to fall back on: a letter Go
+// Mono lacks -- it has Latin, Greek and Cyrillic -- is drawn from the first
+// of these that has it, so a --label naming a place in Thai is written in
+// Thai rather than as boxes. A letter Go Mono has is drawn exactly as it
+// always was, kerned and spaced as Go Mono, so the numbers keep their fixed
+// width.
+func NewFaceCacheWith(fallbacks ...*opentype.Font) (*FaceCache, error) {
 	f, err := opentype.Parse(gomono.TTF)
 	if err != nil {
 		return nil, fmt.Errorf("panel: parsing the embedded font: %w", err)
 	}
-	return &FaceCache{font: f, faces: map[int]font.Face{}}, nil
+	return &FaceCache{fonts: append([]*opentype.Font{f}, fallbacks...), faces: map[int]font.Face{}, made: &madeFaces{}}, nil
 }
 
 // Fresh is a cache over the same font with none of its faces: faces no one
@@ -260,7 +285,29 @@ func (c *FaceCache) Fresh() *FaceCache {
 	if c == nil {
 		return nil
 	}
-	return &FaceCache{font: c.font, faces: map[int]font.Face{}}
+	return &FaceCache{fonts: c.fonts, faces: map[int]font.Face{}, made: c.made}
+}
+
+// Missing is every letter asked of this cache's faces, or of any Fresh copy
+// of it, that none of its fonts had: drawn as Go Mono's placeholder box.
+func (c *FaceCache) Missing() []rune {
+	if c == nil || c.made == nil {
+		return nil
+	}
+	c.made.mu.Lock()
+	defer c.made.mu.Unlock()
+	seen := map[rune]bool{}
+	var out []rune
+	for _, f := range c.made.faces {
+		for _, r := range f.Missing() {
+			if !seen[r] {
+				seen[r] = true
+				out = append(out, r)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // face returns a face at px pixels, rounded to a whole pixel.
@@ -284,14 +331,29 @@ func (c *FaceCache) face(px float64) (font.Face, error) {
 	// in pixels gets one -- every dimension in this package is in pixels, and
 	// a points-versus-pixels conversion hiding here would silently rescale
 	// every layout.
-	f, err := opentype.NewFace(c.font, &opentype.FaceOptions{
-		Size: float64(key), DPI: 72, Hinting: font.HintingFull,
-	})
+	opts := &opentype.FaceOptions{Size: float64(key), DPI: 72, Hinting: font.HintingFull}
+	f, err := opentype.NewFace(c.fonts[0], opts)
 	if err != nil {
 		return nil, fmt.Errorf("panel: building a %dpx font face: %w", key, err)
 	}
-	c.faces[key] = f
-	return f, nil
+	if len(c.fonts) == 1 {
+		c.faces[key] = f
+		return f, nil
+	}
+	faces := []font.Face{f}
+	for _, ttf := range c.fonts[1:] {
+		// A fallback that will not build at this size is passed over: Go
+		// Mono, which did, still writes what it can.
+		if ff, err := opentype.NewFace(ttf, opts); err == nil {
+			faces = append(faces, ff)
+		}
+	}
+	fb := osm.NewFallback(faces...)
+	c.made.mu.Lock()
+	c.made.faces = append(c.made.faces, fb)
+	c.made.mu.Unlock()
+	c.faces[key] = fb
+	return fb, nil
 }
 
 // Canvas is the drawing surface a panel is handed.

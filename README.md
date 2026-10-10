@@ -185,13 +185,14 @@ fetches both ahead of time instead, with one question naming both hosts:
 fitdash morning.fit --basemap local --terrain
 ```
 
-The map's names are written in the dashboard's own Go Mono wherever it has the letters,
-which is Latin, Greek and Cyrillic. For the rest — Thai, Chinese, Devanagari and the like —
-each letter comes from the first font that has it: any given with `--font` (repeatable),
-then the wide-coverage fonts the operating system ships, the same list course uses. Nothing
-is bundled. Letters no font has are drawn as boxes, and the summary names them. `--lang en`
-writes the names in English wherever the map has an English name, and in their own script
-where it does not.
+Text — the map's names, and a `--label`'s or `--highlight`'s name — is written in the
+dashboard's own Go Mono wherever it has the letters, which is Latin, Greek and Cyrillic, so
+the readouts look as they always have. For the rest — Thai, Chinese, Devanagari and the
+like — each letter comes from the first font that has it: any given with `--font`
+(repeatable), then the wide-coverage fonts the operating system ships, the same list course
+uses. Nothing is bundled. Letters no font has are drawn as boxes, and the summary names
+them. `--lang en` writes the map's names in English wherever the map has an English name,
+and in their own script where it does not.
 
 The frame then credits the elevation briefly, and the summary prints its full
 notice — for Copernicus GLO-30 a sentence its licence dictates — which **whoever

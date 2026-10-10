@@ -6,6 +6,9 @@ import (
 	"image/draw"
 	"math"
 	"testing"
+
+	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/opentype"
 )
 
 func newTestCanvas(t *testing.T, w, h int) (*Canvas, *image.RGBA) {
@@ -647,5 +650,32 @@ func TestDefaultTheme_IsNight(t *testing.T) {
 	// palette the user cannot ask for by name or get back to.
 	if _, err := SelectTheme(d.Name); err != nil {
 		t.Errorf("the default theme is not selectable by name: %v", err)
+	}
+}
+
+// A cache with fallbacks writes what Go Mono has exactly as Go Mono alone
+// does: the readouts' digits keep their fixed width and their place.
+func TestFaceCacheWith_GoMonoLettersUnchanged(t *testing.T) {
+	plain, err := NewFaceCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, err := NewFaceCacheWith(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{"0:12:34", "9.87 km", "ELAPSED", "Ærøskøbing"} {
+		w0, h0, err0 := plain.Measure(s, 24)
+		w1, h1, err1 := with.Measure(s, 24)
+		if err0 != nil || err1 != nil || w0 != w1 || h0 != h1 {
+			t.Errorf("%q measures %vx%v alone, %vx%v with a fallback (%v, %v)", s, w0, h0, w1, h1, err0, err1)
+		}
+	}
+	if m := with.Missing(); len(m) != 0 {
+		t.Errorf("missing %q for text Go Mono has", string(m))
 	}
 }

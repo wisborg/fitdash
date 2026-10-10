@@ -237,9 +237,9 @@ func bindRenderFlags(c *cobra.Command) {
 	f.StringVar(&renderOpts.size, "size", "1920x1080", "output resolution; width and height must both be even")
 	f.Float64Var(&renderOpts.fps, "fps", 30, "frames per second")
 	f.StringArrayVar(&renderOpts.fonts, "font", nil,
-		"with --basemap "+tilemap.LocalProvider+", a TrueType or OpenType font to write the map's names in when the built-in "+
-			"font lacks their letters; repeat for several. The built-in font has Latin, Greek and Cyrillic; after it and "+
-			"these, the wide-coverage fonts the system ships are tried, and the summary names any letters none had")
+		"a TrueType or OpenType font to write text in when the built-in font lacks its letters -- the map's names, a "+
+			"--label's or --highlight's name; repeat for several. The built-in font has Latin, Greek and Cyrillic; after "+
+			"it and these, the wide-coverage fonts the system ships are tried, and the summary names any letters none had")
 	f.StringVar(&renderOpts.language, "lang", "",
 		"with --basemap "+tilemap.LocalProvider+", write the map's names in this language where the map has them, e.g. en; "+
 			"default is each place's own")
@@ -571,7 +571,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fonts, err := panel.NewFaceCache()
+	// Go Mono, and the fonts to fall back on for letters it lacks: --font,
+	// then the system's; see loadFonts.
+	fallbacks, err := loadFonts(renderOpts.fonts)
+	if err != nil {
+		return err
+	}
+	fonts, err := panel.NewFaceCacheWith(fallbacks...)
 	if err != nil {
 		return err
 	}
@@ -621,18 +627,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	// The map's names are written in fonts of their own, loaded only for a
-	// map drawn here: Go Mono, each --font, and the system's wide-coverage
-	// fonts; see mapFonts.
-	var mapLetters *mapFonts
+	// The map's names are written in the dashboard's fonts, fallbacks and
+	// all; see loadFonts.
 	var labelFaces tilemap.LabelFaces
 	if renderOpts.basemap == tilemap.LocalProvider {
-		if mapLetters, err = loadMapFonts(renderOpts.fonts); err != nil {
-			return err
-		}
-		labelFaces = basemapLabelFaces(cmd, mapLetters.faces(), h)
-	} else if len(renderOpts.fonts) > 0 || renderOpts.language != "" {
-		fmt.Fprintf(cmd.ErrOrStderr(), "--font and --lang are only read by --basemap %s, which writes the map's names here\n", tilemap.LocalProvider)
+		labelFaces = basemapLabelFaces(cmd, faceSource(fonts), h)
+	} else if renderOpts.language != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "--lang is only read by --basemap %s, which writes the map's names here\n", tilemap.LocalProvider)
 	}
 	basemap, err := resolveBasemap(cmd, theme, track, labelFaces)
 	if err != nil {
@@ -651,7 +652,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		// A flyover draws its tiles in parallel and stands their names on
 		// its pictures afterwards, each tile in faces of its own; see
 		// tilemap.Local.FreshLabels.
-		local.FreshLabels(func() tilemap.LabelFaces { return basemapLabelFaces(cmd, mapLetters.faces(), h) })
+		local.FreshLabels(func() tilemap.LabelFaces { return basemapLabelFaces(cmd, faceSource(fonts.Fresh()), h) })
 	}
 	basemapDim := resolveBasemapDim(cmd)
 
@@ -714,7 +715,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		elevation: rctx.Elevation, elevationSource: elevSource,
 		units: rctx.Units, speedReadout: rctx.SpeedReadout,
 		airports: airports, wantAirports: wantAirports,
-		mapFonts: mapLetters,
+		fonts: fonts,
 	}
 	if renderOpts.dryRun {
 		return runDryRun(cmd, r, activity, rctx, in)
@@ -772,9 +773,9 @@ type renderInputs struct {
 	elevation       *fitactivity.ElevationModel
 	elevationSource string
 
-	// mapFonts are the fonts the local map's names were written in, for
-	// writeMissingLetters; nil for any other basemap.
-	mapFonts *mapFonts
+	// fonts are the faces every text of the render was written in, for
+	// writeMissingLetters.
+	fonts *panel.FaceCache
 
 	// airports is what --airports did, for writeAirportSummary, and
 	// wantAirports whether it was asked to do anything.
@@ -1541,7 +1542,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	writeDistanceSummary(cmd, in.sources)
 	writeBasemapSummary(cmd, r, in)
 	if !renderOpts.quiet {
-		writeMissingLetters(cmd.ErrOrStderr(), in.mapFonts)
+		writeMissingLetters(cmd.ErrOrStderr(), in.fonts)
 	}
 	// Both durations, always. A user who asked for a three-minute video wants
 	// to see that they got three minutes AND that it still covers the whole
@@ -2471,7 +2472,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	writeDistanceSummary(cmd, in.sources)
 	writeBasemapSummary(cmd, r, in)
 	if !renderOpts.quiet {
-		writeMissingLetters(cmd.ErrOrStderr(), in.mapFonts)
+		writeMissingLetters(cmd.ErrOrStderr(), in.fonts)
 	}
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)

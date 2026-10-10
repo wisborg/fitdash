@@ -3645,13 +3645,11 @@ func TestWriteBasemapSummary_SaysWhenTheMapWasStretchedRatherThanDrawn(t *testin
 // resolver ignoring the frame gives a hierarchy that is right at 1080p and
 // half the size it should be at 4K.
 func TestBasemapLabelFaces_SizesFollowTheScaleAndTheFrame(t *testing.T) {
-	defer func(f func() []string) { systemFontPaths = f }(systemFontPaths)
-	systemFontPaths = func() []string { return nil }
-	mf, err := loadMapFonts(nil)
+	cache, err := panel.NewFaceCache()
 	if err != nil {
-		t.Fatalf("loadMapFonts: %v", err)
+		t.Fatalf("NewFaceCache: %v", err)
 	}
-	fonts := mf.faces()
+	fonts := faceSource(cache)
 	cmd := &cobra.Command{}
 	cmd.SetErr(io.Discard)
 
