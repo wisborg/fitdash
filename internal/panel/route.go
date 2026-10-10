@@ -374,9 +374,11 @@ type routePainter struct {
 	// reach.
 	creditFitted float64
 
-	// viewport is the projected rectangle the current frame is looking at:
-	// minX, minY, spanX, spanY. Written by Dynamic before anything composites
-	// against it, and left at the base view for a render that never zooms.
+	// viewport is the projected rectangle the base view looks at: minX,
+	// minY, spanX, spanY, resolved in Prepare. Static composites against it;
+	// Dynamic works out its own frame's and passes it along rather than
+	// storing it here -- Dynamic must not change its Painter, and frames are
+	// drawn several at once.
 	viewport [4]float64
 
 	// anyZoom is true when at least one highlight resolved a zoom view, and
@@ -461,10 +463,17 @@ func (p *routePainter) frameProjection(f Frame) (route.Projection, bool) {
 // because Static has no way to draw it for the other frames only. That is the
 // price of the flag, and it is off by default.
 func (p *routePainter) Static(c *Canvas) {
+	// The credit's size, worked out here, where the Painter may still be
+	// changed, even when the credit is drawn per frame: under a zoom it is
+	// drawn by Dynamic, which must not change its Painter and runs for
+	// several frames at once.
+	if p.creditFitted == 0 && !p.suppressMap && p.baseMap != nil {
+		p.creditFitted = fitMapCredit(c, p.box, p.mapCredit, p.creditPx)
+	}
 	if len(p.xs) < 2 || p.anyZoom {
 		return
 	}
-	p.drawBasemap(c, p.baseMap, nil, 0)
+	p.drawBasemap(c, p.baseMap, nil, 0, p.viewport)
 	c.Polyline(p.xs, p.ys, p.outlineW, p.routeInks(c).Dim)
 	p.drawCredit(c)
 }
@@ -484,11 +493,11 @@ func (p *routePainter) Static(c *Canvas) {
 // them. Drawing back first and front over it means a missing zoomed image
 // simply leaves the whole-course one showing, magnified, rather than leaving
 // a hole.
-func (p *routePainter) drawBasemap(c *Canvas, back, front *basemapView, weight float64) {
+func (p *routePainter) drawBasemap(c *Canvas, back, front *basemapView, weight float64, viewport [4]float64) {
 	if p.suppressMap || (back == nil && front == nil) {
 		return
 	}
-	minX, minY, spanX, spanY := p.viewport[0], p.viewport[1], p.viewport[2], p.viewport[3]
+	minX, minY, spanX, spanY := viewport[0], viewport[1], viewport[2], viewport[3]
 	// The whole-course view is skipped on the frames where the zoomed one
 	// buries it. At full weight the viewport IS the zoomed view's own
 	// rectangle, so that image covers the box edge to edge and opaquely,
@@ -528,7 +537,20 @@ func (p *routePainter) drawCredit(c *Canvas) {
 	if p.suppressMap || p.baseMap == nil {
 		return
 	}
-	drawMapCredit(c, p.box, p.mapCredit, p.creditPx, &p.creditFitted)
+	fitted := p.creditFitted
+	drawMapCredit(c, p.box, p.mapCredit, p.creditPx, &fitted)
+}
+
+// fitMapCredit is the size the credit is drawn at in box: px, shrunk to fit.
+func fitMapCredit(c *Canvas, box Box, credit string, px float64) float64 {
+	if credit == "" {
+		return 0
+	}
+	fit, err := c.FitTextSize(credit, box.W-2*maxf(2, px*0.25), px)
+	if err != nil || fit <= 0 {
+		fit = px
+	}
+	return fit
 }
 
 // drawMapCredit is drawCredit's body, for any painter that puts a map in its
@@ -550,11 +572,7 @@ func drawMapCredit(c *Canvas, box Box, credit string, px float64, fitted *float6
 	// 1100 pixels in a 720-pixel box. Letting it overflow would push most of
 	// the obligation off the panel and draw the rest across its neighbour.
 	if *fitted == 0 {
-		fit, err := c.FitTextSize(credit, box.W-2*pad, px)
-		if err != nil || fit <= 0 {
-			fit = px
-		}
-		*fitted = fit
+		*fitted = fitMapCredit(c, box, credit, px)
 	}
 	w, h, err := c.MeasureText(credit, *fitted)
 	if err != nil {
@@ -627,8 +645,9 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	// composited against. Recorded even when nothing zoomed, so Static and
 	// Dynamic composite against the same rectangle.
 	w, h := p.placeArea()
+	viewport := p.viewport
 	if vpX, vpY, vpW, vpH, ok := proj.CoverBox(w, h, p.box.W, p.box.H, p.inset, p.inset); ok {
-		p.viewport = [4]float64{vpX, vpY, vpW, vpH}
+		viewport = [4]float64{vpX, vpY, vpW, vpH}
 	}
 	if zoomed {
 		zoomPlace, ok := p.placer(proj)
@@ -648,7 +667,7 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	// stroke straight across the panels beside it. Only the zoom path pays
 	// for the clip; the default render is untouched.
 	if p.anyZoom {
-		c.Clipped(p.box, func() { p.draw(c, f, place, xs, ys) })
+		c.Clipped(p.box, func() { p.draw(c, f, place, xs, ys, viewport) })
 		// The credit is drawn OUTSIDE the clip, and it has to be. Under a
 		// clip mask gg draws a string by rasterizing it into a fresh
 		// full-frame image and compositing that across the whole frame
@@ -666,14 +685,14 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 		p.drawCredit(c)
 		return
 	}
-	p.draw(c, f, place, xs, ys)
+	p.draw(c, f, place, xs, ys, viewport)
 }
 
 // draw is Dynamic's body, taking the frame's own placement so the outline,
 // the covered prefix, the marks and the dot are all laid out by one view --
 // the property that kept the dot on the line when the projection was fixed,
 // preserved now that it is not.
-func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64, float64), xs, ys []float64) {
+func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64, float64), xs, ys []float64, viewport [4]float64) {
 	// The dim outline, when Static did not draw it. Under a zoom there is
 	// no single image to cache it in (see Static), so it is restroked here,
 	// first, exactly as Static would have laid it down -- everything below
@@ -684,7 +703,7 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 		if f.Interval >= 0 && f.Interval < len(p.zoomMaps) {
 			front, weight = p.zoomMaps[f.Interval], f.IntervalWeight
 		}
-		p.drawBasemap(c, p.baseMap, front, weight)
+		p.drawBasemap(c, p.baseMap, front, weight, viewport)
 		c.Polyline(xs, ys, p.outlineW, p.routeInks(c).Dim)
 	}
 

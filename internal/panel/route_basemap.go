@@ -46,6 +46,11 @@ type basemapView struct {
 	// resampled.
 	scaled   *image.RGBA
 	scaledAt image.Point
+	// mu guards scaled and scaledAt: frames are drawn several at once, and
+	// each may ask a zooming view for its image. What is cached is the same
+	// picture whichever frame asks first, so the frames do not depend on
+	// the order; only the cache itself needs guarding.
+	mu sync.Mutex
 }
 
 // isOpaque reports whether img is free of transparency.
@@ -339,6 +344,8 @@ func (v *basemapView) dest(box Box, minX, minY, spanX, spanY float64) (Box, bool
 // that is a picture worth tens of megabytes to hold and nothing to look up.
 func (v *basemapView) resampled(dst, box Box) image.Image {
 	size := pixelRect(dst).Size()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	if v.scaled != nil && v.scaledAt == size {
 		return v.scaled
 	}
