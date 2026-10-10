@@ -145,8 +145,14 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 		North: math.Atan(math.Sinh(math.Pi*(1-2*float64(y)/n))) * 180 / math.Pi,
 		South: math.Atan(math.Sinh(math.Pi*(1-2*float64(y+1)/n))) * 180 / math.Pi,
 	}
-	if cells, err := l.store.CellsFor(b); err == nil {
-		defer l.source.Hold(cells).Release()
+	// Held only where the tile reads cells at all: one drawn from a zoom
+	// above the store's cell zoom reads the overview, and a flight's coarse
+	// tiles, each over thousands of cells, held -- and moved the eviction
+	// clock of -- every one of them for files they never opened.
+	if z+1 >= l.store.CellZoom() {
+		if cells, err := l.store.CellsFor(b); err == nil {
+			defer l.source.Hold(cells).Release()
+		}
 	}
 	v := View{North: b.North, West: b.West, South: b.South, East: b.East, Width: perspective.TileSize, Height: perspective.TileSize}
 	rend, err := l.flightRenderer(v, z, areas)
