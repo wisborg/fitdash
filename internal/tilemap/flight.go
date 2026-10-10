@@ -155,7 +155,7 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 		}
 	}
 	v := View{North: b.North, West: b.West, South: b.South, East: b.East, Width: perspective.TileSize, Height: perspective.TileSize}
-	rend, err := l.flightRenderer(v, z, areas)
+	rend, ids, err := l.flightRenderer(v, z, areas)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: drawing tile %d/%d/%d from the local map store %s: %w", z, x, y, l.root, err)
 	}
-	l.record(res)
+	l.record(res, ids)
 	img := res.Image
 	if img.Rect.Min != (image.Point{}) {
 		moved := image.NewRGBA(image.Rect(0, 0, img.Rect.Dx(), img.Rect.Dy()))
@@ -176,7 +176,9 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 // flightRenderer is rendererFor for a tile of a flight: the areas measured
 // over the flight, the contour interval of the tile's zoom, every name
 // lifted, and faces of its own.
-func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer, error) {
+//
+// The tile's elevation sources come back with it; see rendererFor.
+func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer, []string, error) {
 	o := l.opts
 	o.Areas, o.LiftLabels = areas, true
 	o.ContourInterval = flightContourInterval(z + 1)
@@ -186,15 +188,17 @@ func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer
 	} else {
 		o.LabelFace, o.LabelFaceFor = nil, nil // no faces of its own: no names
 	}
+	var ids []string
 	if l.terrain != nil {
 		bb := slice.Bounds{West: v.West, South: v.South, East: v.East, North: v.North}
-		short, full, err := l.terrain.Credit(bb, z+1)
-		if err != nil {
-			return nil, fmt.Errorf("tilemap: working out what this tile owes the elevation in %s: %w", l.terrain.Root(), err)
+		var err error
+		if ids, err = l.terrain.SourcesIn(bb, z+1); err != nil {
+			return nil, nil, fmt.Errorf("tilemap: working out what this tile owes the elevation in %s: %w", l.terrain.Root(), err)
 		}
-		o.Terrain, o.TerrainAttribution, o.TerrainNotice = l.terrain.Heights(), short, full
+		o.Terrain, o.TerrainAttribution = l.terrain.Heights(), l.terrain.ShortCredit(ids)
 	}
-	return osm.New(l.source, o)
+	rend, err := osm.New(l.source, o)
+	return rend, ids, err
 }
 
 // flightContourInterval is the contour interval for a tile drawn at map zoom

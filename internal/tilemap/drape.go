@@ -37,7 +37,7 @@ func (l *Local) Drape(ctx context.Context, cam perspective.Camera, o perspective
 	if cells, err := l.store.CellsFor(b); err == nil {
 		defer l.source.Hold(cells).Release()
 	}
-	rend, err := l.rendererFor(View{North: b.North, West: b.West, South: b.South, East: b.East, Width: v.Width, Height: v.Height}, &cam.Heading)
+	rend, ids, err := l.rendererFor(View{North: b.North, West: b.West, South: b.South, East: b.East, Width: v.Width, Height: v.Height}, &cam.Heading)
 	if err != nil {
 		return nil, false, err
 	}
@@ -45,7 +45,7 @@ func (l *Local) Drape(ctx context.Context, cam perspective.Camera, o perspective
 	if err != nil {
 		return nil, false, fmt.Errorf("tilemap: drawing a %dx%d view from the local map store %s: %w", v.Width, v.Height, l.root, err)
 	}
-	l.record(res)
+	l.record(res, ids)
 
 	var heights osm.HeightSource = perspective.Level
 	leveled = true

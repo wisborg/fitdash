@@ -103,6 +103,15 @@ func TestLocal_TerrainShadesCreditsAndHandsOverTheNotice(t *testing.T) {
 	if ns := shaded.TerrainNotices(); len(ns) != 1 || !strings.Contains(ns[0], "synthetic-terrain") {
 		t.Errorf("notices %q", ns)
 	}
+	// Another view is owed the same notice: one, however many views.
+	half := v
+	half.East = (v.West + v.East) / 2
+	if _, err := shaded.Image(context.Background(), half); err != nil {
+		t.Fatal(err)
+	}
+	if ns := shaded.TerrainNotices(); len(ns) != 1 {
+		t.Errorf("%d notices after a second view, want one for every view together: %q", len(ns), ns)
+	}
 	if samePixels(flat, hilly) {
 		t.Error("the shaded map is the same picture as the plain one")
 	}

@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/color"
 	"math"
-	"slices"
 	"sync"
 
 	"github.com/wisborg/osmbase/acquire"
@@ -83,9 +82,11 @@ type Local struct {
 	// then answers with the map's alone -- an unshaded map owes the
 	// elevation nothing.
 	shaded string
-	// notices are the elevation's full notices, one per distinct one a view
-	// owed, in the order they were first owed. See TerrainNotices.
-	notices []string
+	// sources are the ids of the elevation sources every shaded view was
+	// shaped from, each once, for the one notice they are owed together;
+	// see TerrainNotices.
+	sources    []string
+	sourceSeen map[string]bool
 	// terrainCovered is the smallest fraction of any view a height was
 	// found for, and contourInterval the widest interval any view drew
 	// contours at; both 0 before a view is shaded.
@@ -243,28 +244,34 @@ func OpenLocal(root string, inks MapInks, labels LabelFaces, relief *Terrain) (*
 // be stood upright on the picture, and the names along streets and contours
 // that stay on the ground are turned to read upright for the camera rather
 // than for a north-up reader. Nil for a flat map.
-func (l *Local) rendererFor(v View, facing *float64) (*osm.Renderer, error) {
+//
+// The view's elevation sources come back with it, for record to keep if the
+// view is shaded: what they are owed is one notice for every view together,
+// not one a view.
+func (l *Local) rendererFor(v View, facing *float64) (*osm.Renderer, []string, error) {
 	if l.terrain == nil && facing == nil {
-		return l.rend, nil
+		return l.rend, nil, nil
 	}
 	o := l.opts
 	if facing != nil {
 		o.LiftPointLabels, o.LabelsFacing = true, *facing
 	}
 	if l.terrain == nil {
-		return osm.New(l.source, o)
+		rend, err := osm.New(l.source, o)
+		return rend, nil, err
 	}
 	ov := osm.View{Bounds: osm.Bounds{West: v.West, South: v.South, East: v.East, North: v.North}, Width: v.Width, Height: v.Height}
 	z, _, err := ov.Zoom()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	short, full, err := l.terrain.Credit(slice.Bounds{West: v.West, South: v.South, East: v.East, North: v.North}, z)
+	ids, err := l.terrain.SourcesIn(slice.Bounds{West: v.West, South: v.South, East: v.East, North: v.North}, z)
 	if err != nil {
-		return nil, fmt.Errorf("tilemap: working out what this view owes the elevation in %s: %w", l.terrain.Root(), err)
+		return nil, nil, fmt.Errorf("tilemap: working out what this view owes the elevation in %s: %w", l.terrain.Root(), err)
 	}
-	o.Terrain, o.TerrainAttribution, o.TerrainNotice = l.terrain.Heights(), short, full
-	return osm.New(l.source, o)
+	o.Terrain, o.TerrainAttribution = l.terrain.Heights(), l.terrain.ShortCredit(ids)
+	rend, err := osm.New(l.source, o)
+	return rend, ids, err
 }
 
 // newestSource picks which of the store's sources to draw from.
@@ -317,7 +324,7 @@ func (l *Local) Image(ctx context.Context, v View) (image.Image, error) {
 		defer l.source.Hold(cells).Release()
 	}
 
-	rend, err := l.rendererFor(v, nil)
+	rend, ids, err := l.rendererFor(v, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -328,14 +335,17 @@ func (l *Local) Image(ctx context.Context, v View) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: drawing a %dx%d view from the local map store %s: %w", v.Width, v.Height, l.root, err)
 	}
-	l.record(res)
+	l.record(res, ids)
 	return res.Image, nil
 }
 
 // record keeps what a drawn view says about the store and the elevation,
 // for the summary: the worst coverage and overzoom of any view, and what
 // the shaded ones owe the elevation.
-func (l *Local) record(res *osm.Result) {
+//
+// ids are the elevation sources the view was shaped from, kept when it was
+// shaded.
+func (l *Local) record(res *osm.Result, ids []string) {
 	l.mu.Lock()
 	if res.Covered < l.covered {
 		l.covered = res.Covered
@@ -356,8 +366,14 @@ func (l *Local) record(res *osm.Result) {
 		if iv := res.ContourInterval; iv > 0 && (l.finestContours == 0 || iv < l.finestContours) {
 			l.finestContours = iv
 		}
-		if n := res.TerrainNotice; n != "" && !slices.Contains(l.notices, n) {
-			l.notices = append(l.notices, n)
+		if l.sourceSeen == nil {
+			l.sourceSeen = map[string]bool{}
+		}
+		for _, id := range ids {
+			if !l.sourceSeen[id] {
+				l.sourceSeen[id] = true
+				l.sources = append(l.sources, id)
+			}
 		}
 	}
 	l.mu.Unlock()
@@ -408,14 +424,22 @@ func (l *Local) Attribution() string {
 	return l.credit
 }
 
-// TerrainNotices are the full notices the elevation of the drawn views
-// asks to be given wherever the video is published -- the frame's credit
-// only points to them -- one for each distinct set of sources a view drew
-// on. Empty when nothing was shaded.
+// TerrainNotices is the full notice the elevation of the drawn views asks
+// to be given wherever the video is published -- the frame's credit only
+// points to it -- every source any shaded view drew on, each once, in one
+// notice. A flyover's map is hundreds of tiles, and a notice a distinct set
+// of their sources was dozens of paragraphs naming most of the same ones.
+// Empty when nothing was shaded.
 func (l *Local) TerrainNotices() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return slices.Clone(l.notices)
+	if l.terrain == nil || l.terrainCovered == 0 {
+		return nil
+	}
+	if n := l.terrain.Notice(l.sources); n != "" {
+		return []string{n}
+	}
+	return nil
 }
 
 // TerrainCoverage is the smallest fraction of any drawn view a height was
