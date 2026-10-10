@@ -233,10 +233,14 @@ func TestBalanceSeries_ExcludesRefusedZerosFromTheWindowAverage(t *testing.T) {
 // the midpoint must refuse rather than interpolate a straight line across a
 // gap this wide.
 func TestBalanceSeries_GapWiderThanDefaultMaxGapRefuses(t *testing.T) {
-	track := &fitactivity.Track{Samples: []fitactivity.Sample{
-		{Time: balanceSampleTime(0), HasStanceTimeBalance: true, StanceTimeBalance: 54},
-		{Time: balanceSampleTime(10), HasStanceTimeBalance: true, StanceTimeBalance: 46},
-	}}
+	// A device recording every second, then a ten-second hole: the gap is
+	// a gap against the recording's own rhythm (Track.GapTolerance), so the
+	// second-by-second run before it is what makes it one.
+	track := &fitactivity.Track{}
+	for s := -20; s <= 0; s++ {
+		track.Samples = append(track.Samples, fitactivity.Sample{Time: balanceSampleTime(s), HasStanceTimeBalance: true, StanceTimeBalance: 54})
+	}
+	track.Samples = append(track.Samples, fitactivity.Sample{Time: balanceSampleTime(10), HasStanceTimeBalance: true, StanceTimeBalance: 46})
 	ctx := &Context{Track: track}
 	window := balanceSeriesWindow(ctx)
 	if window >= 10*time.Second {

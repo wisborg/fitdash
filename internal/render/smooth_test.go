@@ -145,7 +145,7 @@ func TestSmoothing_LeavesPositionDistanceAndElevationAlone(t *testing.T) {
 	for _, i := range []int{1, r.Frames() / 2, r.Frames() - 2} {
 		f := r.Frame(i)
 		at := ctx.Timeline.At(i)
-		raw, ok := track.AtWithGap(at, maxGap)
+		raw, ok := track.AtWithGap(at, r.maxGap)
 		if !ok {
 			continue
 		}

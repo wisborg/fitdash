@@ -252,3 +252,20 @@ func TestAirports_StopoverIsAnAirportToo(t *testing.T) {
 		t.Errorf("seams %v, want the stopover's alone", cuts)
 	}
 }
+
+// A flight is a flight for the clock whether or not --airports looked:
+// found in the track, or named by the file's sport.
+func TestIsFlight(t *testing.T) {
+	flight := syntheticFlight()
+	if !isFlight(flight, airportPlan{}) {
+		t.Error("a synthetic flight is not a flight when --airports did not look")
+	}
+	run := syntheticTrack(flightLeg{30 * time.Minute, time.Second, 3})
+	if isFlight(run, airportPlan{}) {
+		t.Error("a run is a flight")
+	}
+	run.Sport = "flying"
+	if !isFlight(run, airportPlan{}) {
+		t.Error("a track whose sport is flying is not a flight")
+	}
+}

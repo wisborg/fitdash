@@ -14,22 +14,13 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"time"
 
 	"github.com/wisborg/fitactivity"
 
 	"github.com/wisborg/fitdash/internal/encode"
 	"github.com/wisborg/fitdash/internal/panel"
 )
-
-// maxGap is how far Frame's sample lookup will interpolate across missing
-// data before reporting the instant as absent.
-//
-// It is fitactivity's own default rather than a number chosen here, because it
-// is a property of how densely a device records (1 Hz for the files this
-// targets) rather than of how a dashboard looks. Beyond it, a straight line
-// between two real samples is a fabrication, and the whole absent-data design
-// depends on the difference being reported instead of smoothed over.
-const maxGap = fitactivity.DefaultMaxGap
 
 // elevationPanelName is ElevationPanel's own Name(), read from the panel
 // itself rather than restated as a string literal here -- the same reason
@@ -48,7 +39,20 @@ var markerPanelName = panel.MarkerPanel{}.Name()
 
 // Renderer draws one activity through one layout.
 type Renderer struct {
-	ctx      *panel.Context
+	ctx *panel.Context
+
+	// maxGap is how far Frame's sample lookup will interpolate across
+	// missing data before reporting the instant as absent: the track's own
+	// fitactivity.Track.GapTolerance, worked out once.
+	//
+	// It is the track's rather than a number chosen here, because it is a
+	// property of how densely the recording was made -- every second for a
+	// watch, every half-minute for a flight tracker -- rather than of how a
+	// dashboard looks. Beyond it, a straight line between two real samples
+	// is a fabrication, and the whole absent-data design depends on the
+	// difference being reported instead of smoothed over.
+	maxGap time.Duration
+
 	theme    panel.Theme
 	faces    *panel.FaceCache
 	basePx   float64
@@ -246,6 +250,10 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		// drawHighlightBorder relies on (the margin band is never given to a
 		// panel) rests on one formula, not two that could drift apart.
 		marginPx: layout.MarginPx(ctx.Width, ctx.Height),
+		maxGap:   fitactivity.DefaultMaxGap,
+	}
+	if ctx.Track != nil {
+		r.maxGap = ctx.Track.GapTolerance()
 	}
 	for _, p := range placed {
 		painter := p.Panel.Prepare(ctx, p.Box)
@@ -419,7 +427,7 @@ func (r *Renderer) Frame(i int) panel.Frame {
 		Cut:       cut,
 		CutWeight: cutWeight,
 	}
-	if s, ok := r.ctx.Track.AtWithGap(at, maxGap); ok {
+	if s, ok := r.ctx.Track.AtWithGap(at, r.maxGap); ok {
 		// Smoothing is applied only where there IS a reading. Deep in a
 		// dropout the sample stays zero, so the invariant every panel's single
 		// presence check relies on survives -- an average drawn from either

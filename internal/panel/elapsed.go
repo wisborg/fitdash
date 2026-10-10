@@ -15,6 +15,10 @@ import (
 // data. The template makes the size a property of the layout instead.
 const clockTemplate = "8:88:88"
 
+// timeOfDayTemplate is clockTemplate for a time of day, which is always two
+// hours digits.
+const timeOfDayTemplate = "88:88:88"
+
 // --clock's legal values -- which of the two clocks this panel draws LARGE,
 // with the other kept beneath it. Exported so the CLI's own validation and
 // Context.Clock compare against one pair of strings rather than each
@@ -73,7 +77,10 @@ func (ElapsedPanel) Accepts(*Context) bool { return true }
 // static chrome went, so the rule under the label could end up laid out
 // against one size while the clock drawn over it used another.
 func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
-	e := &elapsedPainter{box: box, activeFirst: ctx.Clock == ClockActive}
+	// A flight's second row is the time of day, not active time: see
+	// Context.Flight. Elapsed is always the large row then, since there is
+	// no active time for --clock active to put there.
+	e := &elapsedPainter{box: box, timeOfDay: ctx.Flight, activeFirst: ctx.Clock == ClockActive && !ctx.Flight}
 
 	// Sizes are fractions of the box, not of the frame: this panel must fit
 	// the rectangle it was given, whatever shape the layout made it.
@@ -96,7 +103,7 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 		// shrink the sub-line under the DEFAULT order, where the prefix is
 		// the shorter "ACTIVE", and a flag nobody passed must not change
 		// the pixels of a render that does not use it.
-		if px, err := ctx.Fonts.FitSize(e.subCaption()+" "+clockTemplate, box.W*0.92, e.subPx); err == nil {
+		if px, err := ctx.Fonts.FitSize(e.subCaption()+" "+e.subTemplate(), box.W*0.92, e.subPx); err == nil {
 			e.subPx = px
 		}
 	}
@@ -146,6 +153,10 @@ type elapsedPainter struct {
 	// way every size in this painter is.
 	activeFirst bool
 
+	// timeOfDay draws the time of day in UTC beneath elapsed, in place of
+	// active time; see Context.Flight.
+	timeOfDay bool
+
 	labelPx float64
 	clockPx float64
 	subPx   float64
@@ -185,7 +196,10 @@ func (e *elapsedPainter) Dynamic(c *Canvas, f Frame) {
 	if e.activeFirst {
 		main, sub = sub, main
 	}
-	if !f.HasTimerEvents {
+	if e.timeOfDay {
+		// The frame's own instant, which every frame has: no placeholder.
+		sub = f.At.UTC().Format("15:04:05")
+	} else if !f.HasTimerEvents {
 		if e.activeFirst {
 			main, mainCol = ClockPlaceholder, c.Theme.Absent
 		} else {
@@ -208,10 +222,21 @@ func (e *elapsedPainter) mainCaption() string {
 }
 
 func (e *elapsedPainter) subCaption() string {
-	if e.activeFirst {
+	switch {
+	case e.timeOfDay:
+		return "UTC"
+	case e.activeFirst:
 		return "ELAPSED"
 	}
 	return "ACTIVE"
+}
+
+// subTemplate is the widest the second row's figure gets.
+func (e *elapsedPainter) subTemplate() string {
+	if e.timeOfDay {
+		return timeOfDayTemplate
+	}
+	return clockTemplate
 }
 
 // ClockPlaceholder is what a clock reads when there is no measurement behind

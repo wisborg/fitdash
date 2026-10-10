@@ -450,3 +450,35 @@ func bandContainsColor(img *image.RGBA, b Box, want interface {
 	}
 	return false
 }
+
+// A flight records no timer, so its second row is the time of day in UTC,
+// which every frame has: no placeholder, nothing in Theme.Absent, and the
+// row changes with the frame's own instant.
+func TestElapsedPanel_FlightShowsTheTimeOfDay(t *testing.T) {
+	c, img, ctx := elapsedFixture(t, 400, 300)
+	ctx.Flight, ctx.Clock = true, ClockActive
+	box := Box{X: 0, Y: 0, W: 400, H: 300}
+	p, ok := ElapsedPanel{}.Prepare(ctx, box).(*elapsedPainter)
+	if !ok {
+		t.Fatal("not an elapsedPainter")
+	}
+	if p.activeFirst || p.subCaption() != "UTC" || p.mainCaption() != "ELAPSED" {
+		t.Errorf("rows %q over %q (active first %v); a flight keeps elapsed large and UTC beneath",
+			p.mainCaption(), p.subCaption(), p.activeFirst)
+	}
+	at := time.Date(2026, 7, 25, 22, 58, 9, 0, time.UTC)
+	shot := func(at time.Time) []byte {
+		c.Fill(c.Theme.Background)
+		p.Dynamic(c, Frame{At: at, Elapsed: time.Hour, HasTimerEvents: false})
+		out := make([]byte, len(img.Pix))
+		copy(out, img.Pix)
+		return out
+	}
+	first := shot(at)
+	if containsColor(img, c.Theme.Absent) {
+		t.Error("a flight's clock draws a placeholder; the time of day is always known")
+	}
+	if string(first) == string(shot(at.Add(time.Minute))) {
+		t.Error("the time of day did not change with the frame's instant")
+	}
+}

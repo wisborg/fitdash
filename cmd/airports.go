@@ -255,6 +255,16 @@ func overlapsAny(paces []panel.Pacing, highlights []panel.Highlight) bool {
 	return false
 }
 
+// isFlight is whether the activity is a flight, for the time panel: a
+// track whose sport is flying -- a Flightradar24 flight says so -- or one
+// whose flights were found, whether or not --airports paces them.
+func isFlight(track *fitactivity.Track, p airportPlan) bool {
+	if track.Sport == "flying" || p.found() {
+		return true
+	}
+	return len(route.FindAirports(route.FromTrack(track, len(track.Samples)+1))) > 0
+}
+
 // pausedWithin is how much of the stretch c, as offsets from start, the
 // activity spent paused.
 func pausedWithin(timer *fitactivity.TimerModel, start time.Time, c panel.Cut) time.Duration {

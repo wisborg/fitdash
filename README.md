@@ -5,11 +5,17 @@ produce a video in which the metrics animate as the activity progresses — the 
 drawing itself, an elevation profile with a moving playhead, pace, heart rate, power,
 cumulative climb and the gradient underfoot.
 
-The activity can be a FIT, GPX, TCX, KML or KMZ file. FIT carries the most; the
-others carry what their format can — a GPX has no distance, so no pace or
-elevation profile — and a panel whose data the file lacks is left out rather
-than drawn as zero. A planned route with no times is refused: there is nothing
-to play it by.
+The activity can be a FIT, GPX, TCX, KML or KMZ file, or a flight exported from
+Flightradar24 as CSV, with its altitude and ground speed. FIT carries the most; the
+others carry what their format can, and a panel whose data the file lacks is left
+out rather than drawn as zero. A file that records no distance — a GPX, a KML, a
+flight — has one summed from its GPS fixes, as a device would, so its elevation
+profile, climb and gradient are drawn, and the summary says the distance was summed.
+A recording sparser than a watch's — a flight tracker reports every half-minute —
+is read at its own rhythm, so its readouts do not go blank between reports. A flight
+records no timer, so its time panel shows the time of day in UTC beneath elapsed, in
+place of active time. A planned route with no times is refused: there is nothing to
+play it by.
 
 ```
 fitdash activity.fit --video-duration 3m

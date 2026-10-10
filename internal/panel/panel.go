@@ -374,6 +374,14 @@ type Context struct {
 	// in the dynamic pass.
 	Clock string
 
+	// Flight is whether the activity is a flight: a Flightradar24 track, or
+	// one route.FindAirports finds flights in. A flight tracker records no
+	// timer, so active time is never measured and the time panel's second
+	// row was a placeholder for the whole video; on a flight it shows the
+	// time of day in UTC instead -- the clock a flight's times are given in
+	// -- and Clock's choice of active on top does not apply.
+	Flight bool
+
 	// Pauses selects what the render does with the activity's paused
 	// stretches: PausesFreeze (the zero value's behaviour too) shows them,
 	// with the dashboard frozen through each one, and PausesSkip cuts them

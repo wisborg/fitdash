@@ -232,6 +232,10 @@ type gaugeSeries struct {
 	times  []time.Time
 	values []float64
 
+	// maxGap is the track's own gap tolerance; see At. Zero is
+	// fitactivity.DefaultMaxGap.
+	maxGap time.Duration
+
 	// ok[i] is whether values[i] is a genuine average -- at least one
 	// present reading fell inside the window centred on times[i] -- rather
 	// than the zero value standing in for one. A track with no samples at
@@ -258,6 +262,7 @@ func buildGaugeSeries(track *fitactivity.Track, window time.Duration, value func
 	}
 	half := window / 2
 	s := gaugeSeries{
+		maxGap: track.GapTolerance(),
 		times:  make([]time.Time, len(track.Samples)),
 		values: make([]float64, len(track.Samples)),
 		ok:     make([]bool, len(track.Samples)),
@@ -332,7 +337,8 @@ func (s gaugeSeries) Range() (lo, hi float64, ok bool) {
 // before the first point or after the last -- false, no extrapolation; t
 // exactly at a point -- that point's own value and ok, verbatim; t between
 // two points -- linear interpolation, but ONLY when BOTH bracketing points
-// are themselves ok and no more than fitactivity.DefaultMaxGap apart.
+// are themselves ok and no more than the track's own gap tolerance apart
+// (fitactivity.Track.GapTolerance, the frame lookup's too).
 // Otherwise this is a real recording gap (or a stretch where neither
 // bracketing point had a reading to average, which is the identical fact
 // one step removed) and At refuses rather than draw a straight line across
@@ -340,7 +346,7 @@ func (s gaugeSeries) Range() (lo, hi float64, ok bool) {
 // interpolated across the hole.
 //
 // Unlike Track.AtWithGap, this does not snap to the nearer neighbour when t
-// falls inside a gap wider than DefaultMaxGap. Refusing outright is always
+// falls inside a gap wider than that. Refusing outright is always
 // the honest answer for a marker -- a snap-to-nearest here would draw a
 // marker whose position quietly stopped moving partway through the gap,
 // which looks exactly like a live reading holding steady.
@@ -361,7 +367,11 @@ func (s gaugeSeries) At(t time.Time) (float64, bool) {
 		return 0, false
 	}
 	gap := s.times[hi].Sub(s.times[lo])
-	if gap > fitactivity.DefaultMaxGap {
+	tolerance := s.maxGap
+	if tolerance == 0 {
+		tolerance = fitactivity.DefaultMaxGap
+	}
+	if gap > tolerance {
 		return 0, false
 	}
 	frac := float64(t.Sub(s.times[lo])) / float64(gap)

@@ -479,7 +479,8 @@ func TimeToDistance(track *fitactivity.Track, timer *fitactivity.TimerModel, sta
 		return 0, false
 	}
 	at := start.Add(offset)
-	if s, ok := track.AtWithGap(at, fitactivity.DefaultMaxGap); ok && s.HasDistance {
+	tolerance := track.GapTolerance()
+	if s, ok := track.AtWithGap(at, tolerance); ok && s.HasDistance {
 		return s.Distance, true
 	}
 	if timer == nil {
@@ -490,7 +491,7 @@ func TimeToDistance(track *fitactivity.Track, timer *fitactivity.TimerModel, sta
 		if at.Before(p.Start) || !at.Before(p.End) {
 			continue
 		}
-		if s, ok := track.AtWithGap(p.Start, fitactivity.DefaultMaxGap); ok && s.HasDistance {
+		if s, ok := track.AtWithGap(p.Start, tolerance); ok && s.HasDistance {
 			return s.Distance, true
 		}
 		return 0, false

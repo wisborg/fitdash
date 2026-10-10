@@ -350,7 +350,8 @@ func bindRenderFlags(c *cobra.Command) {
 			"EXCLUDING paused stretches -- Garmin's \"time\", Stryd/Strava's \"moving time\"). Both are always on "+
 			"screen; this chooses the order. A file carrying no timer events cannot measure active time at all, and "+
 			"shows a placeholder for it wherever it is drawn -- including as the large readout under \"active\" -- "+
-			"rather than a figure equal to elapsed")
+			"rather than a figure equal to elapsed. A flight shows the time of day in UTC beneath elapsed instead, "+
+			"and this is not read for one")
 	f.StringVar(&renderOpts.pauses, "pauses", panel.PausesFreeze,
 		"what the render does with the stretches where the activity was paused -- \"freeze\" (default: render them "+
 			"like any other stretch, with the dashboard frozen through each one) or \"skip\" (cut them out, so video "+
@@ -640,6 +641,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		GaugeStyle:          gaugeStyle,
 		Gauges:              gauges,
 		Clock:               clock,
+		Flight:              isFlight(track, airports),
 		Pauses:              pauses,
 		Units:               unitSet,
 		SpeedReadout:        speedReadout,
@@ -1468,6 +1470,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	}
 	out := cmd.ErrOrStderr()
 	writeMergeSummary(cmd, in.track, in.sources)
+	writeDistanceSummary(cmd, in.sources)
 	writeBasemapSummary(cmd, r, in)
 	// Both durations, always. A user who asked for a three-minute video wants
 	// to see that they got three minutes AND that it still covers the whole
@@ -1718,7 +1721,17 @@ func writeGaugeSelectionSummary(cmd *cobra.Command, r *render.Renderer, ctx *pan
 // printed before the flag existed, so a user comparing two runs sees a
 // difference only where there is one.
 func writeClockSummary(cmd *cobra.Command, ctx *panel.Context) {
-	if renderOpts.quiet || ctx.Clock != panel.ClockActive {
+	if renderOpts.quiet {
+		return
+	}
+	if ctx.Flight {
+		fmt.Fprintf(cmd.ErrOrStderr(), "clock: a flight, which records no active time; the time of day in UTC is shown beneath elapsed\n")
+		if ctx.Clock == panel.ClockActive {
+			fmt.Fprintf(cmd.ErrOrStderr(), "clock: --clock %s is not read for a flight; elapsed stays the large readout\n", panel.ClockActive)
+		}
+		return
+	}
+	if ctx.Clock != panel.ClockActive {
 		return
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "clock: %s is the large readout, %s beneath it\n", panel.ClockActive, panel.ClockElapsed)
@@ -2383,6 +2396,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p)
 	}
 	writeMergeSummary(cmd, in.track, in.sources)
+	writeDistanceSummary(cmd, in.sources)
 	writeBasemapSummary(cmd, r, in)
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)
