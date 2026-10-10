@@ -52,6 +52,8 @@ type renderOptions struct {
 	terrainSource       string
 	routeView           string
 	airports            string
+	fonts               []string
+	language            string
 	concurrency         string
 	routeHeading        string
 	routePitch          float64
@@ -234,6 +236,13 @@ func bindRenderFlags(c *cobra.Command) {
 	f.StringVarP(&renderOpts.output, "output", "o", "", "write to this exact path instead of deriving one")
 	f.StringVar(&renderOpts.size, "size", "1920x1080", "output resolution; width and height must both be even")
 	f.Float64Var(&renderOpts.fps, "fps", 30, "frames per second")
+	f.StringArrayVar(&renderOpts.fonts, "font", nil,
+		"with --basemap "+tilemap.LocalProvider+", a TrueType or OpenType font to write the map's names in when the built-in "+
+			"font lacks their letters; repeat for several. The built-in font has Latin, Greek and Cyrillic; after it and "+
+			"these, the wide-coverage fonts the system ships are tried, and the summary names any letters none had")
+	f.StringVar(&renderOpts.language, "lang", "",
+		"with --basemap "+tilemap.LocalProvider+", write the map's names in this language where the map has them, e.g. en; "+
+			"default is each place's own")
 	f.StringVar(&renderOpts.concurrency, "concurrency", "auto",
 		"how many frames to draw at once: \"auto\" (default) is one for each core, held to as many as eight "+
 			"1920x1080 frames' pixels -- a flyover holds a large picture for every frame in flight, about 130 MB "+
@@ -612,9 +621,27 @@ func runRender(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	basemap, err := resolveBasemap(cmd, theme, track, basemapLabelFaces(cmd, fonts, h))
+	// The map's names are written in fonts of their own, loaded only for a
+	// map drawn here: Go Mono, each --font, and the system's wide-coverage
+	// fonts; see mapFonts.
+	var mapLetters *mapFonts
+	var labelFaces tilemap.LabelFaces
+	if renderOpts.basemap == tilemap.LocalProvider {
+		if mapLetters, err = loadMapFonts(renderOpts.fonts); err != nil {
+			return err
+		}
+		labelFaces = basemapLabelFaces(cmd, mapLetters.faces(), h)
+	} else if len(renderOpts.fonts) > 0 || renderOpts.language != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "--font and --lang are only read by --basemap %s, which writes the map's names here\n", tilemap.LocalProvider)
+	}
+	basemap, err := resolveBasemap(cmd, theme, track, labelFaces)
 	if err != nil {
 		return err
+	}
+	if local, ok := basemap.(*tilemap.Local); ok && renderOpts.language != "" {
+		if err := local.UseLanguage(renderOpts.language); err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
 	}
 	routeInks, err := resolveBasemapPalette(cmd, basemap, route3D)
 	if err != nil {
@@ -624,7 +651,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		// A flyover draws its tiles in parallel and stands their names on
 		// its pictures afterwards, each tile in faces of its own; see
 		// tilemap.Local.FreshLabels.
-		local.FreshLabels(func() tilemap.LabelFaces { return basemapLabelFaces(cmd, fonts.Fresh(), h) })
+		local.FreshLabels(func() tilemap.LabelFaces { return basemapLabelFaces(cmd, mapLetters.faces(), h) })
 	}
 	basemapDim := resolveBasemapDim(cmd)
 
@@ -687,6 +714,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		elevation: rctx.Elevation, elevationSource: elevSource,
 		units: rctx.Units, speedReadout: rctx.SpeedReadout,
 		airports: airports, wantAirports: wantAirports,
+		mapFonts: mapLetters,
 	}
 	if renderOpts.dryRun {
 		return runDryRun(cmd, r, activity, rctx, in)
@@ -743,6 +771,10 @@ type renderInputs struct {
 	// as this bundle.
 	elevation       *fitactivity.ElevationModel
 	elevationSource string
+
+	// mapFonts are the fonts the local map's names were written in, for
+	// writeMissingLetters; nil for any other basemap.
+	mapFonts *mapFonts
 
 	// airports is what --airports did, for writeAirportSummary, and
 	// wantAirports whether it was asked to do anything.
@@ -1211,11 +1243,12 @@ const basemapLabelHeight = 0.013
 
 // basemapLabelFaces is how the basemap sizes its names.
 //
-// Faces come from the dashboard's own cache, so the map is lettered in the
-// same typeface as everything else in the frame. That is the whole reason
-// osmbase takes a face instead of shipping one: a map labelled in a different
-// font reads as a second picture pasted into the render rather than as part
-// of it.
+// Faces come from the map's fonts (see mapFonts): the dashboard's own Go
+// Mono first, so the map is lettered in the same typeface as everything else
+// in the frame wherever Go Mono can write the name -- that is the whole
+// reason osmbase takes a face instead of shipping one, since a map labelled
+// in a different font reads as a second picture pasted into the render --
+// and other fonts only for the letters it lacks.
 //
 // A function rather than one face, because osmbase sets a place name larger
 // than a street name and asks the caller for each size -- it parses no fonts
@@ -1227,30 +1260,26 @@ const basemapLabelHeight = 0.013
 // is for NAMES on a background map; losing it costs the labels, and refusing
 // to render a video because a font size would not build would be losing the
 // picture over its captions.
-func basemapLabelFaces(cmd *cobra.Command, fonts *panel.FaceCache, frameH int) tilemap.LabelFaces {
-	if fonts == nil {
+func basemapLabelFaces(cmd *cobra.Command, faces func(px float64) font.Face, frameH int) tilemap.LabelFaces {
+	if faces == nil {
 		return nil
 	}
 	// Resolved once, here, rather than left to fail later: a font size that
 	// will not build is a problem with this render's configuration and the
 	// place to say so is before the frames start, not on the first frame that
 	// happens to contain a place name.
-	if _, err := fonts.Face(float64(frameH) * basemapLabelHeight); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the basemap will be drawn without place names: %v\n", err)
+	if faces(float64(frameH)*basemapLabelHeight) == nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the basemap will be drawn without place names: no font would build\n")
 		return nil
 	}
 	return func(scale float64) font.Face {
 		if scale == 0 {
 			scale = 1
 		}
-		face, err := fonts.Face(float64(frameH) * basemapLabelHeight * scale)
-		if err != nil {
-			// One size failing is not a reason to lose every label: the
-			// caller falls back to the base face, which has already been
-			// shown to build.
-			return nil
-		}
-		return face
+		// One size failing gives nil, and the caller falls back to the base
+		// face, which has already been shown to build: one size is not a
+		// reason to lose every label.
+		return faces(float64(frameH) * basemapLabelHeight * scale)
 	}
 }
 
@@ -1511,6 +1540,9 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	writeMergeSummary(cmd, in.track, in.sources)
 	writeDistanceSummary(cmd, in.sources)
 	writeBasemapSummary(cmd, r, in)
+	if !renderOpts.quiet {
+		writeMissingLetters(cmd.ErrOrStderr(), in.mapFonts)
+	}
 	// Both durations, always. A user who asked for a three-minute video wants
 	// to see that they got three minutes AND that it still covers the whole
 	// activity; printing one of them leaves the other to be guessed at.
@@ -2438,6 +2470,9 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	writeMergeSummary(cmd, in.track, in.sources)
 	writeDistanceSummary(cmd, in.sources)
 	writeBasemapSummary(cmd, r, in)
+	if !renderOpts.quiet {
+		writeMissingLetters(cmd.ErrOrStderr(), in.mapFonts)
+	}
 	writePanelSummary(cmd, r, in.tl, in.layoutName, in.theme.Name, in.smoothing)
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)

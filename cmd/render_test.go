@@ -3645,10 +3645,13 @@ func TestWriteBasemapSummary_SaysWhenTheMapWasStretchedRatherThanDrawn(t *testin
 // resolver ignoring the frame gives a hierarchy that is right at 1080p and
 // half the size it should be at 4K.
 func TestBasemapLabelFaces_SizesFollowTheScaleAndTheFrame(t *testing.T) {
-	fonts, err := panel.NewFaceCache()
+	defer func(f func() []string) { systemFontPaths = f }(systemFontPaths)
+	systemFontPaths = func() []string { return nil }
+	mf, err := loadMapFonts(nil)
 	if err != nil {
-		t.Fatalf("NewFaceCache: %v", err)
+		t.Fatalf("loadMapFonts: %v", err)
 	}
+	fonts := mf.faces()
 	cmd := &cobra.Command{}
 	cmd.SetErr(io.Discard)
 
@@ -3704,7 +3707,7 @@ func TestLabelFaces_NilResolvesToNoFaceRatherThanPanicking(t *testing.T) {
 		t.Fatalf("OpenLocal with no label faces: %v", err)
 	}
 	if faces := basemapLabelFaces(cmd, nil, 1080); faces != nil {
-		t.Error("a nil font cache produced a resolver; there is nothing for it to resolve with")
+		t.Error("no face source produced a resolver; there is nothing for it to resolve with")
 	}
 }
 

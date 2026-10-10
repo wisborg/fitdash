@@ -596,6 +596,20 @@ func (l *Local) UseOutdoors() error {
 	return nil
 }
 
+// UseLanguage writes the map's names in lang where the map has them -- "en"
+// reads each name's English and falls back to its own, as osmbase's Language
+// does -- so a map of Thailand can be read by somebody who cannot read Thai.
+func (l *Local) UseLanguage(lang string) error {
+	o := l.opts
+	o.Language = lang
+	rend, err := osm.New(l.source, o)
+	if err != nil {
+		return fmt.Errorf("tilemap: preparing to draw from the local map store %s in language %q: %w", l.root, lang, err)
+	}
+	l.opts, l.rend = o, rend
+	return nil
+}
+
 // Outdoors is true when the map is drawn in the outdoors palette; see
 // UseOutdoors.
 func (l *Local) Outdoors() bool { return l.outdoors }
