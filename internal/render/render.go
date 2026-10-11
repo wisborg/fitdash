@@ -231,6 +231,12 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		if !panel.SpeedReadoutKeeps(ctx, p) {
 			return false
 		}
+		// A flight's altitude, vertical speed and track in place of the
+		// climb and gradient panels, and only on a flight; removed, not
+		// declined, for the same reason. See panel.FlightKeeps.
+		if !panel.FlightKeeps(ctx, p) {
+			return false
+		}
 		if p.Accepts(ctx) {
 			return true
 		}

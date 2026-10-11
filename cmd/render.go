@@ -528,6 +528,14 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if wantAirports {
 		airports = findAirports(track, timer)
 	}
+	// A flight is read in aviation's units -- feet, knots, nautical miles
+	// -- unless --units said otherwise; any --unit still has the last word.
+	flight := isFlight(track, airports)
+	if flight && !cmd.Flags().Changed("units") {
+		if unitSet, err = aviationUnits(renderOpts.unitEach); err != nil {
+			return err
+		}
+	}
 	speedup, err := resolveSpeedup(cmd, timer, pauses, airports.leave)
 	if err != nil {
 		return err
@@ -680,7 +688,8 @@ func runRender(cmd *cobra.Command, args []string) error {
 		GaugeStyle:          gaugeStyle,
 		Gauges:              gauges,
 		Clock:               clock,
-		Flight:              isFlight(track, airports),
+		Flight:              flight,
+		FlightTitle:         panel.FlightTitle(track.Flights),
 		Pauses:              pauses,
 		Units:               unitSet,
 		SpeedReadout:        speedReadout,

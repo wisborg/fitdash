@@ -38,6 +38,13 @@ type Readout struct {
 	// absent overrides the generic placeholder. Empty means ReadoutPlaceholder.
 	absent string
 
+	// inline lays the readout out on one line -- caption, value, unit, left
+	// to right -- in a box at least inlineAspect times wider than tall,
+	// where stacked the value would be a third of a short box's height.
+	// A flight's altitude and vertical speed take the climb and gradient
+	// panels' strip, which is that shape.
+	inline bool
+
 	// carries overrides the default coverage test for panels whose "does this
 	// activity have it" question the report cannot answer. See Power.
 	carries func(*Context) bool
@@ -421,6 +428,12 @@ func (r Readout) Prepare(ctx *Context, box Box) Painter {
 	p.valueY = centerY
 	p.unitY = centerY + unit*0.30
 	p.centerX = rowBox.X + rowBox.W/2
+	p.labelX, p.valueX, p.unitX = p.centerX, p.centerX, p.centerX
+	p.labelAX, p.unitAX = 0.5, 0.5
+	if r.inline && !p.rule && rowBox.W >= inlineAspect*rowBox.H {
+		p.layInline(ctx, rowBox)
+		return p
+	}
 
 	// The CAPTION alone departs from `unit`: for every OTHER Readout it stays
 	// centerY - unit*captionOffset, unchanged, because HeartRate/Pace/Power/
@@ -795,9 +808,16 @@ type readoutPainter struct {
 	valueY  float64
 	unitY   float64
 	centerX float64
-	ruleY   float64
-	ruleW   float64
-	ruleH   float64
+
+	// labelX, valueX and unitX are where the caption, the value and the
+	// unit are drawn across, and labelAX and unitAX the caption's and the
+	// unit's horizontal anchors: all centred, unless the readout is laid
+	// out inline (see layInline).
+	labelX, valueX, unitX float64
+	labelAX, unitAX       float64
+	ruleY                 float64
+	ruleW                 float64
+	ruleH                 float64
 
 	// The gauge track's own geometry, set only when hasTrack -- see
 	// reserveGaugeStrip. Static and Dynamic (gauge.go) read these and MUST
@@ -850,8 +870,8 @@ type readoutPainter struct {
 // the ghost is the scale itself, not a reading, and the reading is what
 // Dynamic draws over it every frame.
 func (p *readoutPainter) Static(c *Canvas) {
-	_ = c.Text(p.label, p.centerX, p.labelY, 0.5, 0.5, p.labelPx, c.Theme.Dim)
-	_ = c.Text(p.unit, p.centerX, p.unitY, 0.5, 0.5, p.unitPx, c.Theme.Dim)
+	_ = c.Text(p.label, p.labelX, p.labelY, p.labelAX, 0.5, p.labelPx, c.Theme.Dim)
+	_ = c.Text(p.unit, p.unitX, p.unitY, p.unitAX, 0.5, p.unitPx, c.Theme.Dim)
 	if p.rule {
 		c.Rect(Box{X: p.centerX - p.ruleW/2, Y: p.ruleY, W: p.ruleW, H: p.ruleH}, c.Theme.Dim)
 	}
@@ -943,7 +963,7 @@ func (p *readoutPainter) Dynamic(c *Canvas, f Frame) {
 			// check for the dial shape, not decoration.
 			p.drawDialArc(c, Fade(c.Theme.Absent, gaugeAbsentWashAlpha(c.Theme)))
 		}
-		_ = c.Text(p.placeholder(), p.centerX, p.valueY, 0.5, 0.5, p.valuePx, c.Theme.Absent)
+		_ = c.Text(p.placeholder(), p.valueX, p.valueY, 0.5, 0.5, p.valuePx, c.Theme.Absent)
 		return
 	}
 	if p.hasTrack || p.hasDial {
@@ -958,7 +978,7 @@ func (p *readoutPainter) Dynamic(c *Canvas, f Frame) {
 			p.drawDialGauge(c, v, mv)
 		}
 	}
-	_ = c.Text(p.format(v), p.centerX, p.valueY, 0.5, 0.5, p.valuePx, c.Theme.Foreground)
+	_ = c.Text(p.format(v), p.valueX, p.valueY, 0.5, 0.5, p.valuePx, c.Theme.Foreground)
 }
 
 // ReadoutPlaceholder is what a reading shows when the sensor had nothing at
@@ -1394,4 +1414,31 @@ func FormatPace(speedMS float64, u units.Unit) string {
 		return PacePlaceholder
 	}
 	return fmt.Sprintf("%d:%02d", totalSec/60, totalSec%60)
+}
+
+// inlineAspect is how many times wider than tall a box must be for an inline
+// readout to be laid out on one line.
+const inlineAspect = 3.0
+
+// layInline lays the readout out on one line across box: the caption ending
+// a little before the middle, the value about the middle at most of the
+// box's height, the unit starting after it.
+func (p *readoutPainter) layInline(ctx *Context, box Box) {
+	y := box.Y + box.H/2
+	p.labelY, p.valueY, p.unitY = y, y, y
+	p.labelPx, p.valuePx, p.unitPx = box.H*0.24, box.H*0.6, box.H*0.24
+	if ctx.Fonts != nil {
+		if px, err := ctx.Fonts.FitSize(p.valueTemplate(), box.W*0.36, p.valuePx); err == nil {
+			p.valuePx = px
+		}
+		if px, err := ctx.Fonts.FitSize(p.label, box.W*0.28, p.labelPx); err == nil {
+			p.labelPx = px
+		}
+		if px, err := ctx.Fonts.FitSize(p.unit, box.W*0.2, p.unitPx); err == nil {
+			p.unitPx = px
+		}
+	}
+	p.labelX, p.labelAX = box.X+box.W*0.31, 1
+	p.valueX = box.X + box.W*0.52
+	p.unitX, p.unitAX = box.X+box.W*0.73, 0
 }

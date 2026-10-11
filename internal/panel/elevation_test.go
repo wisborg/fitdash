@@ -202,11 +202,17 @@ func TestElevationPanel_StartLabelNamesTheAxisOrigin(t *testing.T) {
 	}{
 		{"an activity recorded from its own start line", 0, 5000},
 		{"an activity whose profile begins well after zero", 10200, 12400},
+		{"an activity shorter than one unit", 0, 800},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			box := Box{X: 0, Y: 0, W: 900, H: 260}
 			p := elevationPainterFor(t, hillTrack(tc.startD, tc.endD, 300), box, 900, 260)
-			if want := formatDistance(0, metric); p.startLabel != want {
+			// Zero in the unit the end label is written in.
+			want := "0 km"
+			if tc.endD < 1000 {
+				want = "0 m"
+			}
+			if p.startLabel != want {
 				t.Errorf("startLabel = %q, want %q (the axis's own origin) regardless of profileStart=%v",
 					p.startLabel, want, p.profileStart)
 			}
@@ -1177,7 +1183,7 @@ func TestElevationPanel_DistanceLabelsDoNotCollide(t *testing.T) {
 		{X: 0, Y: 0, W: 250, H: 240},
 		{X: 0, Y: 0, W: 160, H: 200},
 	} {
-		track := hillTrack(10200, 12400, 300) // labels are "0 m" and "12.4 km"
+		track := hillTrack(10200, 12400, 300) // labels are "0 km" and "12.4 km"
 		p := elevationPainterFor(t, track, box, 1280, 720)
 		if p.plot.W <= 0 {
 			continue

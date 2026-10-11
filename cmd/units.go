@@ -23,8 +23,8 @@ func bindUnitFlags(f *pflag.FlagSet) {
 			"follow it, and so do --elevation-gain and --elevation-loss, which are read in its elevation unit. "+
 			"`fitdash inspect` reports what the file recorded and stays in its units")
 	f.StringArrayVar(&renderOpts.unitEach, "unit", nil,
-		"one quantity's unit, over --units (repeatable) -- distance=km|mi|nmi, elevation=m|ft, speed=km/h|mph|kn|m/s, "+
-			"pace=min/km|min/mi. For a flight's mixture: --units imperial --unit distance=nmi --unit speed=kn")
+		"one quantity's unit, over --units (repeatable) -- distance=km|mi|nm, elevation=m|ft, speed=km/h|mph|kn|m/s, "+
+			"pace=min/km|min/mi. For a flight's mixture: --units imperial --unit distance=nm --unit speed=kn")
 	f.StringVar(&renderOpts.speedReadout, "speed-readout", panel.SpeedReadoutAuto,
 		"how the gauge column reads speed -- \""+panel.SpeedReadoutAuto+"\" (default: pace for running, walking and hiking, "+
 			"speed for every other sport, and for a file that names none, such as a GPX or KML track), \""+
@@ -47,6 +47,23 @@ func parseUnits(system string, each []string) (units.Set, error) {
 	return set, nil
 }
 
+// aviationUnits are the units a flight is read in by default: nautical
+// miles, feet and knots, as flight data is published and an aircraft's
+// instruments read; then each --unit in each, which may change any of them.
+func aviationUnits(each []string) (units.Set, error) {
+	set, err := units.Of(units.Metric)
+	if err != nil {
+		return set, err
+	}
+	set.Distance, set.Elevation, set.Speed = units.NauticalMile, units.Foot, units.Knot
+	for _, spec := range each {
+		if err := set.UseSpec(spec); err != nil {
+			return set, fmt.Errorf("render: --unit: %w", err)
+		}
+	}
+	return set, nil
+}
+
 // writeUnitsSummary says what the render was written in, when that is not
 // the default: the units, unless they are metric, and the gauge column's
 // reading of speed, unless it is pace -- the one a render without these
@@ -54,7 +71,12 @@ func parseUnits(system string, each []string) (units.Set, error) {
 // than discovered.
 func writeUnitsSummary(out io.Writer, u units.Set, readout, sport string) {
 	if metric, _ := units.Of(units.Metric); u != metric {
-		names := []string{u.Distance.Name, u.Elevation.Name, u.Speed.Name, u.Pace.Name}
+		// Pace's unit only where pace is shown: a flight's speed in knots
+		// has no use for min/km beside it.
+		names := []string{u.Distance.Name, u.Elevation.Name, u.Speed.Name}
+		if readout != panel.SpeedReadoutSpeed {
+			names = append(names, u.Pace.Name)
+		}
 		fmt.Fprintf(out, "units: %s\n", strings.Join(names, ", "))
 	}
 	if readout == panel.SpeedReadoutSpeed {

@@ -382,6 +382,11 @@ type Context struct {
 	// -- and Clock's choice of active on top does not apply.
 	Flight bool
 
+	// FlightTitle names the flight -- "TG950 BKK → CPH" -- for the time
+	// panel's caption, in place of "ELAPSED"; empty where the file names no
+	// flight, and the caption is as it was. See FlightTitle.
+	FlightTitle string
+
 	// Pauses selects what the render does with the activity's paused
 	// stretches: PausesFreeze (the zero value's behaviour too) shows them,
 	// with the dashboard frozen through each one, and PausesSkip cuts them

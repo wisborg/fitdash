@@ -2225,6 +2225,30 @@ smaller than what a viewer can perceive at any frame rate this project targets. 
 by a test that walks every seam of a render rather than asserted in prose, because it is not
 something a future reader would otherwise re-derive by inspection.
 
+### A flight's dashboard
+
+An aircraft's climb is not a person's: the climb panel's gain and loss and the gradient's
+slope describe ground somebody worked up, and on a flight they said nothing a reader of an
+aircraft's instruments would look for. So on a flight (`Context.Flight`) three boxes are
+read differently. Each is an `Alt` of the ordinary panel and the flight's -- climb or
+altitude, gradient or vertical speed, cadence or track -- and `panel.FlightKeeps`, in the
+render's keep filter beside `SpeedReadoutKeeps`, removes whichever does not apply: removed,
+not declined, so the summary never says a flight lacks the data for a climb panel. The
+ordinary panel comes first in each, so nothing but a flight lays out differently.
+
+The vertical speed is the altitude's change over forty-five seconds either side of the
+instant. A flight tracker reports altitude in hundred-foot steps about every half-minute at
+cruise; a rate taken between neighbouring reports jumped by hundreds of feet a minute in
+level flight, where over a minute and a half one step is seventy. The two readouts sit in
+the strip the climb and gradient shared, wide and short, so they are laid out on one line --
+caption, value, unit (`Readout.inline`) -- where stacked the value was a third of the
+strip's height. The track is Flightradar24's own course where the CSV records it, and the
+bearing between the fixes either side otherwise, absent while the aircraft stands still.
+
+A flight is in nautical miles, feet and knots unless `--units` was given, and the time
+panel's caption names it -- `fitactivity`'s `Track.Flights`, from a Flightradar24 KML's
+document name and description or its CSV's callsign.
+
 ### Timeline: a flight's airports
 
 A flight squeezed into a minute runs at several hundred times real time, which suits the

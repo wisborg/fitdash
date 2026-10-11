@@ -176,7 +176,7 @@ func LandscapeLayout() Layout {
 						{Panel: HeartRate(), Pad: 0.01},
 						paceOrSpeed(),
 						{Panel: Power(), Pad: 0.01},
-						{Panel: Cadence(), Pad: 0.01},
+						cadenceOrTrack(),
 					}},
 				}},
 			}},
@@ -240,8 +240,8 @@ func LandscapeLayout() Layout {
 			// today, which is a layout fact no panel can see, so it would break
 			// silently the next time these weights moved.
 			{Dir: Row, Weight: 1, Children: []Slot{
-				{Panel: ClimbPanel{}, Weight: 1, Pad: 0.01},
-				{Panel: GradientPanel{}, Weight: 1, Pad: 0.01},
+				climbOrAltitude(),
+				gradientOrVerticalSpeed(),
 			}},
 			// Weight 2, not the 1 this slot carried when the profile and the
 			// standalone marker strip below were still two separate rows.
@@ -335,7 +335,7 @@ func PortraitLayout() Layout {
 					}},
 					{Dir: Row, Weight: 2, Children: []Slot{
 						{Panel: Power(), Pad: 0.01},
-						{Panel: Cadence(), Pad: 0.01},
+						cadenceOrTrack(),
 					}},
 				}},
 			}},
@@ -386,8 +386,8 @@ func PortraitLayout() Layout {
 			// them to diverge again, and judge portrait on a 1080x1920 frame
 			// rather than copying landscape's number across.
 			{Dir: Row, Weight: 2, Children: []Slot{
-				{Panel: ClimbPanel{}, Weight: 1, Pad: 0.01},
-				{Panel: GradientPanel{}, Weight: 1, Pad: 0.01},
+				climbOrAltitude(),
+				gradientOrVerticalSpeed(),
 			}},
 			// Weight 3, not the 2 this slot carried before MarkerPanel's row
 			// below was folded into it -- one more than LandscapeLayout's own
@@ -426,5 +426,33 @@ func paceOrSpeed() Slot {
 	return Slot{Dir: Alt, Children: []Slot{
 		{Panel: Pace(), Pad: 0.01},
 		{Panel: Speed(), Pad: 0.01},
+	}}
+}
+
+// climbOrAltitude, gradientOrVerticalSpeed and cadenceOrTrack are the boxes
+// a flight reads differently from anything else: the climb panel or the
+// altitude, the gradient or the vertical speed, cadence or the track. An
+// Alt, as paceOrSpeed is, so the one not wanted leaves no gap: FlightKeeps
+// removes it in internal/render's keep filter, and the other takes the box
+// whole. The panel a run has comes first, so a Context that is not a flight
+// lays out exactly as before.
+func climbOrAltitude() Slot {
+	return Slot{Dir: Alt, Weight: 1, Children: []Slot{
+		{Panel: ClimbPanel{}, Pad: 0.01},
+		{Panel: Altitude(), Pad: 0.01},
+	}}
+}
+
+func gradientOrVerticalSpeed() Slot {
+	return Slot{Dir: Alt, Weight: 1, Children: []Slot{
+		{Panel: GradientPanel{}, Pad: 0.01},
+		{Panel: VerticalSpeed(), Pad: 0.01},
+	}}
+}
+
+func cadenceOrTrack() Slot {
+	return Slot{Dir: Alt, Children: []Slot{
+		{Panel: Cadence(), Pad: 0.01},
+		{Panel: Track(), Pad: 0.01},
 	}}
 }

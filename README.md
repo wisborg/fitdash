@@ -248,6 +248,15 @@ where it passed 200 km/h. The time the aircraft stood at the gate before it firs
 after it last stopped, is left out; the taxi and roll at each end get about twelve seconds of
 video, and the pace eases from there to the base rate over a few seconds as the aircraft
 climbs away or comes in, so the camera comes down to the taxiways and rises with the climb.
+
+A flight's dashboard reads as a flight's. It is written in nautical miles, feet and knots
+unless `--units` says otherwise (a `--unit` still has the last word); the climb panel's gain
+and loss and the gradient give way to the altitude and the vertical speed, in feet a minute,
+and cadence's box to the track, the direction over the ground — Flightradar24's own where its
+CSV records one, otherwise worked out from the fixes. The time panel's caption names the
+flight where the file does: "TG950 BKK → CPH" from a Flightradar24 KML, the callsign from its
+CSV, each leg of a journey in turn.
+
 A journey of several flights — one recording, or several merged — is paced at every airport,
 the stopovers as much as the two ends, and the time on the ground between flights is left out
 with a card saying so as it passes. The video added and the time left out are in the summary,
@@ -412,9 +421,9 @@ route dot off the path.
 
 **Numbers are written in the units you read.** `--units imperial` writes miles, feet,
 mph and min/mi where the default writes kilometres, metres, km/h and min/km, and
-`--unit QUANTITY=UNIT` changes one quantity after it — `distance=km|mi|nmi`,
+`--unit QUANTITY=UNIT` changes one quantity after it — `distance=km|mi|nm`,
 `elevation=m|ft`, `speed=km/h|mph|kn|m/s`, `pace=min/km|min/mi` — for the mixtures
-some activities are read in: a flight is `--units imperial --unit distance=nmi --unit
+some activities are read in: a flight is `--units imperial --unit distance=nm --unit
 speed=kn`. The distance readout, the profile's axis and heights, the climb panel and the
 pace and speed readouts follow it, and so do `--elevation-gain` and `--elevation-loss`,
 read in the elevation unit. Below one distance unit a distance is written in the

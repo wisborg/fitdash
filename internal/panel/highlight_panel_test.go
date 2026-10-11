@@ -1074,7 +1074,10 @@ func oldPortraitLayout() Layout {
 // price of that boundary, not an oversight.
 func renderFullFrame(t *testing.T, ctx *Context, layout Layout, i int) *image.RGBA {
 	t.Helper()
-	keep := func(p Panel) bool { return p.Accepts(ctx) }
+	// FlightKeeps as internal/render's keep filter applies it: off a flight
+	// the flight readouts are not placed, and cadence's box, where the
+	// activity has none, is closed up rather than given to the track.
+	keep := func(p Panel) bool { return FlightKeeps(ctx, p) && p.Accepts(ctx) }
 	placed, err := layout.Resolve(ctx.Width, ctx.Height, keep)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

@@ -46,7 +46,8 @@ func TestRunRender_UnitsAndSpeedReadout(t *testing.T) {
 	if p := panelsLine(stderr); !strings.Contains(p, "speed") || strings.Contains(p, "pace") {
 		t.Errorf("--speed-readout speed: %q, want speed and no pace", p)
 	}
-	for _, want := range []string{"units: mi, ft, mph, min/mi", "speed shown as speed, not pace (--speed-readout speed)"} {
+	// Pace's unit is not named beside speed, which is shown in its place.
+	for _, want := range []string{"units: mi, ft, mph\n", "speed shown as speed, not pace (--speed-readout speed)"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("no %q in:\n%s", want, stderr)
 		}
@@ -106,5 +107,32 @@ func TestWriteUnitsSummary_SaysWhy(t *testing.T) {
 	writeUnitsSummary(&b, metric, panel.SpeedReadoutPace, "running")
 	if b.Len() != 0 {
 		t.Errorf("a metric render of pace reported %q", b.String())
+	}
+}
+
+// A flight is read in nautical miles, feet and knots, and a --unit still
+// has the last word.
+func TestAviationUnits(t *testing.T) {
+	set, err := aviationUnits(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Distance != units.NauticalMile || set.Elevation != units.Foot || set.Speed != units.Knot {
+		t.Errorf("aviation units %+v", set)
+	}
+	set, err = aviationUnits([]string{"elevation=m"})
+	if err != nil || set.Elevation != units.Metre || set.Speed != units.Knot {
+		t.Errorf("with --unit elevation=m: %+v, %v", set, err)
+	}
+	if _, err := aviationUnits([]string{"elevation=furlong"}); err == nil {
+		t.Error("an unknown --unit was accepted")
+	}
+
+	// Pace's unit is not named where speed is shown.
+	var b strings.Builder
+	aviation, _ := aviationUnits(nil)
+	writeUnitsSummary(&b, aviation, panel.SpeedReadoutSpeed, "flying")
+	if strings.Contains(b.String(), "min/") || !strings.Contains(b.String(), "nm, ft, kn") {
+		t.Errorf("units summary %q; want nm, ft, kn and no pace", b.String())
 	}
 }

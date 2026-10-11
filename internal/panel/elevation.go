@@ -547,6 +547,13 @@ func (ElevationPanel) Prepare(ctx *Context, box Box) Painter {
 	// labels are placed via yForElevation to prevent.
 	u := ctx.units()
 	p.startLabel, p.endLabel = formatDistance(0, u), formatDistance(p.axisEnd, u)
+	// The start in the end's unit: zero is below one of anything, and was
+	// written in the smaller unit even where the end is in the larger --
+	// "0 m" to "12.4 km", and a flight's "0 ft" under its altitude scale's
+	// "0 ft", where it read as a second height.
+	if u.Distance.FromSI(p.axisEnd) >= 1 {
+		p.startLabel = "0 " + u.Distance.Name
+	}
 	p.lowLabel, p.highLabel = formatElevation(p.minElev, u.Elevation), formatElevation(p.maxElev, u.Elevation)
 
 	// The left gutter is measured from THESE labels rather than from a

@@ -81,6 +81,9 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 	// Context.Flight. Elapsed is always the large row then, since there is
 	// no active time for --clock active to put there.
 	e := &elapsedPainter{box: box, timeOfDay: ctx.Flight, activeFirst: ctx.Clock == ClockActive && !ctx.Flight}
+	if ctx.Flight {
+		e.title = ctx.FlightTitle
+	}
 
 	// Sizes are fractions of the box, not of the frame: this panel must fit
 	// the rectangle it was given, whatever shape the layout made it.
@@ -105,6 +108,13 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 		// the pixels of a render that does not use it.
 		if px, err := ctx.Fonts.FitSize(e.subCaption()+" "+e.subTemplate(), box.W*0.92, e.subPx); err == nil {
 			e.subPx = px
+		}
+		// A flight's name in place of the caption is longer than ELAPSED,
+		// and a journey's of several legs longer still: shrunk to the box.
+		if e.title != "" {
+			if px, err := ctx.Fonts.FitSize(e.title, box.W*0.92, e.labelPx); err == nil {
+				e.labelPx = px
+			}
 		}
 	}
 
@@ -156,6 +166,10 @@ type elapsedPainter struct {
 	// timeOfDay draws the time of day in UTC beneath elapsed, in place of
 	// active time; see Context.Flight.
 	timeOfDay bool
+
+	// title, when not empty, is the caption in place of "ELAPSED": the
+	// flight's name. See Context.FlightTitle.
+	title string
 
 	labelPx float64
 	clockPx float64
@@ -215,7 +229,10 @@ func (e *elapsedPainter) Dynamic(c *Canvas, f Frame) {
 // a caption stored per row: the two must always be the OTHER of each other,
 // and two independently assigned strings could say "ELAPSED" twice.
 func (e *elapsedPainter) mainCaption() string {
-	if e.activeFirst {
+	switch {
+	case e.title != "":
+		return e.title
+	case e.activeFirst:
 		return "ACTIVE"
 	}
 	return "ELAPSED"
