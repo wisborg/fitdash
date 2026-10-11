@@ -53,6 +53,8 @@ type renderOptions struct {
 	routeView           string
 	routeEnds           string
 	routePosition       string
+	title               string
+	subtitle            string
 	airports            string
 	fonts               []string
 	language            string
@@ -366,6 +368,11 @@ func bindRenderFlags(c *cobra.Command) {
 			"frame, with nothing else drawn while it flies, and a card summarising the activity over the overview it holds "+
 			"for a few seconds at the start and the end. It is --route-view flyover, which it turns on, and needs --basemap "+
 			tilemap.LocalProvider)
+	f.StringVar(&renderOpts.title, "title", "",
+		"with --layout flyover, the title of the card over the overview at the start and the end, in place of "+
+			"the one it is given from the file: the flight, or the sport")
+	f.StringVar(&renderOpts.subtitle, "subtitle", "",
+		"with --layout flyover, a line under the title of the card at the start, saying what the video shows")
 	f.StringVar(&renderOpts.bottomBand, "bottom-band", panel.BottomBandProfile,
 		"what occupies the bottom band -- \"profile\" (default: the elevation profile, filled to the playhead, "+
 			"and -- when at least one --highlight or --label is configured -- carrying their marks too, in place "+
@@ -488,6 +495,14 @@ func runRender(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("render: --layout flyover is the flyover filling the frame, and --route-view %s asks for another view; leave --route-view out", renderOpts.routeView)
 		}
 		renderOpts.routeView = "flyover"
+	}
+	// A title and a subtitle are the full-frame flyover's card's, and no
+	// other layout has a card to put them on: refused rather than dropped,
+	// so a forgotten --layout is not a render that silently lost them.
+	for _, name := range []string{"title", "subtitle"} {
+		if cmd.Flags().Changed(name) && renderOpts.layout != panel.FlyoverLayout().Name {
+			return fmt.Errorf("render: --%s is written on the full-frame flyover's card, which only --layout flyover draws", name)
+		}
 	}
 	w, h, err := parseSize(renderOpts.size)
 	if err != nil {
@@ -711,6 +726,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 	var summary panel.SummaryCard
 	if fullFrame {
 		summary = summaryCard(track, timer, panel.BuildElevation(track, elevTuning), unitSet, speedReadout, flight, pushback)
+		if t := strings.TrimSpace(renderOpts.title); t != "" {
+			summary.Title = t
+		}
+		summary.Subtitle = strings.TrimSpace(renderOpts.subtitle)
 	}
 	rctx := &panel.Context{
 		Summary:             summary,

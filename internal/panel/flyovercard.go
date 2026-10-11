@@ -1,16 +1,20 @@
 package panel
 
 import (
+	"image/color"
 	"time"
 )
 
 // SummaryCard is what a full-frame flyover shows over its overview at the
-// start and the end: a title -- the flight, or the sport and the day -- and
-// a line or two of the activity's figures, already written in the render's
-// units. Empty draws no card.
+// start and the end: a title -- the user's, or the flight, or the sport --
+// and a line or two of the activity's figures, already written in the
+// render's units. Subtitle, the user's line saying what the video shows, is
+// shown under the title at the start only: it introduces the video, and the
+// card at the end is its summary. Empty draws no card.
 type SummaryCard struct {
-	Title string
-	Lines []string
+	Title    string
+	Subtitle string
+	Lines    []string
 }
 
 // cardFade is how long the card takes to fade, out as the camera starts
@@ -29,6 +33,16 @@ func FlyoverLayout() Layout {
 		FontScale: 0.05,
 		Root:      Slot{Panel: RoutePanel{}, Weight: 1},
 	}
+}
+
+// cardAt is the card frame i shows: the whole of it at the start, and at the
+// end without the subtitle, which introduces the video rather than sums it
+// up.
+func cardAt(card SummaryCard, i, frames int) SummaryCard {
+	if i >= frames/2 {
+		card.Subtitle = ""
+	}
+	return card
 }
 
 // cardWeight is how much of the card frame i shows: all of it through the
@@ -62,10 +76,15 @@ func drawCard(c *Canvas, box Box, card SummaryCard, weight float64) {
 		return
 	}
 	maxW := box.W * 0.8
-	titlePx, linePx := c.BasePx*1.25, c.BasePx*0.8
+	titlePx, subPx, linePx := c.BasePx*1.25, c.BasePx*0.95, c.BasePx*0.8
 	if card.Title != "" {
 		if px, err := c.FitTextSize(card.Title, maxW, titlePx); err == nil {
 			titlePx = px
+		}
+	}
+	if card.Subtitle != "" {
+		if px, err := c.FitTextSize(card.Subtitle, maxW, subPx); err == nil {
+			subPx = px
 		}
 	}
 	widest := 0.0
@@ -79,6 +98,11 @@ func drawCard(c *Canvas, box Box, card SummaryCard, weight float64) {
 			widest = w
 		}
 	}
+	if card.Subtitle != "" {
+		if w, _, err := c.MeasureText(card.Subtitle, subPx); err == nil {
+			widest = max(widest, w)
+		}
+	}
 	for _, l := range card.Lines {
 		if w, _, err := c.MeasureText(l, linePx); err == nil {
 			widest = max(widest, w)
@@ -86,28 +110,46 @@ func drawCard(c *Canvas, box Box, card SummaryCard, weight float64) {
 	}
 	pad := linePx * 1.1
 	gap := linePx * 0.55
-	h := 2 * pad
-	if card.Title != "" {
-		h += titlePx
+	// The card's rows, each with the space above it: measured and drawn
+	// from the one list, so the card is always as tall as what is in it.
+	type row struct {
+		text      string
+		px, above float64
+		ink       color.Color
 	}
-	if len(card.Lines) > 0 {
-		h += float64(len(card.Lines))*linePx + float64(len(card.Lines)-1)*gap
-		if card.Title != "" {
-			h += gap * 2
+	var rows []row
+	add := func(text string, px float64, ink color.Color) {
+		above := gap
+		switch {
+		case len(rows) == 0:
+			above = 0
+		case ink == c.Theme.Dim && rows[len(rows)-1].ink != c.Theme.Dim:
+			above = 2 * gap // the figures set off from the title above
 		}
+		rows = append(rows, row{text, px, above, ink})
+	}
+	if card.Title != "" {
+		add(card.Title, titlePx, c.Theme.Foreground)
+	}
+	if card.Subtitle != "" {
+		add(card.Subtitle, subPx, c.Theme.Foreground)
+	}
+	for _, l := range card.Lines {
+		add(l, linePx, c.Theme.Dim)
+	}
+	h := 2 * pad
+	for _, r := range rows {
+		h += r.above + r.px
 	}
 	w := widest + 2*pad
 	b := Box{X: box.X + (box.W-w)/2, Y: box.Y + (box.H-h)/2, W: w, H: h}
 	c.Rect(b, Fade(c.Theme.Background, 0.94*weight))
 	y := b.Y + pad
-	if card.Title != "" {
-		// Anchored by the bottom of the line: gg's vertical anchor of 0 is
-		// the baseline, and a title anchored there stood above the card.
-		_ = c.Text(card.Title, b.X+w/2, y+titlePx, 0.5, 0, titlePx, Fade(c.Theme.Foreground, weight))
-		y += titlePx + gap*2
-	}
-	for _, l := range card.Lines {
-		_ = c.Text(l, b.X+w/2, y+linePx*0.85, 0.5, 0, linePx, Fade(c.Theme.Dim, weight))
-		y += linePx + gap
+	for _, r := range rows {
+		y += r.above + r.px
+		// Anchored by the bottom of the line, a little above it for the
+		// descenders: gg's vertical anchor of 0 is the baseline, and a
+		// title anchored at its top stood above the card.
+		_ = c.Text(r.text, b.X+w/2, y-r.px*0.12, 0.5, 0, r.px, Fade(r.ink, weight))
 	}
 }

@@ -92,3 +92,20 @@ func TestFullFrameRefusesAnotherView(t *testing.T) {
 		t.Errorf("--layout flyover --route-view 3d: %v", err)
 	}
 }
+
+// A title or a subtitle is the full-frame flyover's card's; asked for with
+// any other layout it is refused, not dropped.
+func TestTitleNeedsTheFullFrame(t *testing.T) {
+	for _, flag := range []string{"--title", "--subtitle"} {
+		renderOpts = renderOptions{}
+		cmd := &cobra.Command{Use: "test", Args: cobra.ExactArgs(1), RunE: runRender, SilenceUsage: true, SilenceErrors: true}
+		bindRenderFlags(cmd)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{flag, "Home", filepath.Join(t.TempDir(), "absent.fit")})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "--layout flyover") {
+			t.Errorf("%s without --layout flyover: %v", flag, err)
+		}
+	}
+}

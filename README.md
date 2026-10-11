@@ -255,10 +255,13 @@ it summarising the activity — what it was and on what day, how far and how lon
 flight its top speed and cruising level, for anything else its climb and average pace or
 speed — which fades as the camera comes down and back as it goes up. The six seconds of
 holding are added to the video. It turns `--route-view flyover` on, and needs `--basemap
-local` as any flyover does; it suits a portrait frame as well as a wide one.
+local` as any flyover does; it suits a portrait frame as well as a wide one. `--title` puts
+your own title on the cards in place of the flight's or the sport's, and `--subtitle` a line
+under it on the card at the start, saying what the viewer is about to watch.
 
 ```
-fitdash flight.kml --basemap local --layout flyover --video-duration 60s
+fitdash flight.kml --basemap local --layout flyover --video-duration 60s \
+  --title "Going home" --subtitle "Bangkok to Copenhagen on TG950"
 ```
 
 Frames are drawn several at once, one for each core by default; `--concurrency` sets how

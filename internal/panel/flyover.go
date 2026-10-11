@@ -292,7 +292,7 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 			positionMark(c, p.box, p.icon, x, y, p.dotR, routeInks(p.inks, true, c.Theme).Accent, alpha, heading, ok)
 		}
 	}
-	drawCard(c, p.box, p.card, cardWeight(f.Index, p.frames, p.lead, p.tail, p.fps))
+	drawCard(c, p.box, cardAt(p.card, f.Index, p.frames), cardWeight(f.Index, p.frames, p.lead, p.tail, p.fps))
 	fitted := p.creditFitted
 	drawMapCredit(c, p.box, p.mapCredit, p.creditPx, &fitted)
 }

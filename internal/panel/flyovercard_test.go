@@ -65,3 +65,38 @@ func TestDrawCard(t *testing.T) {
 		}
 	}
 }
+
+// The subtitle introduces the video: it is on the card at the start and not
+// on the one at the end, where the title and the figures are.
+func TestCardAtKeepsTheSubtitleForTheStart(t *testing.T) {
+	card := SummaryCard{Title: "Home", Subtitle: "Bangkok to Copenhagen", Lines: []string{"26 Jul 2026"}}
+	if got := cardAt(card, 10, 1000); got.Subtitle != card.Subtitle || got.Title != card.Title {
+		t.Errorf("at the start: %+v", got)
+	}
+	if got := cardAt(card, 990, 1000); got.Subtitle != "" || got.Title != card.Title || len(got.Lines) != 1 {
+		t.Errorf("at the end: %+v, want the title and lines without the subtitle", got)
+	}
+}
+
+// A subtitle makes the card taller by its own line, and is drawn.
+func TestDrawCardWithASubtitle(t *testing.T) {
+	inked := func(card SummaryCard) (rows int) {
+		img := image.NewRGBA(image.Rect(0, 0, 800, 450))
+		faces, _ := NewFaceCache()
+		c, _ := NewCanvas(img, 24, DefaultTheme(), faces)
+		c.Fill(c.Theme.Accent)
+		drawCard(c, Box{W: 800, H: 450}, card, 1)
+		for y := 0; y < 450; y++ {
+			if countNearInBox(img, Box{X: 399, Y: float64(y), W: 2, H: 1}, c.Theme.Accent, 2) == 0 {
+				rows++
+			}
+		}
+		return rows
+	}
+	plain := SummaryCard{Title: "Home", Lines: []string{"26 Jul 2026"}}
+	sub := plain
+	sub.Subtitle = "Bangkok to Copenhagen"
+	if a, b := inked(plain), inked(sub); b <= a+10 {
+		t.Errorf("the card is %d rows tall with a subtitle and %d without; want it taller by a line", b, a)
+	}
+}
