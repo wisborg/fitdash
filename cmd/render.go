@@ -361,8 +361,11 @@ func bindRenderFlags(c *cobra.Command) {
 			"summary reports it either way")
 	f.StringVar(&renderOpts.layout, "layout", panel.LayoutAuto,
 		"panel arrangement -- \"auto\" (default: a column for a portrait frame, a row-based one otherwise), "+
-			"\"landscape\", or \"portrait\". Naming one overrides the frame's shape, which is occasionally what you want "+
-			"and usually not")
+			"\"landscape\", \"portrait\", or \"flyover\". Naming one overrides the frame's shape, which is occasionally what you want "+
+			"and usually not. \"flyover\" is the full-frame flyover: the camera flying after the activity fills the whole "+
+			"frame, with nothing else drawn while it flies, and a card summarising the activity over the overview it holds "+
+			"for a few seconds at the start and the end. It is --route-view flyover, which it turns on, and needs --basemap "+
+			tilemap.LocalProvider)
 	f.StringVar(&renderOpts.bottomBand, "bottom-band", panel.BottomBandProfile,
 		"what occupies the bottom band -- \"profile\" (default: the elevation profile, filled to the playhead, "+
 			"and -- when at least one --highlight or --label is configured -- carrying their marks too, in place "+
@@ -475,6 +478,16 @@ func bindRenderFlags(c *cobra.Command) {
 func runRender(cmd *cobra.Command, args []string) error {
 	if err := validateRenderOptions(); err != nil {
 		return err
+	}
+	// The full-frame flyover IS the flyover route view, filling the frame:
+	// turned on here, before anything reads the route view -- the airports'
+	// pacing and the offers of map and elevation both do -- and refused
+	// against a view the user asked for by name.
+	if renderOpts.layout == panel.FlyoverLayout().Name {
+		if cmd.Flags().Changed("route-view") && renderOpts.routeView != "flyover" {
+			return fmt.Errorf("render: --layout flyover is the flyover filling the frame, and --route-view %s asks for another view; leave --route-view out", renderOpts.routeView)
+		}
+		renderOpts.routeView = "flyover"
 	}
 	w, h, err := parseSize(renderOpts.size)
 	if err != nil {
@@ -589,6 +602,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The full-frame flyover holds its overview at either end, for the
+	// summary card shown over it: video added, at no activity time, before
+	// anything reads a frame index from the timeline.
+	fullFrame := renderOpts.layout == panel.FlyoverLayout().Name
+	if fullFrame {
+		timeline = timeline.WithHolds(flyoverHold, flyoverHold)
+	}
 	// Labels are resolved HERE, after the Timeline exists, rather than
 	// beside resolveHighlights just above despite the obvious surface
 	// symmetry of the two flags. See resolveLabels' own doc comment for
@@ -688,7 +708,12 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 	basemapDim := resolveBasemapDim(cmd)
 
+	var summary panel.SummaryCard
+	if fullFrame {
+		summary = summaryCard(track, timer, panel.BuildElevation(track, elevTuning), unitSet, speedReadout, flight, pushback)
+	}
 	rctx := &panel.Context{
+		Summary:             summary,
 		Track:               track,
 		Basemap:             basemap,
 		BasemapDim:          basemapDim,

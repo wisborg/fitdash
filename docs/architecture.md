@@ -1450,6 +1450,32 @@ code right on a north-up flat map, a 3D view and a flyover's camera that turns w
 route. Where there is no direction at all, the dot is drawn instead of an icon pointing at
 random.
 
+## The full-frame flyover
+
+`--layout flyover` is a layout, not a program or a command of its own: the route panel alone
+in a root leaf with no margin, its view the flyover. Everything a flyover already had --
+pacing, airports, highlights, gap bridging, the pins and the position icon, the offers of
+map and elevation -- applies unchanged, which a separate project would have had to copy or
+wait for a shared library to give it. Nothing else is drawn while it flies.
+
+Its summary is a card over the overview, and the overview is held for it: three seconds
+before the camera comes down and three after it has gone back up. The hold is the timeline's
+(`Timeline.WithHolds`), as a segment at rate zero at either end, rather than frames bolted
+on around the render, so every question the timeline answers keeps one arithmetic -- `At`
+shows the held instant, `ActivityDuration` counts nothing for it, `IndexAt` finds an
+instant's own frame and not a held one, and every later frame (a highlight's, a cut
+notice's) moves on by the lead. It is applied right after the timeline is built and before
+anything reads a frame index from it, labels included. The camera path takes the holds as
+frames to keep on the overview (`FlightOptions.Lead`, `Tail`) and swoops at their edges.
+
+The card is drawn by the flyover's own painter, over its picture and under the map's credit,
+whose obligation is not waived for a title card. Its text is cmd's (`summaryCard`), in the
+render's units: a flight's title, otherwise the sport; the day it began, taken from the
+first fix's longitude because a FIT file's times are UTC and nothing here knows the place's
+time zone -- a UTC date put a flight leaving Bangkok after midnight on the day before; the
+distance and the time (a flight's from pushback, as its clock); and a flight's top speed and
+cruising level, or anything else's climb and average pace or speed.
+
 ## The route in 3D
 
 `--route-view 3d` draws the route panel in perspective: the map draped over the shape of

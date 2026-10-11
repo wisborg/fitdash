@@ -44,12 +44,14 @@ func (r Route3D) Flight(fixes, drawn []route.Point, tl Timeline, aspect float64,
 	if err != nil {
 		return nil, err
 	}
+	lead, tail := tl.Holds()
 	if ground == nil {
 		ground = func(osm.Coord) (float64, bool) { return 0, false }
 	}
 	cams := route.Flight(fixes, tl.Frames(), tl.At, overview, ground, route.FlightOptions{
 		Distance: r.Distance, SteadyDistance: r.SteadyDistance, Pitch: r.Pitch, FOV: r.FOV, FPS: tl.FPS(),
 		Steady: flyoverSteady, Turn: flyoverTurn, Rise: r.Rise, Swoop: flyoverSwoop,
+		Lead: lead, Tail: tail,
 	})
 	if cams == nil {
 		return nil, fmt.Errorf("the route has too few positions to fly over")
@@ -97,11 +99,19 @@ type flyoverPainter struct {
 
 	outlineW, coveredW, dotR float64
 	ends                     RouteEnds // see Context.RouteEnds
-	icon                     RouteIcon // see Context.RouteIcon
-	mapCredit                string
-	creditPx, creditFitted   float64
-	mapNote                  string
-	suppressMap              bool
+
+	// card is the summary shown over the overview the timeline's holds
+	// keep at either end; frames, lead, tail and fps place it. See
+	// FlyoverLayout.
+	card               SummaryCard
+	frames, lead, tail int
+	fps                float64
+
+	icon                   RouteIcon // see Context.RouteIcon
+	mapCredit              string
+	creditPx, creditFitted float64
+	mapNote                string
+	suppressMap            bool
 }
 
 // prepareFlyover plans the flight and lays out the map for it; ok is false,
@@ -152,7 +162,12 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*0.022)
 	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
-	p.creditPx = maxf(9, unit*0.05)
+	p.card, p.frames, p.fps = ctx.Summary, ctx.Timeline.Frames(), ctx.Timeline.FPS()
+	p.lead, p.tail = ctx.Timeline.Holds()
+	// Sized to the panel, but no larger than a dashboard's would be: the
+	// full-frame flyover's panel is the whole frame, and a twentieth of it
+	// put a credit 54 pixels tall across the bottom of a 1080p picture.
+	p.creditPx = maxf(9, min(unit*0.05, 0.022*min(float64(ctx.Width), float64(ctx.Height))))
 	p.mapCredit = p.flight.Attribution()
 
 	// The distance followed from past the swoops: one, or the range of
@@ -277,6 +292,7 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 			positionMark(c, p.box, p.icon, x, y, p.dotR, routeInks(p.inks, true, c.Theme).Accent, alpha, heading, ok)
 		}
 	}
+	drawCard(c, p.box, p.card, cardWeight(f.Index, p.frames, p.lead, p.tail, p.fps))
 	fitted := p.creditFitted
 	drawMapCredit(c, p.box, p.mapCredit, p.creditPx, &fitted)
 }

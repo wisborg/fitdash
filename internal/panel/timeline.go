@@ -91,6 +91,10 @@ type Timeline struct {
 	// pacedExtra is the video the paces add beyond what their stretches
 	// would have taken at the base rate. See PacedExtra.
 	pacedExtra time.Duration
+
+	// lead and tail are the frames WithHolds added before the activity's
+	// first instant and after its last, holding each still. See Holds.
+	lead, tail int
 }
 
 // segment is one stretch of the render at one rate.
@@ -975,7 +979,12 @@ func (t Timeline) IndexAt(offset time.Duration) int {
 	seg := t.segs[idx]
 
 	within := target.Sub(seg.start)
-	i := seg.i0 + int(math.Round(within.Seconds()/seg.rate*t.fps))
+	i := seg.i0
+	// A hold (see WithHolds) shows one instant for all its frames; the
+	// instant's frame is its first, and no division by its zero rate.
+	if seg.rate > 0 {
+		i += int(math.Round(within.Seconds() / seg.rate * t.fps))
+	}
 
 	// Clamp to the segment first...
 	if i < seg.i0 {
@@ -995,6 +1004,50 @@ func (t Timeline) IndexAt(offset time.Duration) int {
 	}
 	return i
 }
+
+// WithHolds is t with lead of video added before the activity's first
+// instant and tail after its last, each holding that instant still: a
+// full-frame flyover's summary card is shown over the overview there, before
+// the camera comes down and after it has gone back up.
+//
+// A hold is a segment at rate zero, so every question the timeline answers
+// keeps its one arithmetic: At shows the held instant, ActivityDuration
+// counts nothing for it, IndexAt finds the activity's own frame for an
+// instant rather than a held one, and every later frame -- a highlight's, a
+// cut notice's -- moves on by the lead. A hold of no frames is none.
+func (t Timeline) WithHolds(lead, tail time.Duration) Timeline {
+	nLead := max(0, int(math.Round(lead.Seconds()*t.fps)))
+	nTail := max(0, int(math.Round(tail.Seconds()*t.fps)))
+	if nLead == 0 && nTail == 0 {
+		return t
+	}
+	end := t.At(t.frames - 1)
+	segs := make([]segment, 0, len(t.segs)+2)
+	if nLead > 0 {
+		segs = append(segs, segment{start: t.segs[0].start, i0: 0, n: nLead, highlight: NoHighlight})
+	}
+	for _, s := range t.segs {
+		s.i0 += nLead
+		segs = append(segs, s)
+	}
+	if nTail > 0 {
+		segs = append(segs, segment{start: end, i0: t.frames + nLead, n: nTail, highlight: NoHighlight})
+	}
+	cuts := make([]Cut, len(t.cuts))
+	for i, c := range t.cuts {
+		c.FirstFrame += nLead
+		c.LastFrame += nLead
+		cuts[i] = c
+	}
+	t.segs, t.cuts = segs, cuts
+	t.frames += nLead + nTail
+	t.lead, t.tail = t.lead+nLead, t.tail+nTail
+	return t
+}
+
+// Holds are the frames WithHolds added: lead before the activity's first
+// instant, tail after its last. Zero for a timeline without them.
+func (t Timeline) Holds() (lead, tail int) { return t.lead, t.tail }
 
 // Cuts returns the seams --pauses skip left in this render, ascending, each
 // with the stretch of activity it removed and the frames its notice

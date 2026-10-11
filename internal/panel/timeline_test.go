@@ -1301,3 +1301,54 @@ func TestTimeline_ActivitySpanIsTheWholeActivityNotJustTheRenderedPart(t *testin
 		t.Errorf("span exceeds rendered duration by %v, want the cut's own %v", got, want)
 	}
 }
+
+// Holds add frames at either end that show the first and the last instant,
+// count no activity, leave IndexAt finding the activity's own frames, and
+// move a cut's notice on by the lead.
+func TestTimelineWithHolds(t *testing.T) {
+	const fps, rate = 10.0, 60.0
+	d := 10 * time.Minute
+	cut := Cut{From: 4 * time.Minute, To: 5 * time.Minute}
+	tl, err := NewCutTimeline(epoch, d, fps, rate, nil, []Cut{cut})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := tl.WithHolds(3*time.Second, 2*time.Second)
+	if lead, tail := held.Holds(); lead != 30 || tail != 20 {
+		t.Fatalf("holds %d and %d frames, want 30 and 20", lead, tail)
+	}
+	if held.Frames() != tl.Frames()+50 {
+		t.Errorf("%d frames, want %d", held.Frames(), tl.Frames()+50)
+	}
+	if held.ActivityDuration() != tl.ActivityDuration() {
+		t.Errorf("activity %v with holds, %v without", held.ActivityDuration(), tl.ActivityDuration())
+	}
+	for _, i := range []int{0, 15, 29} {
+		if !held.At(i).Equal(tl.At(0)) {
+			t.Errorf("lead frame %d shows %v, want the first instant %v", i, held.At(i), tl.At(0))
+		}
+	}
+	last := tl.At(tl.Frames() - 1)
+	for _, i := range []int{held.Frames() - 20, held.Frames() - 1} {
+		if !held.At(i).Equal(last) {
+			t.Errorf("tail frame %d shows %v, want the last instant %v", i, held.At(i), last)
+		}
+	}
+	for _, i := range []int{0, tl.Frames() / 2, tl.Frames() - 1} {
+		if !held.At(i + 30).Equal(tl.At(i)) {
+			t.Errorf("activity frame %d moved: %v, want %v", i, held.At(i+30), tl.At(i))
+		}
+	}
+	if got, want := held.IndexAt(time.Minute), tl.IndexAt(time.Minute)+30; got != want {
+		t.Errorf("IndexAt(1m) = %d, want %d", got, want)
+	}
+	if got := held.IndexAt(0); got != 30 {
+		t.Errorf("IndexAt(0) = %d, want the activity's first frame, 30", got)
+	}
+	if c, h := tl.Cuts()[0], held.Cuts()[0]; h.FirstFrame != c.FirstFrame+30 || h.LastFrame != c.LastFrame+30 {
+		t.Errorf("cut notice %d-%d, want %d-%d", h.FirstFrame, h.LastFrame, c.FirstFrame+30, c.LastFrame+30)
+	}
+	if same := tl.WithHolds(0, 0); same.Frames() != tl.Frames() {
+		t.Error("holds of nothing changed the timeline")
+	}
+}

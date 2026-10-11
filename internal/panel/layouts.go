@@ -34,7 +34,7 @@ const (
 )
 
 // Layouts are the arrangements --layout can choose, besides auto.
-func Layouts() []Layout { return []Layout{LandscapeLayout(), PortraitLayout()} }
+func Layouts() []Layout { return []Layout{LandscapeLayout(), PortraitLayout(), FlyoverLayout()} }
 
 // SelectLayout picks an arrangement by name, or from the frame's shape when
 // the name is LayoutAuto.

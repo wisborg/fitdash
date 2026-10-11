@@ -39,6 +39,11 @@ type FlightOptions struct {
 	// overview to follow the activity at the start, and to go back up at
 	// the end; at most a third of the video each.
 	Swoop time.Duration
+	// Lead and Tail are frames at the start and the end held on the
+	// overview, before the swoop down and after the swoop up: a timeline's
+	// holds (panel.Timeline.Holds), where a full-frame flyover shows its
+	// summary over the whole route.
+	Lead, Tail int
 }
 
 // Ground is the height of the ground at c in metres, false where it is not
@@ -141,12 +146,20 @@ func Flight(fixes []Point, frames int, at func(i int) time.Time, overview perspe
 			overview.TargetHeight, overview.HasTargetHeight = height[0], true
 		}
 	}
-	swoop := min(frameCount(o.Swoop), frames/3)
+	lead, tail := min(max(o.Lead, 0), frames), min(max(o.Tail, 0), frames)
+	moving := max(0, frames-lead-tail)
+	swoop := min(frameCount(o.Swoop), moving/3)
 	for i := 0; i < swoop; i++ {
 		t := smoothstep(float64(i) / float64(swoop))
-		cams[i] = blendCamera(overview, cams[i], t)
-		j := frames - 1 - i
+		cams[lead+i] = blendCamera(overview, cams[lead+i], t)
+		j := frames - tail - 1 - i
 		cams[j] = blendCamera(overview, cams[j], t)
+	}
+	for i := 0; i < lead; i++ {
+		cams[i] = overview
+	}
+	for i := frames - tail; i < frames; i++ {
+		cams[i] = overview
 	}
 	return cams
 }

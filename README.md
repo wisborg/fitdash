@@ -248,6 +248,19 @@ along the route, finer under the camera than toward the horizon.
 fitdash morning.fit --basemap local --route-view flyover --video-duration 45s
 ```
 
+`--layout flyover` is the flyover on its own, filling the whole frame: no dashboard while it
+flies, only the map, the route, its pins, the position and the map's credit. It holds the
+overview of the whole route for three seconds at the start and at the end, with a card over
+it summarising the activity — what it was and on what day, how far and how long, and for a
+flight its top speed and cruising level, for anything else its climb and average pace or
+speed — which fades as the camera comes down and back as it goes up. The six seconds of
+holding are added to the video. It turns `--route-view flyover` on, and needs `--basemap
+local` as any flyover does; it suits a portrait frame as well as a wide one.
+
+```
+fitdash flight.kml --basemap local --layout flyover --video-duration 60s
+```
+
 Frames are drawn several at once, one for each core by default; `--concurrency` sets how
 many, for a machine with less memory to spare (each 4K flyover frame in flight holds about
 half a gigabyte) or more work to share it with. The video is the same whatever the number.

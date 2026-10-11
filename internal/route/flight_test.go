@@ -134,6 +134,26 @@ func TestFlightSwoopsFromTheOverviewAndBack(t *testing.T) {
 	}
 }
 
+// With holds, the overview is held through them and the swoops start and
+// end at their edges: still the overview at the first moving frame, down
+// to following 3 s later, and back up for the tail.
+func TestFlightHoldsTheOverview(t *testing.T) {
+	o := flightOpts()
+	o.Lead, o.Tail = 60, 45
+	cams := Flight(lRoute(), flightFrames, atFrame, overviewCam, flatGround, o)
+	isOverview := func(c perspective.Camera) bool {
+		return c.Target == overviewCam.Target && c.Distance == overviewCam.Distance && c.Heading == overviewCam.Heading
+	}
+	for _, i := range []int{0, 30, 59, 60, flightFrames - 45, flightFrames - 1} {
+		if !isOverview(cams[i]) {
+			t.Errorf("frame %d is %+v, want the overview held", i, cams[i])
+		}
+	}
+	if c := cams[60+90]; c.Distance != 800 {
+		t.Errorf("3 s after the lead the camera is %g m off, want 800", c.Distance)
+	}
+}
+
 // Without elevation anywhere, no height is claimed: each picture takes its
 // ground's own, the level ground it is draped over.
 func TestFlightClaimsNoHeightWithoutElevation(t *testing.T) {

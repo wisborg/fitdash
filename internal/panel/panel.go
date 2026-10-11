@@ -387,6 +387,10 @@ type Context struct {
 	// flight, and the caption is as it was. See FlightTitle.
 	FlightTitle string
 
+	// Summary is the card a full-frame flyover shows over its overview at
+	// the start and the end; see FlyoverLayout. Empty draws none.
+	Summary SummaryCard
+
 	// RouteEnds is what the route views mark the start and finish with,
 	// and RouteIcon what they mark the current position with; the zero
 	// values are pins and a dot. See ParseRouteEnds and ParseRouteIcon.
