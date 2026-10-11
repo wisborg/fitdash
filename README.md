@@ -6,7 +6,9 @@ drawing itself, an elevation profile with a moving playhead, pace, heart rate, p
 cumulative climb and the gradient underfoot.
 
 The activity can be a FIT, GPX, TCX, KML or KMZ file, or a flight exported from
-Flightradar24 as CSV, with its altitude and ground speed. FIT carries the most; the
+Flightradar24, with its altitude, ground speed and track. Of Flightradar24's two exports,
+give the KML: it holds every report the CSV does, and names the flight and its airports,
+which the CSV does not. FIT carries the most; the
 others carry what their format can, and a panel whose data the file lacks is left
 out rather than drawn as zero. A file that records no distance — a GPX, a KML, a
 flight — has one summed from its GPS fixes, as a device would, so its elevation
@@ -256,7 +258,7 @@ A flight's dashboard reads as a flight's. It is written in nautical miles, feet 
 unless `--units` says otherwise (a `--unit` still has the last word); the climb panel's gain
 and loss and the gradient give way to the altitude and the vertical speed, in feet a minute,
 and cadence's box to the track, the direction over the ground — Flightradar24's own where its
-CSV records one, otherwise worked out from the fixes. The time panel's caption names the
+file records one, otherwise worked out from the fixes. The time panel's caption names the
 flight where the file does: "TG950 BKK → CPH" from a Flightradar24 KML, the callsign from its
 CSV, each leg of a journey in turn; its clock counts from the first pushback, not from when
 the tracker began recording. Where the tracker lost the aircraft — an ocean, a country without
