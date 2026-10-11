@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"cmp"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/wisborg/fitactivity"
 
 	"github.com/wisborg/fitdash/internal/panel"
+	"github.com/wisborg/fitdash/internal/route"
 )
 
 // syntheticFlight is a flight as a phone records it from the seat, every
@@ -109,8 +112,11 @@ func TestAirports_PaceAFlight(t *testing.T) {
 			t.Errorf("the %s takes %v of video, want about %v", s.name, video, airportVideo)
 		}
 	}
-	// The ease after the departure climbs: each step faster than the one
-	// before, as the aircraft goes faster.
+	// The ease after the departure: the ground's speed in the video -- the
+	// aircraft's times the rate -- grows each step, and no faster than it
+	// may, through the roll and the climb alike. The rate itself is not
+	// steady: the roll is drawn slower than the taxi, since the aircraft
+	// gains speed there faster than the camera can rise to follow.
 	var ease []panel.Pacing
 	for _, pc := range p.paces {
 		if pc.From >= dep.to && pc.To <= arr.from && pc.From < 60*time.Minute {
@@ -120,10 +126,16 @@ func TestAirports_PaceAFlight(t *testing.T) {
 	if len(ease) < 3 {
 		t.Fatalf("%d steps of ease after the departure; want it spread over seconds of video", len(ease))
 	}
+	start, _ := timer.Window()
+	video := func(pc panel.Pacing) float64 { return pc.Rate * route.SpeedAt(p.fixes, start.Add(pc.From)) }
+	most := math.Pow(2, airportEaseStep/float64(airportDoubling))
 	for i := 1; i < len(ease); i++ {
-		if ease[i].Rate <= ease[i-1].Rate {
-			t.Errorf("ease step %d at %vx is no faster than the one before at %vx", i, ease[i].Rate, ease[i-1].Rate)
+		if g := video(ease[i]) / video(ease[i-1]); g <= 1 || g > most*1.001 {
+			t.Errorf("ease step %d: the ground's speed in the video grew %.3fx, want more than 1 and at most %.3fx", i, g, most)
 		}
+	}
+	if slowest := slices.MinFunc(ease, func(a, b panel.Pacing) int { return cmp.Compare(a.Rate, b.Rate) }); slowest.Rate >= p.paces[0].Rate {
+		t.Errorf("the roll at %vx is no slower than the taxi at %vx", slowest.Rate, p.paces[0].Rate)
 	}
 	if begun := tl.At(0).Sub(track.Samples[0].Time); begun < 19*time.Minute {
 		t.Errorf("the render begins %v in; the gate should be left out", begun)

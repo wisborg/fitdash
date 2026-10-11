@@ -26,6 +26,13 @@ type Leg struct {
 	// landing roll near its start.
 	TakeOff, Landing time.Time
 
+	// Roll is when the take-off roll began, the last moment before TakeOff
+	// the aircraft was no faster than taxiSpeed; RolledOut is when the
+	// landing roll ended, the first moment after Landing it was no faster
+	// again. Between them the aircraft is going faster than anything on a
+	// taxiway, and the airport's own pace gives way to the flight's.
+	Roll, RolledOut time.Time
+
 	// Stopped is when the aircraft came to its first long stand after
 	// landing, and is the last fix when the recording ended still moving.
 	// Between two legs with no stand found -- an aircraft that never stood
@@ -48,6 +55,12 @@ const (
 	// landing: 200 km/h, near the end of a jet's take-off roll and the
 	// start of its landing roll, and well above anything taxiing does.
 	takeOffSpeed = 200 / 3.6
+
+	// taxiSpeed is the speed, in m/s, that a take-off roll begins above and
+	// a landing roll ends below: 30 knots, the most an aircraft taxis at on
+	// its way to the runway, and about what it leaves the runway at after
+	// landing.
+	taxiSpeed = 30 * 1852 / 3600.0
 
 	// speedWindow is the time a speed is measured over, either side of an
 	// instant. A seat's GPS, behind a window, is noisy fix to fix -- one
@@ -148,6 +161,11 @@ func FindAirports(fixes []Point) []Leg {
 		l := &legs[k]
 		if f.from > 0 {
 			l.TakeOff = at(f.from)
+			r := f.from
+			for r > lo && speed[r-1] > taxiSpeed {
+				r--
+			}
+			l.Roll = at(r)
 			l.Moving = loFix
 			if k > 0 {
 				l.Moving = time.Time{} // settled below, with the previous leg's Stopped
@@ -185,6 +203,11 @@ func FindAirports(fixes []Point) []Leg {
 		}
 		if f.to < n-1 {
 			l.Landing = at(f.to)
+			r := f.to
+			for r < hi && speed[r+1] > taxiSpeed {
+				r++
+			}
+			l.RolledOut = at(r)
 			if k == len(flights)-1 {
 				l.Stopped = hiFix
 			}
@@ -227,7 +250,30 @@ func FindAirports(fixes []Point) []Leg {
 			a.Stopped, b.Moving = mid, mid
 		}
 	}
+	// A roll is on the move: no earlier than the taxi to it began, no later
+	// than the taxi from it ended.
+	for k := range legs {
+		l := &legs[k]
+		if !l.Roll.IsZero() && l.Roll.Before(l.Moving) {
+			l.Roll = l.Moving
+		}
+		if !l.RolledOut.IsZero() && !l.Stopped.IsZero() && l.RolledOut.After(l.Stopped) {
+			l.RolledOut = l.Stopped
+		}
+	}
 	return legs
+}
+
+// SpeedAt is how fast the route was going at t, in metres a second: the
+// distance between where it was speedWindow either side, over the time
+// between -- the speed FindAirports reads a take-off from.
+func SpeedAt(fixes []Point, t time.Time) float64 {
+	if len(fixes) < 2 {
+		return 0
+	}
+	lat0, lon0 := positionAt(fixes, t.Add(-speedWindow))
+	lat1, lon1 := positionAt(fixes, t.Add(speedWindow))
+	return MetresBetween(lat0, lon0, lat1, lon1) / (2 * speedWindow.Seconds())
 }
 
 // standing reports whether every position from a to b is within standRadius

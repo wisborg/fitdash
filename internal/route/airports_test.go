@@ -82,6 +82,36 @@ func TestFindAirportsFindsBothEnds(t *testing.T) {
 	if !near(a.Stopped, start, 125*time.Minute, 30*time.Second) {
 		t.Errorf("stopped at %v, want 2h5m: the arrival gate's wander is inside a stand", a.Stopped.Sub(start))
 	}
+	// The roll begins as the hold short ends, and ends as the taxi in
+	// begins: faster than a taxi between, give or take the speed's window.
+	if !near(a.Roll, start, 28*time.Minute, speedWindow) {
+		t.Errorf("the roll began at %v, want 28m, the end of the hold", a.Roll.Sub(start))
+	}
+	if !near(a.RolledOut, start, 120*time.Minute, speedWindow) {
+		t.Errorf("the roll ended at %v, want 2h, the start of the taxi in", a.RolledOut.Sub(start))
+	}
+}
+
+// SpeedAt is the speed over the window either side: the leg's own inside
+// one, and between two legs' a blend.
+func TestSpeedAt(t *testing.T) {
+	fixes := track(0, leg{10 * time.Minute, 5 * time.Second, 5}, leg{10 * time.Minute, 5 * time.Second, 40})
+	start := fixes[0].Time
+	for _, c := range []struct {
+		at   time.Duration
+		want float64
+	}{
+		{5 * time.Minute, 5},
+		{15 * time.Minute, 40},
+		{10 * time.Minute, 22.5},
+	} {
+		if got := SpeedAt(fixes, start.Add(c.at)); math.Abs(got-c.want) > 0.1 {
+			t.Errorf("speed at %v: %.2f m/s, want %v", c.at, got, c.want)
+		}
+	}
+	if got := SpeedAt(fixes[:1], start); got != 0 {
+		t.Errorf("one fix's speed %v, want 0", got)
+	}
 }
 
 // The hold at the runway is shorter than a stand, so it is part of the

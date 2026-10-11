@@ -245,9 +245,12 @@ half a gigabyte) or more work to share it with. The video is the same whatever t
 A flight's airports pass in a frame at the compression its cruise needs, so a flyover finds
 them: a track that held 400 km/h for five minutes is a flight, and its take-off and landing are
 where it passed 200 km/h. The time the aircraft stood at the gate before it first moved, and
-after it last stopped, is left out; the taxi and roll at each end get about twelve seconds of
-video, and the pace eases from there to the base rate over a few seconds as the aircraft
-climbs away or comes in, so the camera comes down to the taxiways and rises with the climb.
+after it last stopped, is left out; the taxi at each end gets about twelve seconds of video,
+and from the start of the take-off roll the pace eases to the base rate as the aircraft climbs
+away — and back from it as it comes in, to the end of the landing roll — so that the ground
+passes under the climb and the descent at the pace it passes under the cruise, the camera
+rising and coming down with them. That takes ten to twenty seconds each way, which is added to
+the video.
 
 A flight's dashboard reads as a flight's. It is written in nautical miles, feet and knots
 unless `--units` says otherwise (a `--unit` still has the last word); the climb panel's gain

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,18 +31,18 @@ const (
 	// outlast the flight in a minute's video.
 	airportVideo = 12 * time.Second
 
-	// airportMargin is how far into the air an airport's stretch reaches
-	// past the take-off, and before the landing: the moment the wheels
-	// leave the runway is at the pace of the taxi, not of the climb.
-	airportMargin = 30 * time.Second
+	// airportDoubling is the video time in which, while the render eases
+	// between an airport's pace and the flight's, the ground's speed in the
+	// video doubles: as fast as a flyover's camera may rise to follow it
+	// (route's distanceDoubling), so the ground passes under the climb at
+	// the pace it passes under the cruise, and no faster.
+	airportDoubling = 2500 * time.Millisecond
 
-	// airportDoubling is the video time over which the rate eases from an
-	// airport's to the base rate doubles, the way a flyover's camera
-	// distance follows it -- a little faster than the camera may change,
-	// so the airports do not take much longer than airportVideo, and slow
-	// enough that the camera is not left far behind an aircraft that has
-	// suddenly gone a hundred times faster.
-	airportDoubling = time.Second
+	// airportSlowest is the slowest an ease's speed-up goes, real time: the
+	// take-off roll, where the aircraft gains speed far faster than the
+	// video's ground may, is drawn slower than the taxi before it, but
+	// never slower than it happened.
+	airportSlowest = 1.0
 
 	// airportEaseStep is the video time each step of the ease lasts.
 	airportEaseStep = 4.0 / 30 * float64(time.Second)
@@ -51,6 +52,7 @@ const (
 // at the gates, and the airports' paced stretches with their eases.
 type airportPlan struct {
 	legs  []route.Leg
+	fixes []route.Point // the track's, for the speed the eases follow
 	leave []panel.Cut
 	paces []panel.Pacing
 
@@ -120,12 +122,13 @@ func airportsWanted() (bool, error) {
 // stopped. The paces come later, once the base rate is known: see
 // paceAirports.
 func findAirports(track *fitactivity.Track, timer *fitactivity.TimerModel) airportPlan {
-	legs := route.FindAirports(route.FromTrack(track, len(track.Samples)+1))
+	fixes := route.FromTrack(track, len(track.Samples)+1)
+	legs := route.FindAirports(fixes)
 	if len(legs) == 0 {
 		return airportPlan{}
 	}
 	start, end := timer.Window()
-	p := airportPlan{legs: legs}
+	p := airportPlan{legs: legs, fixes: fixes}
 	if first := legs[0].Moving; !first.IsZero() && first.After(start) {
 		p.leave = append(p.leave, panel.Cut{From: 0, To: first.Sub(start)})
 	}
@@ -143,15 +146,19 @@ func findAirports(track *fitactivity.Track, timer *fitactivity.TimerModel) airpo
 // paceAirports gives each airport of p -- every departure and arrival, a
 // stopover's as much as the journey's ends -- its own stretch of video at
 // base rate base, eased to the base rate on the side toward the flight, and
-// leaves an airport any highlight overlaps at the base rate. An airport
-// whose ground stretch would take less than airportVideo even at the base
-// rate is already slow enough, and is left as it is.
+// leaves an airport any highlight overlaps at the base rate. An airport's
+// stretch is its taxi, from the gate to the start of the take-off roll or
+// from the end of the landing roll to the gate; the roll and the climb or
+// descent are the ease. An airport whose taxi would take less than
+// airportVideo even at the base rate is already slow enough, and is left as
+// it is.
 func paceAirports(p airportPlan, timer *fitactivity.TimerModel, base float64, highlights []panel.Highlight) airportPlan {
 	if !p.found() {
 		return p
 	}
 	start, end := timer.Window()
 	span := end.Sub(start)
+	speed := func(d time.Duration) float64 { return route.SpeedAt(p.fixes, start.Add(d)) }
 	name := func(k int, what string) string {
 		if len(p.legs) == 1 {
 			return what
@@ -164,11 +171,11 @@ func paceAirports(p airportPlan, timer *fitactivity.TimerModel, base float64, hi
 		// the other's stretch, so a short flight's eases meet rather than
 		// overlap.
 		depEnd, arrStart := time.Duration(-1), time.Duration(-1)
-		if !l.TakeOff.IsZero() {
-			depEnd = min(l.TakeOff.Sub(start)+airportMargin, span)
+		if !l.Roll.IsZero() {
+			depEnd = min(max(l.Roll.Sub(start), 0), span)
 		}
-		if !l.Landing.IsZero() {
-			arrStart = max(l.Landing.Sub(start)-airportMargin, 0)
+		if !l.RolledOut.IsZero() {
+			arrStart = min(max(l.RolledOut.Sub(start), 0), span)
 		}
 		limitAfter, limitBefore := span, time.Duration(0)
 		if depEnd >= 0 && arrStart >= 0 {
@@ -178,14 +185,14 @@ func paceAirports(p airportPlan, timer *fitactivity.TimerModel, base float64, hi
 		if depEnd >= 0 {
 			from := max(l.Moving.Sub(start), 0)
 			if core, ok := airportPacing(from, depEnd, base); ok {
-				dep := append([]panel.Pacing{core}, easeAfter(depEnd, limitAfter, core.Rate, base)...)
+				dep := append([]panel.Pacing{core}, easeAfter(depEnd, limitAfter, core.Rate, base, speed)...)
 				paces = p.add(paces, dep, airportStretch{name(k, "departure"), from, depEnd}, highlights)
 			}
 		}
 		if arrStart >= 0 {
 			to := min(l.Stopped.Sub(start), span)
 			if core, ok := airportPacing(arrStart, to, base); ok {
-				arr := append(easeBefore(arrStart, limitBefore, core.Rate, base), core)
+				arr := append(easeBefore(arrStart, limitBefore, core.Rate, base, speed), core)
 				paces = p.add(paces, arr, airportStretch{name(k, "arrival"), arrStart, to}, highlights)
 			}
 		}
@@ -219,12 +226,19 @@ func airportPacing(from, to time.Duration, base float64) (panel.Pacing, bool) {
 }
 
 // easeAfter is the steps from rate up to base, from from onward and ending
-// at limit at the latest: each lasts airportEaseStep of video, at a rate
-// doubling every airportDoubling.
-func easeAfter(from, limit time.Duration, rate, base float64) []panel.Pacing {
+// at limit at the latest, each lasting airportEaseStep of video: rates that
+// take the ground's speed in the video -- the aircraft's own, speed at an
+// offset, times the rate -- from what it is at from to double every
+// airportDoubling, however the aircraft speeds up. A rate steady through a
+// climb would have the ground's speed in the video grow with the aircraft's
+// as well as with the rate, faster than the camera can rise to follow.
+func easeAfter(from, limit time.Duration, rate, base float64, speed func(time.Duration) float64) []panel.Pacing {
 	var out []panel.Pacing
-	for _, r := range easeRates(rate, base) {
-		if from >= limit {
+	video, r := rate*groundSpeed(speed, from), rate
+	for from < limit {
+		video *= easeGrowth(r, base)
+		r = max(video/groundSpeed(speed, from), airportSlowest)
+		if r >= base {
 			break
 		}
 		to := min(from+time.Duration(r*airportEaseStep), limit)
@@ -235,29 +249,40 @@ func easeAfter(from, limit time.Duration, rate, base float64) []panel.Pacing {
 }
 
 // easeBefore is easeAfter mirrored: the steps from base down to rate,
-// ending at to and beginning at limit at the earliest.
-func easeBefore(to, limit time.Duration, rate, base float64) []panel.Pacing {
+// ending at to and beginning at limit at the earliest, worked out backward
+// from to.
+func easeBefore(to, limit time.Duration, rate, base float64, speed func(time.Duration) float64) []panel.Pacing {
 	var out []panel.Pacing
-	for _, r := range easeRates(rate, base) {
-		if to <= limit {
+	video, r := rate*groundSpeed(speed, to), rate
+	for to > limit {
+		video *= easeGrowth(r, base)
+		r = max(video/groundSpeed(speed, to), airportSlowest)
+		if r >= base {
 			break
 		}
 		from := max(to-time.Duration(r*airportEaseStep), limit)
-		out = append([]panel.Pacing{{From: from, To: to, Rate: r}}, out...)
+		out = append(out, panel.Pacing{From: from, To: to, Rate: r})
 		to = from
 	}
+	slices.Reverse(out)
 	return out
 }
 
-// easeRates is the rates of an ease from rate to base, slowest first, not
-// including either end.
-func easeRates(rate, base float64) []float64 {
-	step := math.Pow(2, airportEaseStep/float64(airportDoubling))
-	var out []float64
-	for r := rate * step; r < base; r *= step {
-		out = append(out, r)
-	}
-	return out
+// easeGrowth is how much the ground's speed in the video grows in the step
+// of an ease after one at rate r: a doubling every airportDoubling, slowing
+// over the last doubling to base to a quarter of that. The camera smooths
+// its rise, and a ramp that met the base rate at full slope had the camera
+// round the corner below it, the ground passing under it half as fast
+// again as under the cruise for seconds at the top of the climb.
+func easeGrowth(r, base float64) float64 {
+	taper := math.Max(0.25, math.Min(1, math.Log2(base/r)/2))
+	return math.Pow(2, taper*airportEaseStep/float64(airportDoubling))
+}
+
+// groundSpeed is speed at d, but at least a metre a second: an aircraft
+// held short of the runway is not going nowhere for the ease's sake.
+func groundSpeed(speed func(time.Duration) float64, d time.Duration) float64 {
+	return max(speed(d), 1)
 }
 
 // overlapsAny reports whether any of paces overlaps any of highlights.

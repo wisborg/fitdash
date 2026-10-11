@@ -2279,11 +2279,27 @@ moves on screen, stayed tens of kilometres up while the aircraft shot along the 
 It needs nothing new of the timeline's arithmetic. An airport is a `Pacing`: a stretch at its
 own rate, like a highlight's, but nobody's highlight — nothing is named, marked or washed,
 and `PacedExtra` reports the video it adds as its own term in the summary's decomposition. The
-taxi and roll at each end take about twelve seconds; the rate then eases to the base rate in
-short steps that double it every second of video, which is about as fast as the camera's
-distance may follow, so the camera rises with the climb rather than being left behind by an
-aircraft that has gone a hundred times faster in one frame. A highlight over an airport wins:
-the airport is left at the base rate and the summary says so.
+taxi at each end takes about twelve seconds, up to the start of the take-off roll and from the
+end of the landing roll (`Leg.Roll`, `Leg.RolledOut`: where the speed passes 30 knots); the
+rate then eases to the base rate, and back, in short steps.
+
+The steps follow the ground's speed in the video, not the rate. What the viewer sees as speed
+is how fast the ground crosses the picture, and the camera's distance follows the ground's
+speed in the video, doubling or halving in no less than two seconds. An ease that doubled the
+rate every second, as the first one did, outran it twice over -- and the aircraft speeding up
+from the roll to the cruise multiplies the ground's speed again on top of the rate, about
+fifteen times. Measured on a long-haul flight, the ground crossed the picture ten times
+faster through the climb than through the cruise, and the camera, rising late, was still
+coming down from it during the taxi. So each step's rate is the ground's speed in the video,
+doubling every two and a half seconds from where the taxi left it, over the aircraft's own
+speed there (`route.SpeedAt`): the roll is drawn slower than the taxi before it, because the
+aircraft gains speed there faster than the camera can rise, and the climb faster as the
+aircraft levels its speed out. The last doubling into the base rate slows to a quarter, since
+the camera smooths its rise and rounded a sharp corner from below, the ground passing half as
+fast again as under the cruise for seconds at the top of the climb. The climb and the descent
+now cross the picture within a tenth or so of the cruise's pace, at the cost of ten to twenty
+seconds of video each, which `PacedExtra` reports. A highlight over an airport wins: the
+airport is left at the base rate and the summary says so.
 
 The time the aircraft stood at the gate before it first moved, and after it last stopped, is
 left out as a `Cut` at the activity's start and end — the case "Timeline: cut" already marks
