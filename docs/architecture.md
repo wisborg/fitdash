@@ -1476,6 +1476,19 @@ time zone -- a UTC date put a flight leaving Bangkok after midnight on the day b
 distance and the time (a flight's from pushback, as its clock); and a flight's top speed and
 cruising level, or anything else's climb and average pace or speed.
 
+### Measuring a flyover's tiles
+
+Most of what a flyover costs before its first frame is drawing the map tiles its pyramid
+needs -- about ten thousand for a long-haul flight at 1920x1080 -- and most of that was
+osmbase reading the same map and elevation tiles again for each neighbour, until osmbase kept
+decoded tiles between renders (`render.TileCache`, which `OpenLocal` gives the local map) and
+read only the elevation samples a view uses. `scripts/fd tilebench TRACK` is the measure:
+`BenchmarkFlightTiles` draws a flyover's tiles along any track whose ground the local store
+holds, at four of the pyramid's zooms, and reports milliseconds and megabytes a tile and a
+digest of every tile's pixels. A change to how a tile is drawn should lower the first two and
+leave the digest alone. It needs a real store, so it is skipped unless a track is named; the
+track is an argument, never committed, and any will do -- an aircraft's test flight serves.
+
 ## The route in 3D
 
 `--route-view 3d` draws the route panel in perspective: the map draped over the shape of

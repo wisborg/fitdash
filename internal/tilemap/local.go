@@ -222,6 +222,11 @@ func OpenLocal(root string, inks MapInks, labels LabelFaces, relief *Terrain) (*
 		// size" means.
 		LabelFace:    labels.at(1),
 		LabelFaceFor: labels.at,
+		// One cache of decoded tiles for every view drawn from this store:
+		// a flyover draws thousands of small fixed tiles, each reading the
+		// map tiles it shares with its neighbours, and decoding them once
+		// each was most of what drawing one cost. See osm.TileCache.
+		TileCache: osm.NewTileCache(0),
 	}
 	rend, err := osm.New(src, opts)
 	if err != nil {

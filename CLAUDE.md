@@ -30,6 +30,7 @@ scripts/fd test ./internal/panel/ SomePattern
 scripts/fd build                 # -> ./fitdash
 scripts/fd frames ACTIVITY.fit   # single frames as PNG, the fast visual loop
 scripts/fd render ACTIVITY.fit   # end-to-end -> .scratch/
+scripts/fd tilebench TRACK       # a flyover's tile drawing along TRACK: ms/tile, MB/tile, pixel digest
 scripts/fd diff                  # working diff (incl. untracked) -> .scratch/
 scripts/fd clean                 # empty .scratch/
 ```

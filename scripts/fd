@@ -165,6 +165,24 @@ frames)
 	report frames $?
 	;;
 
+tilebench)
+	# Draw a flyover's map tiles along a track from the local map store and
+	# report what one costs (ms/tile, MB/tile) and a digest of their pixels:
+	# the measure for a change to how a tile is drawn, and the check that it
+	# drew nothing differently. The track is an ARGUMENT, any file fitdash
+	# reads, whose ground the store holds; the store is FD_TILEBENCH_STORE
+	# or the default. CPUS, optional, is how many draw at once (go test -cpu).
+	if [ -z "${1:-}" ]; then
+		echo "usage: fd tilebench TRACK [CPUS]" >&2
+		report tilebench 2
+	fi
+	# Absolute: go test runs in the package's own directory, where a path
+	# given relative to here names nothing.
+	track="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+	FD_TILEBENCH_TRACK="$track" go test -run '^$' -bench '^BenchmarkFlightTiles$' -benchtime 1x ${2:+-cpu "$2"} ./internal/tilemap/
+	report tilebench $?
+	;;
+
 clean)
 	# Empty .scratch/ but keep .scratch/env, which holds local defaults such
 	# as FD_FIT -- those point at private recordings and must not reach the
@@ -196,6 +214,7 @@ usage: fd <command> [args]
   render FIT [flags]       end-to-end dashboard render -> .scratch/
   frames FIT [flags]       single frames as PNG -> .scratch/ (fast visual loop)
   check-deps               verify ffmpeg and the fitactivity checkout
+  tilebench TRACK [CPUS]   time a flyover's tile drawing along TRACK, with a digest
   clean                    empty .scratch/ (keeps .scratch/env)
 USAGE
 	exit 2
