@@ -7,6 +7,7 @@ import (
 	"image/draw"
 	"math"
 
+	"github.com/wisborg/osmbase/perspective"
 	"github.com/wisborg/osmbase/render"
 
 	"github.com/wisborg/fitdash/internal/route"
@@ -81,7 +82,25 @@ const (
 	// radius: osmbase's pin stands its head's centre 2.1 heads up, and the
 	// head, its outline and a little air go above that.
 	pinRise = 3.4
+
+	// routeDotFraction is the position dot's radius in a route view, as a
+	// fraction of the box's smaller side; the pins and icons are sized in
+	// dots.
+	routeDotFraction = 0.022
+
+	// pinAir is the room kept above a pin's head, as a fraction of the
+	// picture's height, where a view is framed to leave room for one.
+	pinAir = 0.01
 )
+
+// pinRoom is the room a pin needs above the route's highest point in a
+// picture of the given aspect, as a fraction of its height, beyond the
+// margin perspective.Frame already keeps: a pin's height is in the box's
+// smaller side, which is the height for a wide picture and the width, a
+// fraction of it, for a tall one.
+func pinRoom(aspect float64) float64 {
+	return max(0, pinRise*pinHead*routeDotFraction*min(aspect, 1)+pinAir-perspective.FrameMargin)
+}
 
 // Marker draws m with its place at x, y, through osmbase's own drawing of
 // it, so a pin or an icon here is the one course draws on its maps. It is

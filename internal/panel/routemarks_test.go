@@ -104,3 +104,29 @@ func TestParseRouteMarks(t *testing.T) {
 		t.Error("--route-ends flag accepted")
 	}
 }
+
+// With pins, the whole route's view is framed with room above it for a pin's
+// height -- the camera stands further back -- and without, as before; a
+// tall picture's pins are smaller against its height and need less.
+func TestRoute3DCameraKeepsRoomForPins(t *testing.T) {
+	var pts []route.Point
+	for i := range 50 {
+		pts = append(pts, route.Point{Lat: 55 + float64(i)*0.002, Lon: 12})
+	}
+	r := Route3D{Pitch: 35, Heading: 90}
+	plain, err := r.Camera(pts, 16.0/9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.PinRoom = true
+	roomy, err := r.Camera(pts, 16.0/9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !(roomy.Distance > plain.Distance) {
+		t.Errorf("framed with room for pins from %.0f m, without from %.0f m; want further back", roomy.Distance, plain.Distance)
+	}
+	if wide, tall := pinRoom(16.0/9), pinRoom(9.0/16); !(wide > tall) || wide <= 0 {
+		t.Errorf("room for pins %.3f wide and %.3f tall; want some, and less for a tall picture", wide, tall)
+	}
+}

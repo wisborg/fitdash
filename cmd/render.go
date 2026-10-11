@@ -673,6 +673,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 	if route3D != nil {
 		route3D.Air = rgbaOf(theme.Background)
+		route3D.PinRoom = routeEnds == panel.EndsPin
 		if route3D.Flyover {
 			// The ground the flight sees, for the offers to fetch, from the
 			// panel's own planning; see offerBounds. A route that cannot be

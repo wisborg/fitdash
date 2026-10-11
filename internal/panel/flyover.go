@@ -160,7 +160,7 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	unit := math.Min(box.W, box.H)
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
-	p.dotR = maxf(3, unit*0.022)
+	p.dotR = maxf(3, unit*routeDotFraction)
 	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
 	p.card, p.frames, p.fps = ctx.Summary, ctx.Timeline.Frames(), ctx.Timeline.FPS()
 	p.lead, p.tail = ctx.Timeline.Holds()

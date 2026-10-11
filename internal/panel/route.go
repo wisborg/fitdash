@@ -146,7 +146,7 @@ func prepareFlat(ctx *Context, box Box) *routePainter {
 
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
-	p.dotR = maxf(3, unit*0.022)
+	p.dotR = maxf(3, unit*routeDotFraction)
 	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
 
 	p.resolveMarks(ctx, proj, unit)

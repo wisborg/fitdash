@@ -41,6 +41,11 @@ type Route3D struct {
 	// video rather than one for each frame; see route.FlightOptions.
 	SteadyDistance bool
 	Rise           time.Duration
+	// PinRoom frames the whole route's view -- the 3d picture, and a
+	// flyover's overview -- with room above the route for the start and
+	// finish pins, which stand up from their places: set when the ends are
+	// pins (Context.RouteEnds), as the command sets it.
+	PinRoom bool
 	// Air is the colour of the sky and of the haze the distance fades
 	// into: the theme's background, set by the command as it sets the
 	// local map's inks from the theme, so the map dissolves into the frame
@@ -62,10 +67,14 @@ func (r Route3D) Camera(pts []route.Point, aspect float64) (perspective.Camera, 
 		coords[i] = osm.Coord{Lat: p.Lat, Lon: p.Lon}
 	}
 	cam := perspective.Camera{Heading: r.Heading, Pitch: r.Pitch, FOV: r.FOV}
-	if r.AutoHeading {
-		return cam.BestHeading(coords, aspect)
+	room := 0.0
+	if r.PinRoom {
+		room = pinRoom(aspect)
 	}
-	return cam.Frame(coords, aspect)
+	if r.AutoHeading {
+		return cam.BestHeadingRoom(coords, aspect, room)
+	}
+	return cam.FrameRoom(coords, aspect, room)
 }
 
 // route3DMaxPoints is how many of the route's points are drawn in 3D: more
@@ -153,7 +162,7 @@ func prepare3D(ctx *Context, box Box) (_ *route3DPainter, why string, ok bool) {
 	unit := math.Min(box.W, box.H)
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
-	p.dotR = maxf(3, unit*0.022)
+	p.dotR = maxf(3, unit*routeDotFraction)
 	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
 	p.creditPx = maxf(9, unit*0.05)
 	p.mapDim = clampWeight(ctx.BasemapDim)
