@@ -180,6 +180,36 @@ func TestFromTrack_KeepsTheEndsAndSkipsMissingFixes(t *testing.T) {
 
 // TestIndexAt_FindsTheLastPointAtOrBefore pins the lookup the dot's position
 // depends on, including the two boundaries.
+// PositionAt is along the line between the fixes either side, as far as
+// the time is between them, where they are close enough in time; at the
+// fix before where they are not; and nowhere before the first.
+func TestPositionAt(t *testing.T) {
+	pts := []Point{
+		{Lat: 0, Lon: 0, Time: epoch},
+		{Lat: 1, Lon: 2, Time: epoch.Add(10 * time.Second)},
+		{Lat: 3, Lon: 2, Time: epoch.Add(10 * time.Minute)},
+	}
+	for _, c := range []struct {
+		name     string
+		at       time.Duration
+		maxGap   time.Duration
+		lat, lon float64
+		ok       bool
+	}{
+		{"before the first fix", -time.Second, time.Minute, 0, 0, false},
+		{"on a fix", 0, time.Minute, 0, 0, true},
+		{"a quarter of the way between two", 2500 * time.Millisecond, time.Minute, 0.25, 0.5, true},
+		{"across a gap too wide, held at the fix before", 5 * time.Minute, time.Minute, 1, 2, true},
+		{"across the same gap, bridged", 305 * time.Second, time.Hour, 2, 2, true},
+		{"after the last fix", time.Hour, time.Hour, 3, 2, true},
+	} {
+		got, ok := PositionAt(pts, epoch.Add(c.at), c.maxGap)
+		if ok != c.ok || math.Abs(got.Lat-c.lat) > 1e-9 || math.Abs(got.Lon-c.lon) > 1e-9 {
+			t.Errorf("%s: %v,%v (ok %v), want %v,%v (ok %v)", c.name, got.Lat, got.Lon, ok, c.lat, c.lon, c.ok)
+		}
+	}
+}
+
 func TestIndexAt_FindsTheLastPointAtOrBefore(t *testing.T) {
 	pts := make([]Point, 10)
 	for i := range pts {

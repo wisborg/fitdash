@@ -100,7 +100,7 @@ func FindAirports(fixes []Point) []Leg {
 	for i := range n {
 		a, b := max(0, i-w), min(n-1, i+w)
 		if b > a {
-			speed[i] = metresBetween(lat[a], lon[a], lat[b], lon[b]) / (float64(b-a) * airportStep.Seconds())
+			speed[i] = MetresBetween(lat[a], lon[a], lat[b], lon[b]) / (float64(b-a) * airportStep.Seconds())
 		}
 	}
 
@@ -161,7 +161,7 @@ func FindAirports(fixes []Point) []Leg {
 			for s := f.from - stand; s >= lo; s-- {
 				if standing(lat, lon, s, s+stand) {
 					e := s + stand
-					for e < f.from && metresBetween(lat[s], lon[s], lat[e], lon[e]) <= standRadius {
+					for e < f.from && MetresBetween(lat[s], lon[s], lat[e], lon[e]) <= standRadius {
 						e++
 					}
 					l.Moving = at(e - 1)
@@ -196,7 +196,7 @@ func FindAirports(fixes []Point) []Leg {
 				if standing(lat, lon, s, s+stand) {
 					e := s + stand
 					b := e
-					for b > f.to && metresBetween(lat[e], lon[e], lat[b], lon[b]) <= standRadius {
+					for b > f.to && MetresBetween(lat[e], lon[e], lat[b], lon[b]) <= standRadius {
 						b--
 					}
 					l.Stopped = at(b + 1)
@@ -234,7 +234,7 @@ func FindAirports(fixes []Point) []Leg {
 // of a's.
 func standing(lat, lon []float64, a, b int) bool {
 	for i := a + 1; i <= b; i++ {
-		if metresBetween(lat[a], lon[a], lat[i], lon[i]) > standRadius {
+		if MetresBetween(lat[a], lon[a], lat[i], lon[i]) > standRadius {
 			return false
 		}
 	}

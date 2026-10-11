@@ -536,6 +536,11 @@ func runRender(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	var gaps flightGaps
+	var pushback time.Time
+	if flight {
+		gaps, pushback = bridgeFlightGaps(track), flightStart(track, airports)
+	}
 	speedup, err := resolveSpeedup(cmd, timer, pauses, airports.leave)
 	if err != nil {
 		return err
@@ -690,6 +695,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Clock:               clock,
 		Flight:              flight,
 		FlightTitle:         panel.FlightTitle(track.Flights),
+		FlightStart:         pushback,
 		Pauses:              pauses,
 		Units:               unitSet,
 		SpeedReadout:        speedReadout,
@@ -723,7 +729,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		highlights: highlights, labels: labels,
 		elevation: rctx.Elevation, elevationSource: elevSource,
 		units: rctx.Units, speedReadout: rctx.SpeedReadout,
-		airports: airports, wantAirports: wantAirports,
+		airports: airports, wantAirports: wantAirports, gaps: gaps,
 		fonts: fonts,
 	}
 	if renderOpts.dryRun {
@@ -790,6 +796,10 @@ type renderInputs struct {
 	// wantAirports whether it was asked to do anything.
 	airports     airportPlan
 	wantAirports bool
+
+	// gaps are the holes in a flight's coverage drawn across, for
+	// writeGapSummary.
+	gaps flightGaps
 
 	// units and speedReadout are rctx.Units and rctx.SpeedReadout, carried
 	// for writeUnitsSummary for elevation's reason above.
@@ -1572,6 +1582,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)
 	writeAirportSummary(cmd.ErrOrStderr(), in.airports, in.tl, in.wantAirports)
+	writeGapSummary(cmd.ErrOrStderr(), in.gaps)
 	writeGaugeSummary(cmd, r, ctx)
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)
@@ -2487,6 +2498,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	writeClockSummary(cmd, ctx)
 	writePauseSummary(cmd, ctx, in)
 	writeAirportSummary(cmd.ErrOrStderr(), in.airports, in.tl, in.wantAirports)
+	writeGapSummary(cmd.ErrOrStderr(), in.gaps)
 	writeGaugeSummary(cmd, r, ctx)
 	writeGaugeSelectionSummary(cmd, r, ctx)
 	writeElevationSummary(cmd, in.elevation, in.elevationSource)

@@ -255,7 +255,11 @@ and loss and the gradient give way to the altitude and the vertical speed, in fe
 and cadence's box to the track, the direction over the ground — Flightradar24's own where its
 CSV records one, otherwise worked out from the fixes. The time panel's caption names the
 flight where the file does: "TG950 BKK → CPH" from a Flightradar24 KML, the callsign from its
-CSV, each leg of a journey in turn.
+CSV, each leg of a journey in turn; its clock counts from the first pushback, not from when
+the tracker began recording. Where the tracker lost the aircraft — an ocean, a country without
+receivers — the flight is drawn across the gap as a straight line at a steady speed, the dot
+and every reading with it, rather than stopping until the next report and jumping to it; the
+summary says how many gaps there were and the longest.
 
 A journey of several flights — one recording, or several merged — is paced at every airport,
 the stopovers as much as the two ends, and the time on the ground between flights is left out

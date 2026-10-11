@@ -387,6 +387,15 @@ type Context struct {
 	// flight, and the caption is as it was. See FlightTitle.
 	FlightTitle string
 
+	// FlightStart, on a flight, is when the aircraft first moved -- the
+	// pushback from the first gate -- and the time panel's elapsed clock
+	// counts from it rather than from when the tracker began recording,
+	// which for an aircraft standing at its gate can be an hour earlier:
+	// a flight's time is from pushback. Zero where the airports were not
+	// found, and elapsed counts from the recording's start as anything's
+	// does.
+	FlightStart time.Time
+
 	// Pauses selects what the render does with the activity's paused
 	// stretches: PausesFreeze (the zero value's behaviour too) shows them,
 	// with the dashboard frozen through each one, and PausesSkip cuts them

@@ -326,7 +326,7 @@ func headings(lat, lon []float64, turn int, fps, fallback float64) []float64 {
 	half := max(1, turn/2)
 	step := make([]float64, n) // metres from the frame before
 	for i := 1; i < n; i++ {
-		step[i] = metresBetween(lat[i-1], lon[i-1], lat[i], lon[i])
+		step[i] = MetresBetween(lat[i-1], lon[i-1], lat[i], lon[i])
 	}
 	run := make([]float64, n+1)
 	for i := range n {
@@ -416,7 +416,7 @@ func autoDistances(lat, lon []float64, fps float64) []float64 {
 		if i == 0 {
 			continue
 		}
-		if step := metresBetween(lat[i-1], lon[i-1], lat[i], lon[i]); step*fps > stoppedSpeed {
+		if step := MetresBetween(lat[i-1], lon[i-1], lat[i], lon[i]); step*fps > stoppedSpeed {
 			moving[i+1] += step
 			count[i+1]++
 		}
@@ -475,7 +475,9 @@ func offsetMetres(lat0, lon0, lat1, lon1 float64) (east, north float64) {
 	return (lon1 - lon0) * 111_320 * math.Cos(lat0*math.Pi/180), (lat1 - lat0) * 110_574
 }
 
-// metresBetween is the distance between two places.
-func metresBetween(lat0, lon0, lat1, lon1 float64) float64 {
+// MetresBetween is the distance between two places, in metres, on the
+// ground flattened around them: near enough for the few kilometres between
+// two fixes.
+func MetresBetween(lat0, lon0, lat1, lon1 float64) float64 {
 	return math.Hypot(offsetMetres(lat0, lon0, lat1, lon1))
 }

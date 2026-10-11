@@ -2247,7 +2247,26 @@ bearing between the fixes either side otherwise, absent while the aircraft stand
 
 A flight is in nautical miles, feet and knots unless `--units` was given, and the time
 panel's caption names it -- `fitactivity`'s `Track.Flights`, from a Flightradar24 KML's
-document name and description or its CSV's callsign.
+document name and description or its CSV's callsign. Its elapsed clock counts from the first
+pushback (`Context.FlightStart`, the first leg's `Moving`), not from when the tracker began
+recording: an aircraft can stand at its gate for an hour of the recording, and a flight's
+time is from pushback. Under `--airports` the gate is left out and the clock starts at
+0:00:00 with the video; without it the gate is on screen with the clock not yet started.
+
+A flight is also the one activity whose gaps are drawn across. "Absence is not zero" holds
+a gap in the readings to be a gap on screen, and for a runner in a tunnel it is: a straight
+line through the hill above is not where they were. A flight tracker's gaps are its coverage
+-- minutes over an ocean -- and an aircraft flies on through them in a straight line at a
+steady speed far more nearly than anything else this program draws. Held to the rule, the
+dot stood still for a few frames while the camera flew on, then jumped tens of kilometres to
+the next report, and every reading blinked to its placeholder: a judder in the video, not a
+truth about the flight. So a flight's track has `MaxGap` set to the whole of it, which every
+gap-aware lookup -- the frame's sample, the gauges, the profile's playhead -- reads through
+`GapTolerance`, and the summary says how many gaps were drawn across and the longest, so the
+readings the render made up are said where its other choices are. The dot on every route
+view is placed between the fixes either side of the instant (`route.PositionAt`) within that
+tolerance, as the flyover's camera always was, and the covered line runs on to it; before,
+it sat on the last fix, which at a flight tracker's rhythm is half a minute behind.
 
 ### Timeline: a flight's airports
 

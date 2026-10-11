@@ -92,6 +92,7 @@ type flyoverPainter struct {
 	air    perspective.Options
 	pts    []route.Point // drawn
 	all    []route.Point // every fix, for the position
+	maxGap time.Duration // the track's gap tolerance, for the position
 	marks  []routeMark
 
 	outlineW, coveredW, dotR float64
@@ -109,7 +110,7 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	if !ok {
 		return nil, "a flyover needs a map drawn here, --basemap local", false
 	}
-	p := &flyoverPainter{box: box, inks: ctx.RouteInks}
+	p := &flyoverPainter{box: box, inks: ctx.RouteInks, maxGap: ctx.Track.GapTolerance()}
 	p.all = route.FromTrack(ctx.Track, len(ctx.Track.Samples)+1)
 	p.pts = route.FromTrack(ctx.Track, route3DMaxPoints)
 	if len(p.pts) < 2 {
@@ -230,8 +231,20 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 	}
 	s := route3DPainter{xs: xs, ys: ys, in: in, seen: seen}
 	s.stroke(c, 0, n-1, p.outlineW, routeInks(p.inks, true, c.Theme).Dim, 1)
-	if drawn := route.IndexAt(p.pts, f.At); drawn >= 1 {
-		s.stroke(c, 0, drawn, p.coveredW, routeInks(p.inks, true, c.Theme).Foreground, 1)
+	pos, havePos := route.PositionAt(p.all, f.At, p.maxGap)
+	if drawn := route.IndexAt(p.pts, f.At); drawn >= 0 {
+		ink := routeInks(p.inks, true, c.Theme).Foreground
+		if drawn >= 1 {
+			s.stroke(c, 0, drawn, p.coveredW, ink, 1)
+		}
+		// On from the last drawn point to the position, so the line
+		// covered reaches the dot rather than stopping short of it by up
+		// to a thinned stretch.
+		if havePos {
+			x, y, posIn, posSeen := p.place(pic, pos)
+			tail := route3DPainter{xs: []float64{xs[drawn], x}, ys: []float64{ys[drawn], y}, in: []bool{in[drawn], posIn}, seen: []bool{seen[drawn], posSeen}}
+			tail.stroke(c, 0, 1, p.coveredW, ink, 1)
+		}
 	}
 	for i, m := range p.marks {
 		if !m.ok {
@@ -243,8 +256,8 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 		}
 		s.stroke(c, m.i0, m.i1, p.coveredW, routeInks(p.inks, true, c.Theme).Highlight, alpha)
 	}
-	if cur := route.IndexAt(p.all, f.At); cur >= 0 {
-		if x, y, in, seen := p.place(pic, p.all[cur]); in {
+	if havePos {
+		if x, y, in, seen := p.place(pic, pos); in {
 			alpha := 1.0
 			if !seen {
 				alpha = hiddenAlpha

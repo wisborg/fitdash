@@ -99,6 +99,7 @@ type route3DPainter struct {
 	pts, all []route.Point
 	xs, ys   []float64
 	in, seen []bool
+	maxGap   time.Duration // the track's gap tolerance, for the position
 
 	outlineW, coveredW, dotR float64
 	marks                    []routeMark
@@ -120,7 +121,7 @@ func prepare3D(ctx *Context, box Box) (_ *route3DPainter, why string, ok bool) {
 	if !ok {
 		return nil, "a 3d route needs a map drawn here, --basemap local", false
 	}
-	p := &route3DPainter{box: box, inks: ctx.RouteInks}
+	p := &route3DPainter{box: box, inks: ctx.RouteInks, maxGap: ctx.Track.GapTolerance()}
 	p.all = route.FromTrack(ctx.Track, len(ctx.Track.Samples)+1)
 	p.pts = route.FromTrack(ctx.Track, route3DMaxPoints)
 	if len(p.pts) < 2 {
@@ -217,8 +218,17 @@ func (p *route3DPainter) Static(c *Canvas) {
 // the current position, in the flat painter's order and for its reasons --
 // see routePainter.Dynamic.
 func (p *route3DPainter) Dynamic(c *Canvas, f Frame) {
-	if drawn := route.IndexAt(p.pts, f.At); drawn >= 1 {
-		p.stroke(c, 0, drawn, p.coveredW, routeInks(p.inks, !p.suppressMap, c.Theme).Foreground, 1)
+	pos, havePos := route.PositionAt(p.all, f.At, p.maxGap)
+	if drawn := route.IndexAt(p.pts, f.At); drawn >= 0 {
+		ink := routeInks(p.inks, !p.suppressMap, c.Theme).Foreground
+		if drawn >= 1 {
+			p.stroke(c, 0, drawn, p.coveredW, ink, 1)
+		}
+		if havePos {
+			x, y, in, seen := p.place(pos)
+			tail := route3DPainter{xs: []float64{p.xs[drawn], x}, ys: []float64{p.ys[drawn], y}, in: []bool{p.in[drawn], in}, seen: []bool{p.seen[drawn], seen}}
+			tail.stroke(c, 0, 1, p.coveredW, ink, 1)
+		}
 	}
 	for i, m := range p.marks {
 		if !m.ok {
@@ -230,11 +240,10 @@ func (p *route3DPainter) Dynamic(c *Canvas, f Frame) {
 		}
 		p.stroke(c, m.i0, m.i1, p.coveredW, routeInks(p.inks, !p.suppressMap, c.Theme).Highlight, alpha)
 	}
-	cur := route.IndexAt(p.all, f.At)
-	if cur < 0 {
+	if !havePos {
 		return
 	}
-	x, y, in, seen := p.place(p.all[cur])
+	x, y, in, seen := p.place(pos)
 	if !in {
 		return
 	}

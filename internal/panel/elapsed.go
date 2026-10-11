@@ -82,7 +82,7 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 	// no active time for --clock active to put there.
 	e := &elapsedPainter{box: box, timeOfDay: ctx.Flight, activeFirst: ctx.Clock == ClockActive && !ctx.Flight}
 	if ctx.Flight {
-		e.title = ctx.FlightTitle
+		e.title, e.since = ctx.FlightTitle, ctx.FlightStart
 	}
 
 	// Sizes are fractions of the box, not of the frame: this panel must fit
@@ -171,6 +171,10 @@ type elapsedPainter struct {
 	// flight's name. See Context.FlightTitle.
 	title string
 
+	// since, when not zero, is the instant elapsed counts from in place of
+	// the activity's start: a flight's pushback. See Context.FlightStart.
+	since time.Time
+
 	labelPx float64
 	clockPx float64
 	subPx   float64
@@ -205,7 +209,13 @@ func (e *elapsedPainter) Dynamic(c *Canvas, f Frame) {
 	// LARGE readout -- an unmeasurable number shown at the size the user
 	// asked to see it at, in Theme.Absent, rather than quietly demoted to
 	// the small row or replaced by the elapsed figure standing in for it.
-	main, sub := FormatClock(f.Elapsed), FormatClock(f.Active)
+	elapsed := f.Elapsed
+	if !e.since.IsZero() {
+		// Before the pushback reads zero, as FormatClock reads anything
+		// below it: the clock has not started.
+		elapsed = f.At.Sub(e.since)
+	}
+	main, sub := FormatClock(elapsed), FormatClock(f.Active)
 	mainCol, subCol := c.Theme.Foreground, c.Theme.Dim
 	if e.activeFirst {
 		main, sub = sub, main

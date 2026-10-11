@@ -2,6 +2,7 @@ package panel
 
 import (
 	"math"
+	"time"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/route"
@@ -83,7 +84,7 @@ func joinNotes(notes ...string) string {
 
 // prepareFlat is Prepare for the route seen from straight above.
 func prepareFlat(ctx *Context, box Box) *routePainter {
-	p := &routePainter{box: box, inks: ctx.RouteInks}
+	p := &routePainter{box: box, inks: ctx.RouteInks, maxGap: ctx.Track.GapTolerance()}
 
 	// Two lists, deliberately. The outline is drawn from a thinned copy,
 	// because a route a few hundred pixels wide cannot show more; the position
@@ -340,6 +341,7 @@ type routePainter struct {
 	inks     *RouteInks    // ctx.RouteInks
 	pts      []route.Point // thinned, for the outline
 	all      []route.Point // every fix, for the position lookup
+	maxGap   time.Duration // the track's gap tolerance, for the position
 	place    func(route.Point) (float64, float64)
 	xs, ys   []float64
 	outlineW float64
@@ -712,8 +714,14 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 	// own vertices or the bright line would not lie on the dim one. Before
 	// the first fix, IndexAt returns -1 here exactly as it does against
 	// p.all below, so nothing is drawn -- there is nothing covered yet.
-	if drawn := route.IndexAt(p.pts, f.At); drawn >= 1 {
-		c.Polyline(xs[:drawn+1], ys[:drawn+1], p.coveredW, p.routeInks(c).Foreground)
+	//
+	// It runs on from the last of them to the dot, so the bright line
+	// reaches the position rather than stopping short of it by up to a
+	// thinned stretch.
+	pos, havePos := route.PositionAt(p.all, f.At, p.maxGap)
+	if drawn := route.IndexAt(p.pts, f.At); drawn >= 0 && havePos {
+		x, y := place(pos)
+		c.Polyline(append(xs[:drawn+1:drawn+1], x), append(ys[:drawn+1:drawn+1], y), p.coveredW, p.routeInks(c).Foreground)
 	}
 
 	// Every markable highlight draws, not only the one active this frame --
@@ -741,15 +749,16 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 
 	// The dot comes from the full fix list and is placed directly, so it moves
 	// at the rate the device recorded rather than at the rate the outline was
-	// thinned to. Before the first fix there is no position to mark, so
-	// nothing further is drawn rather than putting a dot at the route's
-	// start -- a dot sitting at the beginning would say the runner is there,
-	// which is a claim about position this program does not invent.
-	cur := route.IndexAt(p.all, f.At)
-	if cur < 0 {
+	// thinned to, and between two fixes along the line joining them -- see
+	// route.PositionAt for where it holds still instead. Before the first fix
+	// there is no position to mark, so nothing further is drawn rather than
+	// putting a dot at the route's start -- a dot sitting at the beginning
+	// would say the runner is there, which is a claim about position this
+	// program does not invent.
+	if !havePos {
 		return
 	}
-	x, y := place(p.all[cur])
+	x, y := place(pos)
 	c.Circle(x, y, p.dotR, p.routeInks(c).Accent)
 }
 

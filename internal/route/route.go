@@ -248,6 +248,35 @@ func IndexAt(pts []Point, at time.Time) int {
 	return i - 1
 }
 
+// PositionAt is where the route was at at: on the straight line between
+// the fixes either side of it, as far along as the time is between them --
+// a steady speed -- where they are no more than maxGap apart, and at the
+// one before where they are further, the route stopped there until the
+// next fix rather than drawn through a hole it cannot see into. After the
+// last fix it is the last; before the first, ok is false, as IndexAt's -1.
+//
+// The fix before, as IndexAt finds it, is where a position used to be
+// drawn, and it held still between fixes: a step a second at 1 Hz, too
+// small to see, but half a minute at a flight tracker's rhythm and minutes
+// across a hole in its coverage, while the camera following it moved on.
+func PositionAt(fixes []Point, at time.Time, maxGap time.Duration) (Point, bool) {
+	i := IndexAt(fixes, at)
+	if i < 0 {
+		return Point{}, false
+	}
+	a := fixes[i]
+	if i+1 >= len(fixes) {
+		return a, true
+	}
+	b := fixes[i+1]
+	span := b.Time.Sub(a.Time)
+	if span <= 0 || span > maxGap {
+		return a, true
+	}
+	f := float64(at.Sub(a.Time)) / float64(span)
+	return Point{Lat: a.Lat + (b.Lat-a.Lat)*f, Lon: a.Lon + (b.Lon-a.Lon)*f, Time: at}, true
+}
+
 // SpanIndices locates the drawn vertices of pts -- the THINNED, drawn list,
 // never the full fix list; see DefaultMaxPoints's own note on why this is
 // the opposite rule from IndexAt's -- that fall inside [from, to).

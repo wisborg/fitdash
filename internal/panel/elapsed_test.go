@@ -482,3 +482,31 @@ func TestElapsedPanel_FlightShowsTheTimeOfDay(t *testing.T) {
 		t.Error("the time of day did not change with the frame's instant")
 	}
 }
+
+// A flight's elapsed clock counts from its pushback, Context.FlightStart,
+// not from when the tracker began: an hour into the recording and five
+// minutes after pushback reads as five minutes, the same pixels as a flight
+// whose recording began at the pushback; and before it, as zero.
+func TestElapsedPanel_FlightCountsFromPushback(t *testing.T) {
+	c, img, ctx := elapsedFixture(t, 400, 300)
+	box := Box{X: 0, Y: 0, W: 400, H: 300}
+	at := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	render := func(start time.Time, elapsed time.Duration, at time.Time) []byte {
+		fctx := *ctx
+		fctx.Flight, fctx.FlightStart = true, start
+		p := ElapsedPanel{}.Prepare(&fctx, box)
+		c.Fill(c.Theme.Background)
+		p.Dynamic(c, Frame{At: at, Elapsed: elapsed})
+		return append([]byte(nil), img.Pix...)
+	}
+	fromPushback := render(at.Add(-5*time.Minute), time.Hour, at)
+	if string(fromPushback) != string(render(time.Time{}, 5*time.Minute, at)) {
+		t.Error("an hour recorded and five minutes from pushback does not read as five minutes")
+	}
+	if string(fromPushback) == string(render(time.Time{}, time.Hour, at)) {
+		t.Error("the clock reads the hour since the recording began, not the time since pushback")
+	}
+	if string(render(at.Add(time.Minute), time.Hour, at)) != string(render(time.Time{}, 0, at)) {
+		t.Error("before the pushback the clock does not read zero")
+	}
+}

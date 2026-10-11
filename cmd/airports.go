@@ -69,6 +69,23 @@ type airportStretch struct {
 // found reports whether the activity is a flight at all.
 func (p airportPlan) found() bool { return len(p.legs) > 0 }
 
+// flightStart is when the aircraft first moved, the pushback a flight's
+// time is counted from: from p's legs where --airports found them, and
+// otherwise looked for -- a render that does not pace the airports still
+// shows a flight's time from its pushback, the gate before it on screen
+// with the clock not yet started. Zero when no flight is found, or when the
+// recording began with the aircraft already in the air.
+func flightStart(track *fitactivity.Track, p airportPlan) time.Time {
+	legs := p.legs
+	if !p.found() {
+		legs = route.FindAirports(route.FromTrack(track, len(track.Samples)+1))
+	}
+	if len(legs) == 0 {
+		return time.Time{}
+	}
+	return legs[0].Moving
+}
+
 // left is the time the plan leaves out.
 func (p airportPlan) left() time.Duration {
 	var d time.Duration
@@ -263,6 +280,64 @@ func isFlight(track *fitactivity.Track, p airportPlan) bool {
 		return true
 	}
 	return len(route.FindAirports(route.FromTrack(track, len(track.Samples)+1))) > 0
+}
+
+// flightGaps are the holes in a flight's coverage that the render draws
+// across, for the summary: how many, and the longest.
+type flightGaps struct {
+	n       int
+	longest time.Duration
+}
+
+// gapMoved is how far, in metres, an aircraft must have gone across a hole
+// in its fixes for the hole to be one in its coverage, rather than the
+// sparse logging of an aircraft standing at its gate.
+const gapMoved = 1000.0
+
+// bridgeFlightGaps has every reading of a flight drawn across the holes in
+// its coverage -- an ocean, a country without receivers -- as if it flew a
+// straight line at a steady speed from the last report to the next: the
+// flyover's camera already does, and the dot, the route and the dashboard
+// stopping in mid-air for a few frames until the next report, then jumping
+// to it, is a judder in the video, not a truth about the flight. It sets
+// the track's MaxGap to the whole of it, so every reading is interpolated
+// whatever the hole, and reports the holes that were bridged.
+func bridgeFlightGaps(track *fitactivity.Track) flightGaps {
+	var g flightGaps
+	tolerance := track.GapTolerance()
+	var last *fitactivity.Sample
+	for i := range track.Samples {
+		s := &track.Samples[i]
+		if !s.HasGPS {
+			continue
+		}
+		if last != nil {
+			d := s.Time.Sub(last.Time)
+			if d > tolerance && route.MetresBetween(last.Lat, last.Lon, s.Lat, s.Lon) >= gapMoved {
+				g.n++
+				g.longest = max(g.longest, d)
+			}
+		}
+		last = s
+	}
+	if n := len(track.Samples); n > 1 {
+		track.MaxGap = track.Samples[n-1].Time.Sub(track.Samples[0].Time)
+	}
+	return g
+}
+
+// writeGapSummary says how many holes in a flight's coverage were drawn
+// across, and the longest: readings the render made up, said where the
+// render's other choices are.
+func writeGapSummary(out io.Writer, g flightGaps) {
+	if g.n == 0 || renderOpts.quiet {
+		return
+	}
+	holes := "a gap in the tracker's coverage of " + panel.FormatClock(g.longest)
+	if g.n > 1 {
+		holes = fmt.Sprintf("%d gaps in the tracker's coverage, the longest %s,", g.n, panel.FormatClock(g.longest))
+	}
+	fmt.Fprintf(out, "flight: %s drawn as a straight line at a steady speed\n", holes)
 }
 
 // pausedWithin is how much of the stretch c, as offsets from start, the

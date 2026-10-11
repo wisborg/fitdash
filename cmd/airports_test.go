@@ -269,3 +269,62 @@ func TestIsFlight(t *testing.T) {
 		t.Error("a track whose sport is flying is not a flight")
 	}
 }
+
+// A flight's holes in coverage are counted -- not its gate, logged as
+// fixes ten minutes apart where nothing moved -- and every reading is then
+// drawn across them: a sample in the middle of the hole, halfway between
+// the fixes either side.
+func TestBridgeFlightGaps(t *testing.T) {
+	track := syntheticFlight()
+	// Two holes in the cruise, of five and of three minutes.
+	start := track.Samples[0].Time
+	var kept []fitactivity.Sample
+	for _, s := range track.Samples {
+		d := s.Time.Sub(start)
+		if (d > 60*time.Minute && d < 65*time.Minute) || (d > 80*time.Minute && d < 83*time.Minute) {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	track.Samples = kept
+	mid := start.Add(62*time.Minute + 30*time.Second)
+	if _, ok := track.AtWithGap(mid, track.GapTolerance()); ok {
+		t.Fatal("the hole is not a hole before it is bridged")
+	}
+
+	g := bridgeFlightGaps(track)
+	if g.n != 2 || g.longest < 5*time.Minute || g.longest > 5*time.Minute+10*time.Second {
+		t.Errorf("bridged %d gaps, the longest %v; want the two in the cruise, the longest five minutes", g.n, g.longest)
+	}
+	s, ok := track.AtWithGap(mid, track.GapTolerance())
+	if !ok {
+		t.Fatal("the hole was not bridged")
+	}
+	before, _ := track.AtWithGap(start.Add(60*time.Minute), time.Minute)
+	after, _ := track.AtWithGap(start.Add(65*time.Minute), time.Minute)
+	if want := (before.Lon + after.Lon) / 2; math.Abs(s.Lon-want) > 1e-6 {
+		t.Errorf("halfway through the hole at %v, want %v: a steady speed in a straight line", s.Lon, want)
+	}
+
+	var b strings.Builder
+	writeGapSummary(&b, g)
+	if got := b.String(); !strings.Contains(got, "2 gaps in the tracker's coverage, the longest 0:05:") || !strings.Contains(got, "straight line at a steady speed") {
+		t.Errorf("summary %q", got)
+	}
+}
+
+// A flight's time starts at its first pushback, whether or not --airports
+// found the legs for the render.
+func TestFlightStart(t *testing.T) {
+	track := syntheticFlight()
+	timer := fitactivity.BuildTimerModel(track)
+	start := track.Samples[0].Time
+	for _, p := range []airportPlan{findAirports(track, timer), {}} {
+		if got := flightStart(track, p); !near(got.Sub(start), 20*time.Minute) {
+			t.Errorf("found legs %v: the flight starts %v in, want the pushback at 20m", p.found(), got.Sub(start))
+		}
+	}
+	if got := flightStart(syntheticTrack(flightLeg{time.Hour, 5 * time.Second, 5}), airportPlan{}); !got.IsZero() {
+		t.Errorf("a walk's flight starts at %v; it is no flight", got)
+	}
+}
