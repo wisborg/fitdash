@@ -102,7 +102,7 @@ func fetchBasemaps(ctx *Context, rp *routePainter, base route.Projection, marks 
 		//
 		// Derived from the route's own PLACEMENT rather than from the box,
 		// for the same reason -- see route.Projection.CoverBox.
-		minX, minY, spanX, spanY, ok := p.CoverBox(placerW, placerH, box.W, box.H, rp.inset, rp.inset)
+		minX, minY, spanX, spanY, ok := p.CoverBox(placerW, placerH, box.W, box.H, rp.inset, rp.inset+rp.reserveTop)
 		if !ok {
 			return nil, nil
 		}

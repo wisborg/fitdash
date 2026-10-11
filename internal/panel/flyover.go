@@ -96,6 +96,8 @@ type flyoverPainter struct {
 	marks  []routeMark
 
 	outlineW, coveredW, dotR float64
+	ends                     RouteEnds // see Context.RouteEnds
+	icon                     RouteIcon // see Context.RouteIcon
 	mapCredit                string
 	creditPx, creditFitted   float64
 	mapNote                  string
@@ -149,6 +151,7 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*0.022)
+	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
 	p.creditPx = maxf(9, unit*0.05)
 	p.mapCredit = p.flight.Attribution()
 
@@ -256,13 +259,22 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 		}
 		s.stroke(c, m.i0, m.i1, p.coveredW, routeInks(p.inks, true, c.Theme).Highlight, alpha)
 	}
+	// The ends stand where their places are seen; see route3DPainter.
+	endMarks(c, p.box, p.ends, p.all[0], p.all[len(p.all)-1], p.dotR, func(pt route.Point) (float64, float64, bool) {
+		x, y, in, seen := p.place(pic, pt)
+		return x, y, in && seen
+	})
 	if havePos {
 		if x, y, in, seen := p.place(pic, pos); in {
 			alpha := 1.0
 			if !seen {
 				alpha = hiddenAlpha
 			}
-			c.Circle(x, y, p.dotR, Fade(routeInks(p.inks, true, c.Theme).Accent, alpha))
+			heading, ok := travelHeading(f, p.all, pos, func(pt route.Point) (float64, float64, bool) {
+				x, y, in, _ := p.place(pic, pt)
+				return x, y, in
+			})
+			positionMark(c, p.box, p.icon, x, y, p.dotR, routeInks(p.inks, true, c.Theme).Accent, alpha, heading, ok)
 		}
 	}
 	fitted := p.creditFitted

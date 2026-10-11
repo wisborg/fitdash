@@ -200,6 +200,14 @@ The frame then credits the elevation briefly, and the summary prints its full
 notice — for Copernicus GLO-30 a sentence its licence dictates — which **whoever
 publishes the video must give with it**, in the description. See [NOTICE](NOTICE).
 
+The route panel marks the start with a green pin and a "play" triangle and the finish with a
+red pin with a checkered head — one pin, half of each, where the route ends where it began —
+the same pins course draws on its maps; `--route-ends none` leaves them out. The current
+position is a dot, or with `--route-position` an `arrow` or a `plane` pointing along the
+direction of travel: the course the file records where it has one, as a flight tracker's
+does, and the route's own otherwise. `auto`, the default, is a plane for a flight and a dot
+for anything else.
+
 `--route-view 3d` draws the route panel in perspective instead: the map draped over the
 shape of the ground and seen from a camera in the sky, the route lying on it and filling in
 as the activity goes. A stretch behind a hill, and the dot while it is there, are drawn

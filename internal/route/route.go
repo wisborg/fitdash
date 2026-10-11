@@ -406,3 +406,42 @@ func scaleLerp(a, b, t float64) float64 {
 	}
 	return a * math.Pow(b/a, t)
 }
+
+// bearingWindows are how far either side of an instant BearingAt looks for a
+// direction, nearest first, and bearingStill how far apart, in metres, the
+// two positions must be for it to be one: a quarter-minute is the direction
+// of travel itself, and wider ones find it for a moment of standing still,
+// at a crossing or a gate, from where the route went either side.
+var bearingWindows = []time.Duration{15 * time.Second, time.Minute, 5 * time.Minute}
+
+const bearingStill = 20.0
+
+// BearingAt is the direction the route was going at t, in degrees clockwise
+// from true north: from where it was a little before to where it was a
+// little after, over the nearest of bearingWindows across which it moved at
+// least bearingStill. It is false where the route went nowhere even over
+// the widest, which only a recording of standing still is.
+func BearingAt(fixes []Point, t time.Time) (float64, bool) {
+	if len(fixes) < 2 {
+		return 0, false
+	}
+	for _, w := range bearingWindows {
+		lat0, lon0 := positionAt(fixes, t.Add(-w))
+		lat1, lon1 := positionAt(fixes, t.Add(w))
+		e, n := offsetMetres(lat0, lon0, lat1, lon1)
+		if math.Hypot(e, n) >= bearingStill {
+			return math.Mod(math.Atan2(e, n)*180/math.Pi+360, 360), true
+		}
+	}
+	return 0, false
+}
+
+// Ahead is the point metres from p along bearing, on the ground flattened
+// around it: for turning a direction on the ground into one in a picture,
+// by placing both.
+func Ahead(p Point, bearing, metres float64) Point {
+	s, c := math.Sincos(bearing * math.Pi / 180)
+	p.Lat += metres * c / 110_574
+	p.Lon += metres * s / (111_320 * math.Cos(p.Lat*math.Pi/180))
+	return p
+}

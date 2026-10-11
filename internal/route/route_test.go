@@ -764,3 +764,30 @@ func TestLerp_AnAxisWithNoExtent(t *testing.T) {
 		t.Error("the half-way view cannot place a point; an intermediate view must be as drawable as its endpoints")
 	}
 }
+
+// The bearing is the direction of travel over the nearest window it moved
+// in: east along a line, the same across a minute's stop in the middle of
+// it, and none for a route that never moved.
+func TestBearingAt(t *testing.T) {
+	var pts, still []Point
+	lon := 12.0
+	for i := range 600 {
+		if i < 280 || i > 320 { // a stop of forty seconds
+			lon += 0.0002
+		}
+		pts = append(pts, Point{Lat: 55, Lon: lon, Time: epoch.Add(time.Duration(i) * time.Second)})
+		still = append(still, Point{Lat: 55, Lon: 12, Time: epoch.Add(time.Duration(i) * time.Second)})
+	}
+	for _, at := range []time.Duration{100 * time.Second, 300 * time.Second} {
+		if b, ok := BearingAt(pts, epoch.Add(at)); !ok || b < 89 || b > 91 {
+			t.Errorf("at %v: %.1f° (ok %v), want east", at, b, ok)
+		}
+	}
+	if b, ok := BearingAt(still, epoch.Add(5*time.Minute)); ok {
+		t.Errorf("a route that never moved has a bearing of %.1f°", b)
+	}
+	north := Ahead(Point{Lat: 55, Lon: 12}, 0, 1000)
+	if d := MetresBetween(55, 12, north.Lat, north.Lon); d < 990 || d > 1010 || north.Lon != 12 {
+		t.Errorf("a kilometre north is %+v, %.0f m away", north, d)
+	}
+}

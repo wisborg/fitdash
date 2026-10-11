@@ -387,6 +387,12 @@ type Context struct {
 	// flight, and the caption is as it was. See FlightTitle.
 	FlightTitle string
 
+	// RouteEnds is what the route views mark the start and finish with,
+	// and RouteIcon what they mark the current position with; the zero
+	// values are pins and a dot. See ParseRouteEnds and ParseRouteIcon.
+	RouteEnds RouteEnds
+	RouteIcon RouteIcon
+
 	// FlightStart, on a flight, is when the aircraft first moved -- the
 	// pushback from the first gate -- and the time panel's elapsed clock
 	// counts from it rather than from when the tracker began recording,

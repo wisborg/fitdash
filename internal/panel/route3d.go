@@ -103,6 +103,8 @@ type route3DPainter struct {
 
 	outlineW, coveredW, dotR float64
 	marks                    []routeMark
+	ends                     RouteEnds // see Context.RouteEnds
+	icon                     RouteIcon // see Context.RouteIcon
 
 	mapDim       float64
 	mapCredit    string
@@ -152,6 +154,7 @@ func prepare3D(ctx *Context, box Box) (_ *route3DPainter, why string, ok bool) {
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*0.022)
+	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
 	p.creditPx = maxf(9, unit*0.05)
 	p.mapDim = clampWeight(ctx.BasemapDim)
 	p.mapCredit = ctx.Basemap.Attribution()
@@ -240,6 +243,14 @@ func (p *route3DPainter) Dynamic(c *Canvas, f Frame) {
 		}
 		p.stroke(c, m.i0, m.i1, p.coveredW, routeInks(p.inks, !p.suppressMap, c.Theme).Highlight, alpha)
 	}
+	// The ends stand where their places are seen, as a 3D map's markers
+	// do; one behind a hill is left out, since a pin drawn there would
+	// stand in front of the hill.
+	seenAt := func(pt route.Point) (float64, float64, bool) {
+		x, y, in, seen := p.place(pt)
+		return x, y, in && seen
+	}
+	endMarks(c, p.box, p.ends, p.all[0], p.all[len(p.all)-1], p.dotR, seenAt)
 	if !havePos {
 		return
 	}
@@ -251,7 +262,12 @@ func (p *route3DPainter) Dynamic(c *Canvas, f Frame) {
 	if !seen {
 		alpha = hiddenAlpha
 	}
-	c.Circle(x, y, p.dotR, Fade(routeInks(p.inks, !p.suppressMap, c.Theme).Accent, alpha))
+	inPicture := func(pt route.Point) (float64, float64, bool) {
+		x, y, in, _ := p.place(pt)
+		return x, y, in
+	}
+	heading, ok := travelHeading(f, p.all, pos, inPicture)
+	positionMark(c, p.box, p.icon, x, y, p.dotR, routeInks(p.inks, !p.suppressMap, c.Theme).Accent, alpha, heading, ok)
 }
 
 // stroke draws the route from point i0 to i1, at alpha where it is seen and

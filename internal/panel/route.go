@@ -115,6 +115,14 @@ func prepareFlat(ctx *Context, box Box) *routePainter {
 	p.pts, p.all = pts, all
 	p.creditPx = maxf(9, unit*0.05)
 
+	// Room kept along the top for a pin standing at the route's
+	// northernmost point. A pin rises several of its heads above its place,
+	// and a route fitted to fill the panel put the finish of a flight
+	// north at the box's top edge, its pin cut off there.
+	if ctx.RouteEnds == EndsPin {
+		p.reserveTop = maxf(0, pinRise*pinHead*maxf(3, unit*0.022)-inset)
+	}
+
 	// Room kept along the bottom for the attribution, so the route is not
 	// drawn underneath it.
 	//
@@ -139,6 +147,7 @@ func prepareFlat(ctx *Context, box Box) *routePainter {
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*0.022)
+	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
 
 	p.resolveMarks(ctx, proj, unit)
 
@@ -185,7 +194,7 @@ func (p *routePainter) layOut(proj route.Projection) bool {
 	p.xs, p.ys = p.placeAll(p.pts, place)
 
 	w, h := p.placeArea()
-	if vx, vy, vw, vh, ok := proj.CoverBox(w, h, p.box.W, p.box.H, p.inset, p.inset); ok {
+	if vx, vy, vw, vh, ok := proj.CoverBox(w, h, p.box.W, p.box.H, p.inset, p.inset+p.reserveTop); ok {
 		// Static composites against this and runs BEFORE Dynamic ever writes
 		// it, so a render that never zooms would otherwise composite against
 		// a zero rectangle and draw no map at all -- on exactly the renders
@@ -198,7 +207,7 @@ func (p *routePainter) layOut(proj route.Projection) bool {
 // placeArea is the region inside the box the route itself is fitted into:
 // the box less its inset, less any room kept for the attribution.
 func (p *routePainter) placeArea() (w, h float64) {
-	return p.box.W - 2*p.inset, p.box.H - 2*p.inset - p.reserveBottom
+	return p.box.W - 2*p.inset, p.box.H - 2*p.inset - p.reserveBottom - p.reserveTop
 }
 
 // resolveMarks resolves every highlight's stretch of the drawn outline, and
@@ -347,6 +356,8 @@ type routePainter struct {
 	outlineW float64
 	coveredW float64
 	dotR     float64
+	ends     RouteEnds // see Context.RouteEnds
+	icon     RouteIcon // see Context.RouteIcon
 
 	// base and inset are what placer needs to rebuild a placement function
 	// for a projection other than the whole-route one. Kept because a
@@ -371,6 +382,10 @@ type routePainter struct {
 	// attribution, so a course reaching the panel's bottom-right corner is
 	// not drawn underneath the credit it obliges.
 	reserveBottom float64
+
+	// reserveTop is the strip kept clear above the route for a start or
+	// finish pin standing there; see Prepare.
+	reserveTop float64
 	// creditFitted is creditPx shrunk to fit the box, resolved on the first
 	// draw because it needs the canvas's font metrics, which Prepare cannot
 	// reach.
@@ -411,7 +426,7 @@ func (p *routePainter) placer(proj route.Projection) (func(route.Point) (float64
 	}
 	return func(pt route.Point) (float64, float64) {
 		x, y := place(pt)
-		return x + p.box.X + p.inset, y + p.box.Y + p.inset
+		return x + p.box.X + p.inset, y + p.box.Y + p.inset + p.reserveTop
 	}, true
 }
 
@@ -648,7 +663,7 @@ func (p *routePainter) Dynamic(c *Canvas, f Frame) {
 	// Dynamic composite against the same rectangle.
 	w, h := p.placeArea()
 	viewport := p.viewport
-	if vpX, vpY, vpW, vpH, ok := proj.CoverBox(w, h, p.box.W, p.box.H, p.inset, p.inset); ok {
+	if vpX, vpY, vpW, vpH, ok := proj.CoverBox(w, h, p.box.W, p.box.H, p.inset, p.inset+p.reserveTop); ok {
 		viewport = [4]float64{vpX, vpY, vpW, vpH}
 	}
 	if zoomed {
@@ -755,11 +770,17 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 	// putting a dot at the route's start -- a dot sitting at the beginning
 	// would say the runner is there, which is a claim about position this
 	// program does not invent.
+	placed := func(pt route.Point) (float64, float64, bool) {
+		x, y := place(pt)
+		return x, y, true
+	}
+	endMarks(c, p.box, p.ends, p.all[0], p.all[len(p.all)-1], p.dotR, placed)
 	if !havePos {
 		return
 	}
 	x, y := place(pos)
-	c.Circle(x, y, p.dotR, p.routeInks(c).Accent)
+	heading, ok := travelHeading(f, p.all, pos, placed)
+	positionMark(c, p.box, p.icon, x, y, p.dotR, p.routeInks(c).Accent, 1, heading, ok)
 }
 
 // routeInks are the inks this route is drawn in: the map's own while the

@@ -1427,6 +1427,29 @@ tempting bug: it would keep drawing at its whole-course position while the outli
 underneath it, putting the dot off the line entirely — a confident claim that the runner was
 somewhere the route does not go, which would pass every "is there a dot" assertion.
 
+## The route's marks: pins and the position icon
+
+The start, the finish and the current position are drawn by osmbase (`render.Marker`
+shapes, through `Canvas.Marker`), not by fitdash: course draws the same pins on its maps,
+and two programs drawing "the start" two ways is the drift a shared library exists to
+prevent. A pin is drawn into an image of its own and composited within the panel's box,
+because a pin stands up from its place and one at the top of a route otherwise stood into
+the panel above; the flat view also keeps a strip clear above the route for one
+(`reserveTop`), and that strip is in every placement-derived rectangle -- the route's, and
+the basemap's fetch and viewport -- since a map placed by one offset under a route placed by
+another is the 13.6% misalignment `CoverBox` exists to prevent. The start and finish become
+one pin wherever the two pins would overlap on screen, not only where the two places
+coincide: a run finishing thirty metres from its start drew one pin into the other.
+
+An arrow or a plane points along the direction of travel: the file's own course where it
+records one (a flight tracker's, as the aircraft broadcast it) and `route.BearingAt` from
+the fixes otherwise, widening its window across a stop so a moment at a crossing keeps a
+direction. That bearing is turned into the picture by placing the position and a point
+thirty metres ahead of it through the view's own placement, which is what makes the same
+code right on a north-up flat map, a 3D view and a flyover's camera that turns with the
+route. Where there is no direction at all, the dot is drawn instead of an icon pointing at
+random.
+
 ## The route in 3D
 
 `--route-view 3d` draws the route panel in perspective: the map draped over the shape of

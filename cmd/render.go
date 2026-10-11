@@ -51,6 +51,8 @@ type renderOptions struct {
 	terrainStore        string
 	terrainSource       string
 	routeView           string
+	routeEnds           string
+	routePosition       string
 	airports            string
 	fonts               []string
 	language            string
@@ -304,6 +306,15 @@ func bindRenderFlags(c *cobra.Command) {
 			"offer to fetch what the store lacks. The camera sees far beyond the route, out into the haze, and the map "+
 			"and elevation offered are for all of that ground. A flyover draws a picture a frame, so it renders far "+
 			"slower than the rest of the dashboard: about half a second a frame at 1920x1080")
+	f.StringVar(&renderOpts.routeEnds, "route-ends", "pin",
+		"what the route panel marks the start and finish with: \"pin\" (default), a green pin with a play symbol "+
+			"and a red one with a checkered head, one pin half of each where the route ends where it began; or "+
+			"\"none\". The pins are the ones course draws on its maps")
+	f.StringVar(&renderOpts.routePosition, "route-position", "auto",
+		"what the route panel marks the current position with: \"dot\"; \"arrow\", a navigation arrow along the "+
+			"direction of travel; \"plane\", an aircraft seen from above, its nose along the track; or \"auto\" "+
+			"(default), a plane for a flight and a dot for anything else. The direction is the one the file records "+
+			"where it does, as a flight tracker's does, and the route's own otherwise")
 	f.StringVar(&renderOpts.routeHeading, "route-heading", "auto",
 		"with --route-view 3d, or a flyover's overview, the compass bearing the camera looks along, in degrees, 0 looking north; auto takes "+
 			"whichever bearing shows the route largest")
@@ -536,6 +547,14 @@ func runRender(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	routeEnds, err := panel.ParseRouteEnds(renderOpts.routeEnds)
+	if err != nil {
+		return err
+	}
+	routeIcon, err := panel.ParseRouteIcon(renderOpts.routePosition, flight)
+	if err != nil {
+		return err
+	}
 	var gaps flightGaps
 	var pushback time.Time
 	if flight {
@@ -694,6 +713,8 @@ func runRender(cmd *cobra.Command, args []string) error {
 		Gauges:              gauges,
 		Clock:               clock,
 		Flight:              flight,
+		RouteEnds:           routeEnds,
+		RouteIcon:           routeIcon,
 		FlightTitle:         panel.FlightTitle(track.Flights),
 		FlightStart:         pushback,
 		Pauses:              pauses,
