@@ -130,41 +130,63 @@ const (
 )
 
 // Track is the direction the aircraft is going over the ground, in degrees
-// from true north: the flight tracker's own where it records one, otherwise
-// the bearing between the fixes either side of the instant. Absent while it
-// stands still, where there is no direction to give.
+// from true north: the bearing between where it was a moment of video
+// before the instant and where it is a moment after -- the line the route
+// draws -- or, standing still, the flight tracker's own where it records
+// one. Absent while it stands still with none, where there is no direction
+// to give.
+//
+// The route's bearing rather than the recorded course because a recorded
+// course can be noise: a flight tracker's over north-eastern Turkey swung
+// fifty degrees every two or three seconds while the aircraft flew straight,
+// and at a thousand times real speed the readout jumped with it from frame
+// to frame. The moment is headingWindow of video, as the route views' plane
+// points, so the two agree; never less than trackWindow of activity, which
+// keeps a taxi's bearing from a single noisy fix.
 func Track() Readout {
 	r := Readout{
 		name: trackName, label: "TRACK", metric: inspect.MetricPosition, unit: "deg",
 		template: "888°",
 		bind: func(ctx *Context, r Readout) Readout {
-			return bindTrack(r, ctx.Track)
+			return bindTrack(r, ctx.Track, ctx.Timeline)
 		},
 	}
-	return bindTrack(r, nil)
+	return bindTrack(r, nil, Timeline{})
 }
 
-func bindTrack(r Readout, track *fitactivity.Track) Readout {
+func bindTrack(r Readout, track *fitactivity.Track, tl Timeline) Readout {
 	tolerance := fitactivity.DefaultMaxGap
 	if track != nil {
 		tolerance = track.GapTolerance()
 	}
+	n := 0
+	if tl.Frames() > 0 {
+		n = max(1, int(math.Round(headingWindow.Seconds()*tl.FPS())))
+	}
 	r.value = func(s fitactivity.Sample) (float64, bool) {
-		if s.HasCourse {
-			return s.Course, true
-		}
+		recorded := func() (float64, bool) { return s.Course, s.HasCourse }
 		if track == nil {
-			return 0, false
+			return recorded()
 		}
-		a, okA := track.AtWithGap(s.Time.Add(-trackWindow), tolerance)
-		b, okB := track.AtWithGap(s.Time.Add(trackWindow), tolerance)
+		before, after := s.Time.Add(-trackWindow), s.Time.Add(trackWindow)
+		if n > 0 {
+			i := tl.IndexAt(s.Time.Sub(tl.Start()))
+			if t := tl.At(i - n); t.Before(before) {
+				before = t
+			}
+			if t := tl.At(i + n); t.After(after) {
+				after = t
+			}
+		}
+		a, okA := track.AtWithGap(before, tolerance)
+		b, okB := track.AtWithGap(after, tolerance)
 		if !okA || !okB || !a.HasGPS || !b.HasGPS {
-			return 0, false
+			return recorded()
 		}
 		east := (b.Lon - a.Lon) * 111_320 * math.Cos(a.Lat*math.Pi/180)
 		north := (b.Lat - a.Lat) * 110_574
 		if math.Hypot(east, north) < trackStill {
-			return 0, false
+			return recorded()
 		}
 		return math.Mod(math.Atan2(east, north)*180/math.Pi+360, 360), true
 	}

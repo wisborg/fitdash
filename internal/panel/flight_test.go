@@ -103,10 +103,20 @@ func TestFlightReadouts(t *testing.T) {
 	if v, ok := track.value(mid); !ok || math.Abs(v-90) > 0.5 {
 		t.Errorf("track from the fixes %v (ok %v), want 90", v, ok)
 	}
+	// Moving, the route's own bearing, whatever the recorded course says:
+	// a tracker's course can be noise.
 	withCourse := mid
 	withCourse.HasCourse, withCourse.Course = true, 271
-	if v, ok := track.value(withCourse); !ok || v != 271 {
-		t.Errorf("track %v (ok %v), want the recorded 271", v, ok)
+	if v, ok := track.value(withCourse); !ok || math.Abs(v-90) > 0.5 {
+		t.Errorf("track %v (ok %v) with a recorded 271, want the route's 90", v, ok)
+	}
+	// Bound to a timeline, the bearing is taken over a moment of video:
+	// still the route's.
+	ctx.Timeline, _ = NewTimeline(tr.Samples[0].Time, time.Hour, 10, 600)
+	timed := Track()
+	timed = timed.bind(ctx, timed)
+	if v, ok := timed.value(withCourse); !ok || math.Abs(v-90) > 0.5 {
+		t.Errorf("track over a moment of video %v (ok %v), want 90", v, ok)
 	}
 	if got := track.format(359.7); got != "000°" {
 		t.Errorf("359.7 formatted %q, want 000°", got)
@@ -121,5 +131,11 @@ func TestFlightReadouts(t *testing.T) {
 	stood = stood.bind(&Context{Track: still}, stood)
 	if _, ok := stood.value(still.Samples[1800]); ok {
 		t.Error("a track for an aircraft standing still")
+	}
+	// Standing still with a recorded course -- at a gate -- it is that.
+	parked := still.Samples[1800]
+	parked.HasCourse, parked.Course = true, 14
+	if v, ok := stood.value(parked); !ok || v != 14 {
+		t.Errorf("standing still, track %v (ok %v), want the recorded 14", v, ok)
 	}
 }

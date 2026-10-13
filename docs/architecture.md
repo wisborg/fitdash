@@ -2309,8 +2309,12 @@ cruise; a rate taken between neighbouring reports jumped by hundreds of feet a m
 level flight, where over a minute and a half one step is seventy. The two readouts sit in
 the strip the climb and gradient shared, wide and short, so they are laid out on one line --
 caption, value, unit (`Readout.inline`) -- where stacked the value was a third of the
-strip's height. The track is Flightradar24's own course where the file records it, and the
-bearing between the fixes either side otherwise, absent while the aircraft stands still.
+strip's height. The track is the bearing between where the aircraft was a moment of video
+either side of the instant (the plane's `headingWindow`, never less than fifteen seconds of
+flight), so the readout and the plane agree; a flight tracker's recorded course is noise in
+places -- fifty-degree swings every few seconds over north-eastern Turkey -- and is read only
+standing still, at a gate, where the positions give no direction. Absent standing still
+without one.
 
 A flight is in nautical miles, feet and knots unless `--units` was given, and the time
 panel's caption names it -- `fitactivity`'s `Track.Flights`, from a Flightradar24 KML's

@@ -282,8 +282,9 @@ the video.
 A flight's dashboard reads as a flight's. It is written in nautical miles, feet and knots
 unless `--units` says otherwise (a `--unit` still has the last word); the climb panel's gain
 and loss and the gradient give way to the altitude and the vertical speed, in feet a minute,
-and cadence's box to the track, the direction over the ground — Flightradar24's own where its
-file records one, otherwise worked out from the fixes. The time panel's caption names the
+and cadence's box to the track, the direction over the ground as the route runs at that moment
+of the video — the line the plane points along — or, standing at a gate, the heading the file
+records. The time panel's caption names the
 flight where the file does: "TG950 BKK → CPH" from a Flightradar24 KML, the callsign from its
 CSV, each leg of a journey in turn; its clock counts from the first pushback, not from when
 the tracker began recording. Where the tracker lost the aircraft — an ocean, a country without
