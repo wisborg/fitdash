@@ -181,6 +181,11 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer, []string, error) {
 	o := l.opts
 	o.Areas, o.LiftLabels = areas, true
+	// A flight's picture stands the names of a dozen tiles at once, the
+	// nearest drawn at the zoom where every village is named: places are
+	// named as on a map flightPlaceShift zooms further out. Countries and
+	// states are not shifted (osm.Style.ShiftPlaceLabels).
+	o.Style = o.Style.ShiftPlaceLabels(flightPlaceShift)
 	o.ContourInterval = flightContourInterval(z + 1)
 	if l.freshLabels != nil {
 		faces := l.freshLabels()
@@ -200,6 +205,14 @@ func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer
 	rend, err := osm.New(l.source, o)
 	return rend, ids, err
 }
+
+// flightPlaceShift is how many zooms later a flight's tiles name their
+// places than a map at their zoom would. Measured on a climb out of
+// Bangkok, where one tile at the zoom of the nearest ground names a hundred
+// and sixty villages: two still left the plain a wall of names; three keep
+// the towns, about fifteen to a picture west of the city, and leave the
+// villages to the suburbs right under the camera.
+const flightPlaceShift = -3
 
 // flightContourInterval is the contour interval for a tile drawn at map zoom
 // z: the interval a map at that zoom starts from, fixed rather than widened
