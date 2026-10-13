@@ -155,10 +155,11 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 		}
 	}
 	v := View{North: b.North, West: b.West, South: b.South, East: b.East, Width: perspective.TileSize, Height: perspective.TileSize}
-	rend, ids, err := l.flightRenderer(v, z, areas)
+	rend, ids, release, err := l.flightRenderer(v, z, areas)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	res, err := rend.Render(ctx, osm.View{Bounds: osm.Bounds{West: b.West, South: b.South, East: b.East, North: b.North}, Width: perspective.TileSize, Height: perspective.TileSize})
 	if err != nil {
 		return nil, fmt.Errorf("tilemap: drawing tile %d/%d/%d from the local map store %s: %w", z, x, y, l.root, err)
@@ -177,8 +178,10 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 // over the flight, the contour interval of the tile's zoom, every name
 // lifted, and faces of its own.
 //
-// The tile's elevation sources come back with it; see rendererFor.
-func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer, []string, error) {
+// The tile's elevation sources come back with it; see rendererFor. So does
+// what to call once the tile is drawn, done with its faces; see
+// FreshLabels.
+func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer, []string, func(), error) {
 	o := l.opts
 	o.Areas, o.LiftLabels = areas, true
 	// A flight's picture stands the names of a dozen tiles at once, the
@@ -187,8 +190,10 @@ func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer
 	// states are not shifted (osm.Style.ShiftPlaceLabels).
 	o.Style = o.Style.ShiftPlaceLabels(flightPlaceShift)
 	o.ContourInterval = flightContourInterval(z + 1)
+	release := func() {}
 	if l.freshLabels != nil {
-		faces := l.freshLabels()
+		var faces LabelFaces
+		faces, release = l.freshLabels()
 		o.LabelFace, o.LabelFaceFor = faces.at(1), faces.at
 	} else {
 		o.LabelFace, o.LabelFaceFor = nil, nil // no faces of its own: no names
@@ -198,12 +203,17 @@ func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer
 		bb := slice.Bounds{West: v.West, South: v.South, East: v.East, North: v.North}
 		var err error
 		if ids, err = l.terrain.SourcesIn(bb, z+1); err != nil {
-			return nil, nil, fmt.Errorf("tilemap: working out what this tile owes the elevation in %s: %w", l.terrain.Root(), err)
+			release()
+			return nil, nil, nil, fmt.Errorf("tilemap: working out what this tile owes the elevation in %s: %w", l.terrain.Root(), err)
 		}
 		o.Terrain, o.TerrainAttribution = l.terrain.Heights(), l.terrain.ShortCredit(ids)
 	}
 	rend, err := osm.New(l.source, o)
-	return rend, ids, err
+	if err != nil {
+		release()
+		return nil, nil, nil, err
+	}
+	return rend, ids, release, nil
 }
 
 // flightPlaceShift is how many zooms later a flight's tiles name their

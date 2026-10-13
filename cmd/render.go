@@ -720,7 +720,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 		// A flyover draws its tiles in parallel and stands their names on
 		// its pictures afterwards, each tile in faces of its own; see
 		// tilemap.Local.FreshLabels.
-		local.FreshLabels(func() tilemap.LabelFaces { return basemapLabelFaces(cmd, faceSource(fonts.Fresh()), h) })
+		local.FreshLabels(func() (tilemap.LabelFaces, func()) {
+			fresh := fonts.Fresh()
+			return basemapLabelFaces(cmd, faceSource(fresh), h), fresh.Release
+		})
 	}
 	basemapDim := resolveBasemapDim(cmd)
 

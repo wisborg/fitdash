@@ -7,6 +7,7 @@ import (
 	"math"
 	"testing"
 
+	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 )
@@ -677,5 +678,70 @@ func TestFaceCacheWith_GoMonoLettersUnchanged(t *testing.T) {
 	}
 	if m := with.Missing(); len(m) != 0 {
 		t.Errorf("missing %q for text Go Mono has", string(m))
+	}
+}
+
+// A released Fresh copy lets its faces go but not the letters they missed:
+// a flyover draws thousands of tiles each in a copy of its own, and the
+// family held every face every copy made, gigabytes of them, for Missing.
+func TestFaceCache_ReleaseKeepsMissingLettersAndDropsFaces(t *testing.T) {
+	reg, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	family, err := NewFaceCacheWith(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const thai = 'ก' // in neither Go Mono nor Go Regular
+	for range 3 {
+		fresh := family.Fresh()
+		for _, px := range []float64{12, 18} {
+			if _, _, err := fresh.Measure(string(thai)+"a", px); err != nil {
+				t.Fatal(err)
+			}
+		}
+		fresh.Release()
+	}
+	if m := family.Missing(); len(m) != 1 || m[0] != thai {
+		t.Errorf("Missing after the copies were released is %q, want %q", string(m), string(thai))
+	}
+	if n := len(family.made.faces); n != 0 {
+		t.Errorf("%d faces still held after every copy that made them was released, want none", n)
+	}
+}
+
+// A fallback's face is built only when a letter it has is asked of it, and
+// then answers as the face would have: over a hundred fallbacks on a Mac,
+// built at every size for every tile of a flyover, were hundreds of
+// megabytes of faces for letters Go Mono had already written.
+func TestLazyFace_BuiltOnlyForALetterItHas(t *testing.T) {
+	reg, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := &opentype.FaceOptions{Size: 18, DPI: 72, Hinting: font.HintingFull}
+	eager, err := opentype.NewFace(reg, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazy := &lazyFace{font: reg, opts: opts}
+	if _, ok := lazy.GlyphAdvance('ก'); ok || lazy.built {
+		t.Errorf("a letter the font lacks: ok %v, built %v; want neither", ok, lazy.built)
+	}
+	for _, r := range "aWg€" {
+		la, lok := lazy.GlyphAdvance(r)
+		ea, eok := eager.GlyphAdvance(r)
+		lb, _, _ := lazy.GlyphBounds(r)
+		eb, _, _ := eager.GlyphBounds(r)
+		if la != ea || lok != eok || lb != eb {
+			t.Errorf("%q: lazy advance %v %v bounds %v, eager %v %v %v", r, la, lok, lb, ea, eok, eb)
+		}
+	}
+	if !lazy.built {
+		t.Error("asked for letters it has, the face was never built")
+	}
+	if lazy.Kern('A', 'V') != eager.Kern('A', 'V') || lazy.Metrics() != eager.Metrics() {
+		t.Error("kerning or metrics differ from the face's own")
 	}
 }

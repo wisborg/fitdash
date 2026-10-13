@@ -97,8 +97,9 @@ type Local struct {
 	finestContours float64
 
 	// freshLabels makes label faces no one else draws with, for a flight's
-	// tiles; see FreshLabels. Nil draws a flight's tiles without names.
-	freshLabels func() LabelFaces
+	// tiles, and the call that is done with them; see FreshLabels. Nil
+	// draws a flight's tiles without names.
+	freshLabels func() (LabelFaces, func())
 
 	// outdoors is true once UseOutdoors has turned the map to that palette.
 	outdoors bool
@@ -108,7 +109,11 @@ type Local struct {
 // times as it asks: a flight draws its tiles in parallel and stands their
 // names on its pictures afterwards, and a font face is not safe for two to
 // draw with at once. Without it a flight is drawn without names.
-func (l *Local) FreshLabels(fresh func() LabelFaces) { l.freshLabels = fresh }
+//
+// fresh returns, with the faces, what to call once a tile is drawn in them:
+// a flight draws thousands of tiles, and whatever keeps account of the
+// faces made must be told when one tile's are done with.
+func (l *Local) FreshLabels(fresh func() (LabelFaces, func())) { l.freshLabels = fresh }
 
 // Terrain is what a local map is shaded with: the elevation, and whether
 // contour lines are drawn from it as well as shading.

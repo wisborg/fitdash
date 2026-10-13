@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
+	"golang.org/x/image/math/fixed"
 
 	osm "github.com/wisborg/osmbase/render"
 )
@@ -247,11 +250,19 @@ type FaceCache struct {
 	made  *madeFaces
 }
 
-// madeFaces is every fallback face the caches of one family made, shared
-// with their Fresh copies, for Missing.
+// madeFaces is, for Missing, every fallback face the caches of one family
+// made that is still in use, shared with their Fresh copies, and the letters
+// the released ones missed.
+//
+// A released cache's faces are let go of, their letters kept: a flyover
+// draws each of thousands of map tiles in a Fresh cache of its own, and
+// holding every face each made, for the sake of the letters they lacked,
+// kept them all -- gigabytes of faces for one flight, the machine swapping
+// for a render that had fitted in three.
 type madeFaces struct {
-	mu    sync.Mutex
-	faces []*osm.Fallback
+	mu      sync.Mutex
+	faces   map[*osm.Fallback]bool
+	missing map[rune]bool
 }
 
 // NewFaceCache returns a cache over the embedded monospace face.
@@ -274,7 +285,7 @@ func NewFaceCacheWith(fallbacks ...*opentype.Font) (*FaceCache, error) {
 	if err != nil {
 		return nil, fmt.Errorf("panel: parsing the embedded font: %w", err)
 	}
-	return &FaceCache{fonts: append([]*opentype.Font{f}, fallbacks...), faces: map[int]font.Face{}, made: &madeFaces{}}, nil
+	return &FaceCache{fonts: append([]*opentype.Font{f}, fallbacks...), faces: map[int]font.Face{}, made: &madeFaces{faces: map[*osm.Fallback]bool{}, missing: map[rune]bool{}}}, nil
 }
 
 // Fresh is a cache over the same font with none of its faces: faces no one
@@ -296,18 +307,40 @@ func (c *FaceCache) Missing() []rune {
 	}
 	c.made.mu.Lock()
 	defer c.made.mu.Unlock()
-	seen := map[rune]bool{}
-	var out []rune
-	for _, f := range c.made.faces {
+	seen := maps.Clone(c.made.missing)
+	for f := range c.made.faces {
 		for _, r := range f.Missing() {
-			if !seen[r] {
-				seen[r] = true
-				out = append(out, r)
-			}
+			seen[r] = true
 		}
 	}
-	slices.Sort(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// Release is done with a Fresh cache: the letters its faces missed are kept
+// for Missing, and the faces are no longer held for it. A face already
+// handed out still draws -- a flyover's tile keeps its names' faces for as
+// long as the tile is kept -- but whatever it misses afterwards goes
+// unrecorded, so a cache is released once what it was made for has asked
+// it for every letter: a tile, once drawn.
+func (c *FaceCache) Release() {
+	if c == nil || c.made == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.made.mu.Lock()
+	defer c.made.mu.Unlock()
+	for _, f := range c.faces {
+		fb, ok := f.(*osm.Fallback)
+		if !ok {
+			continue
+		}
+		for _, r := range fb.Missing() {
+			c.made.missing[r] = true
+		}
+		delete(c.made.faces, fb)
+	}
+	c.faces = map[int]font.Face{}
 }
 
 // face returns a face at px pixels, rounded to a whole pixel.
@@ -342,18 +375,93 @@ func (c *FaceCache) face(px float64) (font.Face, error) {
 	}
 	faces := []font.Face{f}
 	for _, ttf := range c.fonts[1:] {
-		// A fallback that will not build at this size is passed over: Go
-		// Mono, which did, still writes what it can.
-		if ff, err := opentype.NewFace(ttf, opts); err == nil {
-			faces = append(faces, ff)
-		}
+		faces = append(faces, &lazyFace{font: ttf, opts: opts})
 	}
 	fb := osm.NewFallback(faces...)
 	c.made.mu.Lock()
-	c.made.faces = append(c.made.faces, fb)
+	c.made.faces[fb] = true
 	c.made.mu.Unlock()
 	c.faces[key] = fb
 	return fb, nil
+}
+
+// lazyFace is a fallback font's face at one size, built the first time a
+// letter is wanted from it that it has. A fallback is asked only for what
+// every font before it lacks, and nearly all text is Go Mono's own; but a
+// face was built for every fallback, every size and every cache -- on a Mac
+// over a hundred system fonts, for each of the thousands of tiles a flyover
+// draws its names in -- and hundreds of megabytes of faces were held for
+// letters never asked of them.
+//
+// Whether the font has a letter is the font's to say, without a face, and
+// is what a face would have said: a glyph index of zero is none. A font
+// that will not build at this size has nothing, as one passed over did.
+//
+// Its buffer for asking is made when it is first asked too: a buffer is a
+// face's size, and most fallbacks are never asked anything.
+//
+// Like any face it is drawn with by one goroutine at a time; see Fresh.
+type lazyFace struct {
+	font  *opentype.Font
+	opts  *opentype.FaceOptions
+	buf   *sfnt.Buffer
+	face  font.Face
+	built bool
+}
+
+func (l *lazyFace) has(r rune) bool {
+	if l.buf == nil {
+		l.buf = new(sfnt.Buffer)
+	}
+	i, err := l.font.GlyphIndex(l.buf, r)
+	return err == nil && i != 0 && l.get() != nil
+}
+
+func (l *lazyFace) get() font.Face {
+	if !l.built {
+		l.built = true
+		if f, err := opentype.NewFace(l.font, l.opts); err == nil {
+			l.face = f
+		}
+	}
+	return l.face
+}
+
+func (l *lazyFace) Close() error { return nil }
+
+func (l *lazyFace) Glyph(dot fixed.Point26_6, r rune) (image.Rectangle, image.Image, image.Point, fixed.Int26_6, bool) {
+	if !l.has(r) {
+		return image.Rectangle{}, nil, image.Point{}, 0, false
+	}
+	return l.face.Glyph(dot, r)
+}
+
+func (l *lazyFace) GlyphBounds(r rune) (fixed.Rectangle26_6, fixed.Int26_6, bool) {
+	if !l.has(r) {
+		return fixed.Rectangle26_6{}, 0, false
+	}
+	return l.face.GlyphBounds(r)
+}
+
+func (l *lazyFace) GlyphAdvance(r rune) (fixed.Int26_6, bool) {
+	if !l.has(r) {
+		return 0, false
+	}
+	return l.face.GlyphAdvance(r)
+}
+
+func (l *lazyFace) Kern(r0, r1 rune) fixed.Int26_6 {
+	if !l.has(r0) || !l.has(r1) {
+		return 0
+	}
+	return l.face.Kern(r0, r1)
+}
+
+func (l *lazyFace) Metrics() font.Metrics {
+	if f := l.get(); f != nil {
+		return f.Metrics()
+	}
+	return font.Metrics{}
 }
 
 // Canvas is the drawing surface a panel is handed.
