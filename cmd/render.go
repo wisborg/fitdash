@@ -483,6 +483,7 @@ func bindRenderFlags(c *cobra.Command) {
 
 // runRender is the root command: fitdash ACTIVITY.fit.
 func runRender(cmd *cobra.Command, args []string) error {
+	limitMemory()
 	if err := validateRenderOptions(); err != nil {
 		return err
 	}

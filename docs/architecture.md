@@ -2017,6 +2017,33 @@ route panel's two. A painter that caches in `Dynamic` still passes it without `-
 because what it caches is usually the same either way -- which is why the rule is a rule
 and not merely a test.
 
+**Running ahead.** Frames are written in order, so a slow frame holds up every frame after
+it. A flyover's frames are not equally slow: one that comes to ground no frame has seen
+waits while its map tiles are drawn, and the frames after it, over ground already drawn,
+are quick. With a buffer for each worker and one more, the quick frames finished, filled
+every buffer and waited on the slow one; a trace of a full-frame flight found half the
+workers idle for want of a buffer to draw in. `Run` keeps `runAhead` finished frames for
+each worker. A finished frame is 8 MB at 1080p, and the frames being drawn at once are
+no more than before.
+
+**Memory.** A flyover holds a few gigabytes on purpose -- the map tiles drawn, the vector
+tiles decoded, the frames being drawn -- and makes garbage fast. Go's collector lets the
+heap grow to twice what is live before collecting, which on a 16 GB Mac took a full-frame
+flight's render to 13 GB: the machine compressed and swapped, and only five of eight
+cores were kept busy. The render sets Go's soft memory limit to half the machine's memory
+(`cmd/memlimit.go`) unless `GOMEMLIMIT` is set. The collector works harder only near the
+limit; the same render held 9 GB and finished a sixth sooner, for no more work collecting.
+
+**Faces made per tile.** A flyover draws each map tile's names in faces of its own
+(`tilemap.Local.FreshLabels`), several thousand sets for a long flight. Two things about
+those faces once took a full-frame flight to a 50 GB footprint and most of an hour. The
+cache's record of the letters no font had held every face every copy made, for as long as
+the render ran; a copy is now released once its tile is drawn (`FaceCache.Release`), which
+keeps the letters and lets the faces go. And every fallback font got a face at every size,
+though nearly all text is Go Mono's: over a hundred system fonts on a Mac, for each tile. A
+fallback's face is now built the first time a letter it has is wanted (`lazyFace`); whether
+it has one is the font's to say, without a face.
+
 ### Marking a highlight: one base per colour, and one index rule
 
 Two decisions inside the highlight marks are invisible in the output, cheap to "simplify"

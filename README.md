@@ -267,7 +267,9 @@ fitdash flight.kml --basemap local --layout flyover --video-duration 60s \
 
 Frames are drawn several at once, one for each core by default; `--concurrency` sets how
 many, for a machine with less memory to spare (each 4K flyover frame in flight holds about
-half a gigabyte) or more work to share it with. The video is the same whatever the number.
+half a gigabyte) or more work to share it with. The video is the same whatever the number. A
+render keeps Go's memory use to about half the machine's memory, collecting harder rather
+than swapping; `GOMEMLIMIT` sets a different limit.
 
 A flight's airports pass in a frame at the compression its cruise needs, so a flyover finds
 them: a track that held 400 km/h for five minutes is a flight, and its take-off and landing are
