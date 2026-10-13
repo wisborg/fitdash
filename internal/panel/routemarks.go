@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"time"
 
 	"github.com/wisborg/osmbase/perspective"
 	"github.com/wisborg/osmbase/render"
@@ -173,12 +174,52 @@ func positionMark(c *Canvas, box Box, icon RouteIcon, x, y, dotR float64, ink co
 	c.Marker(m, x, y, box)
 }
 
+// headingWindow is the video either side of a frame the direction of an
+// arrow or a plane is taken over: where the route went a moment of video
+// before to where it goes a moment after, as the line on screen runs. In
+// activity time it is however much the frame's rate makes it -- minutes of
+// a cruise, seconds of a taxi -- which is what keeps the icon steady where
+// the video races and lets it turn with a taxiway where the video is slow.
+const headingWindow = 400 * time.Millisecond
+
+// headingStill is how far, in metres, the route must move across the
+// window for its direction to be the icon's; less, and it is standing still.
+const headingStill = 20.0
+
 // travelHeading is the direction of travel at f, as an angle on screen: the
-// course the file records where it does, otherwise the route's bearing from
-// its fixes, turned into the picture by placing the position and a point a
-// little ahead of it along that bearing. It is false where there is no
-// direction, or the point ahead is out of the picture.
-func travelHeading(f Frame, fixes []route.Point, pos route.Point, place func(route.Point) (x, y float64, ok bool)) (float64, bool) {
+// way the route runs through the frame, from where it was headingWindow of
+// video before to where it is headingWindow after, as placed in the picture.
+// Where it hardly moves across that -- an aircraft at its gate -- the
+// course the file records, where it does, and otherwise the route's bearing
+// from its fixes, are turned into the picture by placing the position and a
+// point a little ahead of it. It is false where there is no direction, or
+// the points are out of the picture.
+//
+// The route's way rather than the recorded course first, because the
+// recorded course can be noise: a flight tracker's over north-eastern
+// Turkey swung fifty degrees every two or three seconds while the aircraft
+// flew straight, and at a thousand times real speed every frame took a
+// different sample, so the plane twitched from side to side above a
+// straight line and a steady camera.
+func travelHeading(f Frame, tl Timeline, fixes []route.Point, maxGap time.Duration, pos route.Point, place func(route.Point) (x, y float64, ok bool)) (float64, bool) {
+	angle := func(a, b route.Point) (float64, bool) {
+		x0, y0, ok0 := place(a)
+		x1, y1, ok1 := place(b)
+		if !ok0 || !ok1 || math.Hypot(x1-x0, y1-y0) < 1e-6 {
+			return 0, false
+		}
+		return math.Atan2(x1-x0, -(y1-y0)) * 180 / math.Pi, true
+	}
+	if tl.Frames() > 0 {
+		n := max(1, int(math.Round(headingWindow.Seconds()*tl.FPS())))
+		before, okB := route.PositionAt(fixes, tl.At(f.Index-n), maxGap)
+		after, okA := route.PositionAt(fixes, tl.At(f.Index+n), maxGap)
+		if okB && okA && route.MetresBetween(before.Lat, before.Lon, after.Lat, after.Lon) >= headingStill {
+			if a, ok := angle(before, after); ok {
+				return a, true
+			}
+		}
+	}
 	bearing, ok := 0.0, false
 	if f.HasSample && f.Sample.HasCourse {
 		bearing, ok = f.Sample.Course, true
@@ -188,10 +229,5 @@ func travelHeading(f Frame, fixes []route.Point, pos route.Point, place func(rou
 	if !ok {
 		return 0, false
 	}
-	x0, y0, ok0 := place(pos)
-	x1, y1, ok1 := place(route.Ahead(pos, bearing, 30))
-	if !ok0 || !ok1 || math.Hypot(x1-x0, y1-y0) < 1e-6 {
-		return 0, false
-	}
-	return math.Atan2(x1-x0, -(y1-y0)) * 180 / math.Pi, true
+	return angle(pos, route.Ahead(pos, bearing, 30))
 }

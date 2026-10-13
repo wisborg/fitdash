@@ -147,7 +147,7 @@ func prepareFlat(ctx *Context, box Box) *routePainter {
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*routeDotFraction)
-	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
+	p.ends, p.icon, p.tl = ctx.RouteEnds, ctx.RouteIcon, ctx.Timeline
 
 	p.resolveMarks(ctx, proj, unit)
 
@@ -357,6 +357,7 @@ type routePainter struct {
 	coveredW float64
 	dotR     float64
 	ends     RouteEnds // see Context.RouteEnds
+	tl       Timeline  // the render's, for the direction an icon points; see travelHeading
 	icon     RouteIcon // see Context.RouteIcon
 
 	// base and inset are what placer needs to rebuild a placement function
@@ -779,7 +780,7 @@ func (p *routePainter) draw(c *Canvas, f Frame, place func(route.Point) (float64
 		return
 	}
 	x, y := place(pos)
-	heading, ok := travelHeading(f, p.all, pos, placed)
+	heading, ok := travelHeading(f, p.tl, p.all, p.maxGap, pos, placed)
 	positionMark(c, p.box, p.icon, x, y, p.dotR, p.routeInks(c).Accent, 1, heading, ok)
 }
 

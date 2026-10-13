@@ -1441,14 +1441,19 @@ another is the 13.6% misalignment `CoverBox` exists to prevent. The start and fi
 one pin wherever the two pins would overlap on screen, not only where the two places
 coincide: a run finishing thirty metres from its start drew one pin into the other.
 
-An arrow or a plane points along the direction of travel: the file's own course where it
-records one (a flight tracker's, as the aircraft broadcast it) and `route.BearingAt` from
-the fixes otherwise, widening its window across a stop so a moment at a crossing keeps a
-direction. That bearing is turned into the picture by placing the position and a point
-thirty metres ahead of it through the view's own placement, which is what makes the same
-code right on a north-up flat map, a 3D view and a flyover's camera that turns with the
-route. Where there is no direction at all, the dot is drawn instead of an icon pointing at
-random.
+An arrow or a plane points the way the route runs on screen: from where it was 0.4 s of
+video before the frame to where it is 0.4 s after (`travelHeading`, `headingWindow`), both
+placed through the view's own placement, which is what makes the same code right on a
+north-up flat map, a 3D view and a flyover's camera that turns with the route. A window in
+video time is minutes of a cruise and seconds of a taxi, so the icon is steady where the
+video races and turns with the taxiway where it is slow. It is the route's way and not the
+course the file records because a recorded course can be noise: a flight tracker's over
+north-eastern Turkey swung fifty degrees every two or three seconds while the aircraft flew
+straight, and at a thousand times real speed each frame took a different sample, so the
+plane twitched above a straight line. Where the route hardly moves across the window -- an
+aircraft at its gate -- the recorded course is used, and otherwise `route.BearingAt`, whose
+window widens across a stop; where there is no direction at all, the dot is drawn instead of
+an icon pointing at random.
 
 ## The full-frame flyover
 

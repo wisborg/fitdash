@@ -46,20 +46,32 @@ func TestRoutePanel_EndPins(t *testing.T) {
 	}
 }
 
-// The direction an arrow or a plane points is the file's own course where
-// it records one, the route's from its fixes otherwise, turned into the
-// picture -- here one with north up -- and none where nothing moved.
+// The direction an arrow or a plane points is the way the route runs on
+// screen across a moment of video either side -- not the course the file
+// records, which can be noise -- and the recorded course only where the
+// route stands still; with neither, there is none.
 func TestTravelHeading(t *testing.T) {
 	base := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	var east, still []route.Point
-	for i := range 120 {
+	for i := range 600 {
 		at := base.Add(time.Duration(i) * time.Second)
 		east = append(east, route.Point{Lat: 55, Lon: 12 + float64(i)*0.0002, Time: at})
 		still = append(still, route.Point{Lat: 55, Lon: 12, Time: at})
 	}
+	// Ten minutes in a minute of video at 10 fps: a frame is a second.
+	tl, err := NewTimeline(base, 10*time.Minute, 10, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
 	northUp := func(p route.Point) (float64, float64, bool) { return p.Lon * 1e5, -p.Lat * 1e5 * 1.74, true }
-	at := base.Add(time.Minute)
-	pos := east[60]
+	at := base.Add(5 * time.Minute)
+	frame := func(course bool, deg float64) Frame {
+		f := Frame{Index: tl.IndexAt(5 * time.Minute), At: at}
+		if course {
+			f.HasSample, f.Sample = true, fitactivity.Sample{HasCourse: true, Course: deg}
+		}
+		return f
+	}
 	for _, c := range []struct {
 		name   string
 		f      Frame
@@ -67,12 +79,13 @@ func TestTravelHeading(t *testing.T) {
 		want   float64
 		wantOK bool
 	}{
-		{"from the fixes", Frame{At: at}, east, 90, true},
-		{"the file's own course", Frame{At: at, HasSample: true, Sample: fitactivity.Sample{HasCourse: true, Course: 180}}, east, 180, true},
-		{"standing still", Frame{At: at}, still, 0, false},
+		{"along the route", frame(false, 0), east, 90, true},
+		{"along the route, whatever the recorded course says", frame(true, 180), east, 90, true},
+		{"standing still, the recorded course", frame(true, 200), still, 200, true},
+		{"standing still with no course", frame(false, 0), still, 0, false},
 	} {
-		got, ok := travelHeading(c.f, c.fixes, pos, northUp)
-		if ok != c.wantOK || ok && (got-c.want > 2 || c.want-got > 2) {
+		got, ok := travelHeading(c.f, tl, c.fixes, time.Minute, c.fixes[300], northUp)
+		if ok != c.wantOK || ok && (got-c.want > 2 || c.want-got > 2) && (got+360-c.want > 2) {
 			t.Errorf("%s: %.1f° (ok %v), want %v° (ok %v)", c.name, got, ok, c.want, c.wantOK)
 		}
 	}

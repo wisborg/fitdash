@@ -113,6 +113,7 @@ type route3DPainter struct {
 	outlineW, coveredW, dotR float64
 	marks                    []routeMark
 	ends                     RouteEnds // see Context.RouteEnds
+	tl                       Timeline  // the render's, for the direction an icon points; see travelHeading
 	icon                     RouteIcon // see Context.RouteIcon
 
 	mapDim       float64
@@ -163,7 +164,7 @@ func prepare3D(ctx *Context, box Box) (_ *route3DPainter, why string, ok bool) {
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*routeDotFraction)
-	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
+	p.ends, p.icon, p.tl = ctx.RouteEnds, ctx.RouteIcon, ctx.Timeline
 	p.creditPx = maxf(9, unit*0.05)
 	p.mapDim = clampWeight(ctx.BasemapDim)
 	p.mapCredit = ctx.Basemap.Attribution()
@@ -275,7 +276,7 @@ func (p *route3DPainter) Dynamic(c *Canvas, f Frame) {
 		x, y, in, _ := p.place(pt)
 		return x, y, in
 	}
-	heading, ok := travelHeading(f, p.all, pos, inPicture)
+	heading, ok := travelHeading(f, p.tl, p.all, p.maxGap, pos, inPicture)
 	positionMark(c, p.box, p.icon, x, y, p.dotR, routeInks(p.inks, !p.suppressMap, c.Theme).Accent, alpha, heading, ok)
 }
 

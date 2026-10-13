@@ -99,6 +99,7 @@ type flyoverPainter struct {
 
 	outlineW, coveredW, dotR float64
 	ends                     RouteEnds // see Context.RouteEnds
+	tl                       Timeline  // the render's, for the direction an icon points; see travelHeading
 
 	// card is the summary shown over the overview the timeline's holds
 	// keep at either end; frames, lead, tail and fps place it. See
@@ -161,7 +162,7 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	p.outlineW = maxf(1.5, unit*0.008)
 	p.coveredW = maxf(2.5, unit*0.014)
 	p.dotR = maxf(3, unit*routeDotFraction)
-	p.ends, p.icon = ctx.RouteEnds, ctx.RouteIcon
+	p.ends, p.icon, p.tl = ctx.RouteEnds, ctx.RouteIcon, ctx.Timeline
 	p.card, p.frames, p.fps = ctx.Summary, ctx.Timeline.Frames(), ctx.Timeline.FPS()
 	p.lead, p.tail = ctx.Timeline.Holds()
 	// Sized to the panel, but no larger than a dashboard's would be: the
@@ -285,7 +286,7 @@ func (p *flyoverPainter) Dynamic(c *Canvas, f Frame) {
 			if !seen {
 				alpha = hiddenAlpha
 			}
-			heading, ok := travelHeading(f, p.all, pos, func(pt route.Point) (float64, float64, bool) {
+			heading, ok := travelHeading(f, p.tl, p.all, p.maxGap, pos, func(pt route.Point) (float64, float64, bool) {
 				x, y, in, _ := p.place(pic, pt)
 				return x, y, in
 			})
