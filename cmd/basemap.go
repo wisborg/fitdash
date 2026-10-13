@@ -160,24 +160,24 @@ func init() {
 // summary, and it is what a person reads while deciding. This is what they
 // have afterwards.
 type fetchReport struct {
-	Store     string   `json:"store"`
-	Archive   string   `json:"archive"`
-	Remote    bool     `json:"remote"`
-	Paths     []string `json:"paths"`
-	Bounds    bounds   `json:"bounds"`
-	WidthKM   float64  `json:"width_km"`
-	HeightKM  float64  `json:"height_km"`
-	PadKM     float64  `json:"pad_km"`
-	MinZoom   uint8    `json:"min_zoom"`
-	MaxZoom   uint8    `json:"max_zoom"`
-	Depth     string   `json:"depth,omitempty"`
-	Cells     int      `json:"cells"`
-	CellsToDo int      `json:"cells_to_fetch"`
-	Tiles     int      `json:"tiles_to_fetch"`
-	Held      int      `json:"tiles_already_held"`
-	Absent    int      `json:"tiles_not_in_archive"`
-	Transfer  int64    `json:"download_bytes"`
-	Requests  int      `json:"requests"`
+	Store     string   `json:"store" yaml:"store"`
+	Archive   string   `json:"archive" yaml:"archive"`
+	Remote    bool     `json:"remote" yaml:"remote"`
+	Paths     []string `json:"paths" yaml:"paths"`
+	Bounds    bounds   `json:"bounds" yaml:"bounds"`
+	WidthKM   float64  `json:"width_km" yaml:"width_km"`
+	HeightKM  float64  `json:"height_km" yaml:"height_km"`
+	PadKM     float64  `json:"pad_km" yaml:"pad_km"`
+	MinZoom   uint8    `json:"min_zoom" yaml:"min_zoom"`
+	MaxZoom   uint8    `json:"max_zoom" yaml:"max_zoom"`
+	Depth     string   `json:"depth,omitempty" yaml:"depth,omitempty"`
+	Cells     int      `json:"cells" yaml:"cells"`
+	CellsToDo int      `json:"cells_to_fetch" yaml:"cells_to_fetch"`
+	Tiles     int      `json:"tiles_to_fetch" yaml:"tiles_to_fetch"`
+	Held      int      `json:"tiles_already_held" yaml:"tiles_already_held"`
+	Absent    int      `json:"tiles_not_in_archive" yaml:"tiles_not_in_archive"`
+	Transfer  int64    `json:"download_bytes" yaml:"download_bytes"`
+	Requests  int      `json:"requests" yaml:"requests"`
 
 	// Credit is who the map data is owed to, in the plain text a frame can
 	// carry rather than the markup the archive wrote. It is recorded here,
@@ -185,46 +185,46 @@ type fetchReport struct {
 	// taken on: from here the data is on the user's disk and every render
 	// from it carries this line. A fetch that never said whose data it was
 	// downloading leaves the user to discover the credit in their own video.
-	Credit string `json:"credit,omitempty"`
+	Credit string `json:"credit,omitempty" yaml:"credit,omitempty"`
 
 	// Fetched is nil when nothing was downloaded, which covers three
 	// different endings -- a dry run, an area already held, and a prompt
 	// answered no -- so Outcome says which.
-	Outcome string       `json:"outcome"`
-	Fetched *fetchedInfo `json:"fetched,omitempty"`
+	Outcome string       `json:"outcome" yaml:"outcome"`
+	Fetched *fetchedInfo `json:"fetched,omitempty" yaml:"fetched,omitempty"`
 
 	// Terrain is the elevation's half of the fetch, present with --terrain.
-	Terrain *terrainReport `json:"terrain,omitempty"`
+	Terrain *terrainReport `json:"terrain,omitempty" yaml:"terrain,omitempty"`
 }
 
 // terrainReport is what a fetch with --terrain planned and fetched of the
 // elevation: from where, into where, and how much.
 type terrainReport struct {
-	Source   string       `json:"source"`
-	Store    string       `json:"store"`
-	Remote   bool         `json:"remote"`
-	Tiles    int          `json:"tiles_to_fetch"`
-	Held     int          `json:"tiles_already_held"`
-	Absent   int          `json:"tiles_not_in_archive"`
-	Transfer int64        `json:"download_bytes"`
-	Requests int          `json:"requests"`
-	Fetched  *fetchedInfo `json:"fetched,omitempty"`
+	Source   string       `json:"source" yaml:"source"`
+	Store    string       `json:"store" yaml:"store"`
+	Remote   bool         `json:"remote" yaml:"remote"`
+	Tiles    int          `json:"tiles_to_fetch" yaml:"tiles_to_fetch"`
+	Held     int          `json:"tiles_already_held" yaml:"tiles_already_held"`
+	Absent   int          `json:"tiles_not_in_archive" yaml:"tiles_not_in_archive"`
+	Transfer int64        `json:"download_bytes" yaml:"download_bytes"`
+	Requests int          `json:"requests" yaml:"requests"`
+	Fetched  *fetchedInfo `json:"fetched,omitempty" yaml:"fetched,omitempty"`
 }
 
 type bounds struct {
-	West  float64 `json:"west"`
-	South float64 `json:"south"`
-	East  float64 `json:"east"`
-	North float64 `json:"north"`
+	West  float64 `json:"west" yaml:"west"`
+	South float64 `json:"south" yaml:"south"`
+	East  float64 `json:"east" yaml:"east"`
+	North float64 `json:"north" yaml:"north"`
 }
 
 type fetchedInfo struct {
-	Tiles    int     `json:"tiles"`
-	Bytes    int64   `json:"bytes"`
-	Transfer int64   `json:"download_bytes"`
-	Requests int     `json:"requests"`
-	Cells    int     `json:"cells"`
-	Seconds  float64 `json:"seconds"`
+	Tiles    int     `json:"tiles" yaml:"tiles"`
+	Bytes    int64   `json:"bytes" yaml:"bytes"`
+	Transfer int64   `json:"download_bytes" yaml:"download_bytes"`
+	Requests int     `json:"requests" yaml:"requests"`
+	Cells    int     `json:"cells" yaml:"cells"`
+	Seconds  float64 `json:"seconds" yaml:"seconds"`
 }
 
 func runBasemapFetch(cmd *cobra.Command, args []string) error {

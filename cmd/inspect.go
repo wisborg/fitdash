@@ -68,7 +68,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	// report for JSON/YAML, the table carries the rows worth reading on a
 	// terminal. Deriving one from the other forces the richer shape through
 	// the poorer one and makes both worse -- see github.com/wisborg/output.
-	doc := output.Document{Data: rep, Table: inspectTable(rep, summedDistance(sources))}
+	doc := output.Document{Data: jsonReport(rep), Table: inspectTable(rep, summedDistance(sources))}
 	if err := doc.Write(out, format.Format); err != nil {
 		return fmt.Errorf("inspect: writing report: %w", err)
 	}
@@ -194,3 +194,66 @@ func summedDistance(sources []activitySource) bool {
 // comparing them has no way to know that is a formatting choice rather than a
 // discrepancy in the data.
 func fmtDuration(d time.Duration) string { return d.Truncate(time.Second).String() }
+
+// inspectJSON is the report as JSON and YAML write it: snake_case names in
+// both, as course writes its reports, and times in seconds.
+//
+// Its own type rather than inspect.Report with tags on it. The report is
+// what the panels read, and its Go names were the JSON's -- "HasTimerEvents",
+// the elapsed time in nanoseconds -- while YAML lowered them to
+// "hastimerevents": the same data named two ways, neither of them the
+// other tools'.
+type inspectJSON struct {
+	Path           string           `json:"path" yaml:"path"`
+	Paths          []string         `json:"paths" yaml:"paths"`
+	Sport          string           `json:"sport,omitempty" yaml:"sport,omitempty"`
+	Samples        int              `json:"samples" yaml:"samples"`
+	Start          *time.Time       `json:"start,omitempty" yaml:"start,omitempty"`
+	End            *time.Time       `json:"end,omitempty" yaml:"end,omitempty"`
+	ElapsedS       float64          `json:"elapsed_s" yaml:"elapsed_s"`
+	ActiveS        float64          `json:"active_s" yaml:"active_s"`
+	HasTimerEvents bool             `json:"has_timer_events" yaml:"has_timer_events"`
+	Metrics        []inspectMetricJ `json:"metrics" yaml:"metrics"`
+	DevFields      []inspectMetricJ `json:"dev_fields" yaml:"dev_fields"`
+}
+
+// inspectMetricJ is one metric's coverage: how many samples carry it, as a
+// count and as a share of the activity's, and the range of its values where
+// any carry it -- none written where none do, since a range of no values is
+// not "0 to 0".
+type inspectMetricJ struct {
+	Name     string   `json:"name" yaml:"name"`
+	Unit     string   `json:"unit,omitempty" yaml:"unit,omitempty"`
+	Present  int      `json:"present" yaml:"present"`
+	Coverage float64  `json:"coverage" yaml:"coverage"`
+	Min      *float64 `json:"min,omitempty" yaml:"min,omitempty"`
+	Max      *float64 `json:"max,omitempty" yaml:"max,omitempty"`
+}
+
+func jsonReport(rep inspect.Report) inspectJSON {
+	metrics := func(ms []inspect.Metric) []inspectMetricJ {
+		out := []inspectMetricJ{}
+		for _, m := range ms {
+			j := inspectMetricJ{Name: m.Name, Unit: m.Unit, Present: m.Present, Coverage: m.Coverage(rep.Samples)}
+			if m.Present > 0 {
+				lo, hi := m.Min, m.Max
+				j.Min, j.Max = &lo, &hi
+			}
+			out = append(out, j)
+		}
+		return out
+	}
+	j := inspectJSON{
+		Path: rep.Path, Paths: rep.Paths, Sport: rep.Sport, Samples: rep.Samples,
+		ElapsedS: rep.Elapsed.Seconds(), ActiveS: rep.Active.Seconds(), HasTimerEvents: rep.HasTimerEvents,
+		Metrics: metrics(rep.Metrics), DevFields: metrics(rep.DevFields),
+	}
+	if !rep.Start.IsZero() {
+		start, end := rep.Start, rep.End
+		j.Start, j.End = &start, &end
+	}
+	if j.Paths == nil {
+		j.Paths = []string{}
+	}
+	return j
+}
