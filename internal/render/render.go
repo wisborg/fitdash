@@ -1136,7 +1136,7 @@ func Run(ctx context.Context, r *Renderer, sink encode.Sink, progress func(i, n 
 	// buffers from a small pool, and this goroutine hands them to the sink
 	// and to progress in order, as the loop always did.
 	workers := r.Concurrency()
-	pool := make(chan *image.RGBA, workers+1)
+	pool := make(chan *image.RGBA, workers*runAhead+1)
 	for range cap(pool) {
 		// A buffer reused rather than one a frame: a fresh RGBA is 33 MB at
 		// 4K, which over 45,000 frames is not a leak but is an enormous
@@ -1255,6 +1255,18 @@ func Run(ctx context.Context, r *Renderer, sink encode.Sink, progress func(i, n 
 	}
 	return nil
 }
+
+// runAhead is how many frames, for each drawn at once, Run lets be drawn
+// and waiting to be written. A frame is written only after every frame
+// before it, and a flyover's frames are not equally slow: one that comes to
+// ground no frame has seen waits for its map tiles to be drawn, while the
+// frames after it, over ground already drawn, are quick. With a buffer for
+// each worker and one more, the quick frames finished, filled every buffer
+// and waited on the slow one, and half the workers stood idle for want of a
+// buffer to draw in. Each buffer is one finished frame, 8 MB at 1080p; the
+// frames being drawn at once, and what they hold while they are, are no
+// more.
+const runAhead = 4
 
 // SetConcurrency sets how many frames Run draws at once; 0, the default,
 // is AutoConcurrency's choice for this render.
