@@ -700,7 +700,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// all; see loadFonts.
 	var labelFaces tilemap.LabelFaces
 	if renderOpts.basemap == tilemap.LocalProvider {
-		labelFaces = basemapLabelFaces(cmd, faceSource(fonts), h)
+		labelFaces = basemapLabelFaces(cmd, faceSource(fonts), h, basemapLabelHeight)
 	} else if renderOpts.language != "" {
 		fmt.Fprintf(cmd.ErrOrStderr(), "--lang is only read by --basemap %s, which writes the map's names here\n", tilemap.LocalProvider)
 	}
@@ -721,9 +721,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 		// A flyover draws its tiles in parallel and stands their names on
 		// its pictures afterwards, each tile in faces of its own; see
 		// tilemap.Local.FreshLabels.
+		height := basemapLabelHeight
+		if renderOpts.layout == panel.FlyoverLayout().Name {
+			height = flyoverLabelHeight
+		}
 		local.FreshLabels(func() (tilemap.LabelFaces, func()) {
 			fresh := fonts.Fresh()
-			return basemapLabelFaces(cmd, faceSource(fresh), h), fresh.Release
+			return basemapLabelFaces(cmd, faceSource(fresh), h, height), fresh.Release
 		})
 	}
 	basemapDim := resolveBasemapDim(cmd)
@@ -1331,6 +1335,14 @@ func resolveTerrain(cmd *cobra.Command, mapStore string, track *fitactivity.Trac
 // names relative to the sheet.
 const basemapLabelHeight = 0.013
 
+// flyoverLabelHeight is basemapLabelHeight for the full-frame flyover, whose
+// picture is all there is: no readouts beside it to keep the names small
+// for, and its names stood over a moving, shaded country rather than set
+// among a map's lines. At basemapLabelHeight there, a city's name was a
+// smudge by the time the video was encoded and played. 0.017 puts it at
+// 18px on a 1080p frame.
+const flyoverLabelHeight = 0.017
+
 // basemapLabelFaces is how the basemap sizes its names.
 //
 // Faces come from the map's fonts (see mapFonts): the dashboard's own Go
@@ -1350,7 +1362,7 @@ const basemapLabelHeight = 0.013
 // is for NAMES on a background map; losing it costs the labels, and refusing
 // to render a video because a font size would not build would be losing the
 // picture over its captions.
-func basemapLabelFaces(cmd *cobra.Command, faces func(px float64) font.Face, frameH int) tilemap.LabelFaces {
+func basemapLabelFaces(cmd *cobra.Command, faces func(px float64) font.Face, frameH int, height float64) tilemap.LabelFaces {
 	if faces == nil {
 		return nil
 	}
@@ -1358,7 +1370,7 @@ func basemapLabelFaces(cmd *cobra.Command, faces func(px float64) font.Face, fra
 	// will not build is a problem with this render's configuration and the
 	// place to say so is before the frames start, not on the first frame that
 	// happens to contain a place name.
-	if faces(float64(frameH)*basemapLabelHeight) == nil {
+	if faces(float64(frameH)*height) == nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the basemap will be drawn without place names: no font would build\n")
 		return nil
 	}
@@ -1369,7 +1381,7 @@ func basemapLabelFaces(cmd *cobra.Command, faces func(px float64) font.Face, fra
 		// One size failing gives nil, and the caller falls back to the base
 		// face, which has already been shown to build: one size is not a
 		// reason to lose every label.
-		return faces(float64(frameH) * basemapLabelHeight * scale)
+		return faces(float64(frameH) * height * scale)
 	}
 }
 

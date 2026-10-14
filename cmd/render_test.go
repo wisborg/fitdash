@@ -3657,7 +3657,7 @@ func TestBasemapLabelFaces_SizesFollowTheScaleAndTheFrame(t *testing.T) {
 		hd  = 1080
 		uhd = 2160
 	)
-	faces := basemapLabelFaces(cmd, fonts, hd)
+	faces := basemapLabelFaces(cmd, fonts, hd, basemapLabelHeight)
 	if faces == nil {
 		t.Fatal("no faces were resolved, so the map would draw no names at all")
 	}
@@ -3682,7 +3682,7 @@ func TestBasemapLabelFaces_SizesFollowTheScaleAndTheFrame(t *testing.T) {
 		t.Errorf("scale 0 gives %dpx, want the base %dpx: a rule with no size set must draw at normal size", got, base)
 	}
 
-	if at4K := height(basemapLabelFaces(cmd, fonts, uhd)(1)); at4K <= base {
+	if at4K := height(basemapLabelFaces(cmd, fonts, uhd, basemapLabelHeight)(1)); at4K <= base {
 		t.Errorf("the base face is %dpx at 4K against %dpx at 1080p: label size must follow the frame, or a render looks like a different picture at each resolution", at4K, base)
 	}
 }
@@ -3704,7 +3704,7 @@ func TestLabelFaces_NilResolvesToNoFaceRatherThanPanicking(t *testing.T) {
 	if _, err := tilemap.OpenLocal(root, mapInksFor(panel.DarkTheme()), none, nil); err != nil {
 		t.Fatalf("OpenLocal with no label faces: %v", err)
 	}
-	if faces := basemapLabelFaces(cmd, nil, 1080); faces != nil {
+	if faces := basemapLabelFaces(cmd, nil, 1080, basemapLabelHeight); faces != nil {
 		t.Error("no face source produced a resolver; there is nothing for it to resolve with")
 	}
 }
