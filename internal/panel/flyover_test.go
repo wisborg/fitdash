@@ -49,9 +49,10 @@ func (f *flatFlight) Picture(ctx context.Context, _ int, cam perspective.Camera,
 	v := cam.MapView(cam.MapBounds(float64(o.Width)/float64(o.Height)), o.Height, 512)
 	return perspective.RenderContext(ctx, perspective.Scene{Tiles: f.tiles, View: v, Heights: perspective.Level}, cam, o)
 }
-func (*flatFlight) Ground(osm.Coord) (float64, bool) { return 0, false }
-func (*flatFlight) Leveled() bool                    { return true }
-func (*flatFlight) Attribution() string              { return "© Test map | Test elevation" }
+func (*flatFlight) Ground(osm.Coord) (float64, bool)      { return 0, false }
+func (*flatFlight) Leveled() bool                         { return true }
+func (*flatFlight) Attribution() string                   { return "© Test map | Test elevation" }
+func (*flatFlight) NameCountries([]osm.Coord) (int, bool) { return 0, false }
 
 func flyoverContext(t *testing.T, base time.Time, basemap tilemap.Provider) *Context {
 	t.Helper()

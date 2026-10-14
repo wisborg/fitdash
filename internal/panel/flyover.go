@@ -148,6 +148,14 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	air := ctx.Route3D.Air
 	p.air = perspective.Options{Width: int(math.Ceil(box.W)), Height: int(math.Ceil(box.H)), Sky: air, Horizon: air, Haze: air}
 
+	// The countries, named where the route crosses into and out of each,
+	// before any tile is drawn; see tilemap.FlightMap.NameCountries.
+	along := make([]osm.Coord, len(p.pts))
+	for i, pt := range p.pts {
+		along[i] = osm.Coord{Lat: pt.Lat, Lon: pt.Lon}
+	}
+	countriesNamed, outlines := p.flight.NameCountries(along)
+
 	// The names, planned over the whole flight before any frame is drawn,
 	// so none flickers. Without a plan each picture works out its own, as
 	// it can, and the note says so.
@@ -198,6 +206,11 @@ func prepareFlyover(ctx *Context, box Box) (_ *flyoverPainter, why string, ok bo
 	}
 	if p.flight.Leveled() {
 		p.mapNote += "; the ground is drawn level: there is no elevation for it"
+	}
+	if !outlines {
+		p.mapNote += "; the store holds no country outlines, so countries are named only where the map names them and no state's border is drawn apart -- \"osmbase boundaries\" fetches them"
+	} else if countriesNamed > 0 {
+		p.mapNote += fmt.Sprintf("; countries named at %d places beside the route", countriesNamed)
 	}
 	if namesErr != nil {
 		p.mapNote += "; the names could not be planned, and may flicker: " + namesErr.Error()

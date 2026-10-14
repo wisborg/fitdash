@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"github.com/wisborg/osmbase/acquire"
+	"github.com/wisborg/osmbase/boundary"
+	"github.com/wisborg/osmbase/mvt"
 	"github.com/wisborg/osmbase/perspective"
 	osm "github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
@@ -55,6 +57,13 @@ type FlightMap interface {
 	Leveled() bool
 	// Attribution is the credit every picture owes.
 	Attribution() string
+	// NameCountries names the countries along route where the route
+	// crosses into and out of each, and draws their states' borders where
+	// those are a major country's -- before any tile is drawn, which is to
+	// say before PlanNames. It reports how many places it named the
+	// countries at, and false when the store holds no country outlines to
+	// do either from.
+	NameCountries(route []osm.Coord) (named int, ok bool)
 }
 
 // Flight is the local map laid out for a camera flying over it: a pyramid
@@ -80,6 +89,12 @@ type Flight struct {
 
 	// plan is the flight's names, planned; nil before PlanNames.
 	plan *perspective.NamePlan
+
+	// pol is the store's country outlines, nil where it holds none, and
+	// borders the places NameCountries names the countries at; see
+	// political.
+	pol     *political
+	borders []osm.ExtraPlace
 }
 
 // Flight lays the map out over region, the ground every camera of a flight
@@ -105,6 +120,7 @@ func (l *Local) Flight(ctx context.Context, region slice.Bounds, exaggeration fl
 		l: l, exaggeration: exaggeration, lat: (region.South + region.North) / 2,
 		heights: perspective.Level, leveled: true,
 		lattices: map[int]perspective.Lattice{},
+		pol:      loadPolitical(l.root),
 	}
 	f.credit = l.credit
 	if l.terrain != nil {
@@ -125,7 +141,7 @@ func (l *Local) Flight(ctx context.Context, region slice.Bounds, exaggeration fl
 		}
 	}
 	tiles, err := perspective.NewTiles(func(ctx context.Context, z uint8, x, y uint32) (*perspective.Tile, error) {
-		return l.flightTile(ctx, z, x, y, areas)
+		return l.flightTile(ctx, z, x, y, areas, f.political())
 	}, flightMinZoom, flightMaxZoom, 0)
 	if err != nil {
 		return nil, err
@@ -138,7 +154,7 @@ func (l *Local) Flight(ctx context.Context, region slice.Bounds, exaggeration fl
 // with its names lifted, in faces of its own -- the pictures stand a tile's
 // names afterwards, one at a time, while other tiles are being drawn, and a
 // font face drawn with by two at once corrupts both.
-func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm.Areas) (*perspective.Tile, error) {
+func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm.Areas, pol flightPolitics) (*perspective.Tile, error) {
 	n := math.Exp2(float64(z))
 	b := slice.Bounds{
 		West: float64(x)/n*360 - 180, East: float64(x+1)/n*360 - 180,
@@ -155,7 +171,7 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 		}
 	}
 	v := View{North: b.North, West: b.West, South: b.South, East: b.East, Width: perspective.TileSize, Height: perspective.TileSize}
-	rend, ids, release, err := l.flightRenderer(v, z, areas)
+	rend, ids, release, err := l.flightRenderer(v, z, areas, pol)
 	if err != nil {
 		return nil, err
 	}
@@ -181,14 +197,20 @@ func (l *Local) flightTile(ctx context.Context, z uint8, x, y uint32, areas *osm
 // The tile's elevation sources come back with it; see rendererFor. So does
 // what to call once the tile is drawn, done with its faces; see
 // FreshLabels.
-func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer, []string, func(), error) {
+func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas, pol flightPolitics) (*osm.Renderer, []string, func(), error) {
 	o := l.opts
 	o.Areas, o.LiftLabels = areas, true
 	// A flight's picture stands the names of a dozen tiles at once, the
 	// nearest drawn at the zoom where every village is named: places are
 	// named as on a map flightPlaceShift zooms further out. Countries and
 	// states are not shifted (osm.Style.ShiftPlaceLabels).
-	o.Style = o.Style.ShiftPlaceLabels(flightPlaceShift)
+	//
+	// Its borders and its countries' names are drawn to be seen first:
+	// flown over, a border is the one line that says where the flight is.
+	// See osm.Style.EmphasisePolitical, and flightPolitics for the major
+	// countries' states and the countries named at the borders.
+	o.Style = o.Style.ShiftPlaceLabels(flightPlaceShift).EmphasisePolitical()
+	o.MajorDivision, o.ExtraPlaces = pol.major, pol.places
 	o.ContourInterval = flightContourInterval(z + 1)
 	release := func() {}
 	if l.freshLabels != nil {
@@ -214,6 +236,46 @@ func (l *Local) flightRenderer(v View, z uint8, areas *osm.Areas) (*osm.Renderer
 		return nil, nil, nil, err
 	}
 	return rend, ids, release, nil
+}
+
+// flightPolitics is what a flight's tiles are told of its countries: which
+// states' borders are a major country's (nil, none) and the places the
+// countries are named at along the route. See political.
+type flightPolitics struct {
+	major  func(osm.Coord) bool
+	places []osm.ExtraPlace
+}
+
+// political is what the flight's tiles are told of its countries, as
+// NameCountries left it.
+func (f *Flight) political() flightPolitics {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pol == nil {
+		return flightPolitics{}
+	}
+	return flightPolitics{major: f.pol.majorDivision, places: f.borders}
+}
+
+// NameCountries names the flight's countries along route; see FlightMap.
+func (f *Flight) NameCountries(route []osm.Coord) (int, bool) {
+	if f.pol == nil {
+		return 0, false
+	}
+	names := map[string]map[string]mvt.Value{}
+	places := f.pol.borderPlaces(route, func(a boundary.Area) map[string]mvt.Value {
+		key := a.Country + "|" + a.Name
+		if tags, ok := names[key]; ok {
+			return tags
+		}
+		tags := countryTags(f.l.source, a)
+		names[key] = tags
+		return tags
+	})
+	f.mu.Lock()
+	f.borders = places
+	f.mu.Unlock()
+	return len(places), true
 }
 
 // flightPlaceShift is how many zooms later a flight's tiles name their

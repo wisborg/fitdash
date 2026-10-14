@@ -98,7 +98,7 @@ func BenchmarkFlightTiles(b *testing.B) {
 				defer wg.Done()
 				for i := range next {
 					k := tiles[i]
-					tile, err := l.flightTile(context.Background(), k.z, k.x, k.y, areas)
+					tile, err := l.flightTile(context.Background(), k.z, k.x, k.y, areas, flightPolitics{})
 					if err != nil {
 						b.Error(err)
 						continue
