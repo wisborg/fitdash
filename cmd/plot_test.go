@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"image/png"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,13 +38,17 @@ func runPlotCmd(t *testing.T, args ...string) (out, errOut string, err error) {
 	cmd.Flags().AddFlagSet(plotCmd.Flags())
 	// The flags are shared with plotCmd and write into plotOpts, so one
 	// test's --y would otherwise be the next one's too.
+	// A list flag's default reads "[]", which Set would take for an item,
+	// so the lists are emptied directly.
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if err := f.Value.Set(f.DefValue); err != nil && f.Name != "unit" {
-			t.Fatalf("restoring the default for --%s: %v", f.Name, err)
+		if _, list := f.Value.(pflag.SliceValue); !list {
+			if err := f.Value.Set(f.DefValue); err != nil {
+				t.Fatalf("restoring the default for --%s: %v", f.Name, err)
+			}
 		}
 		f.Changed = false
 	})
-	plotOpts.unitEach = nil
+	plotOpts.unitEach, plotOpts.fonts = nil, nil
 	var o, e bytes.Buffer
 	cmd.SetOut(&o)
 	cmd.SetErr(&e)
@@ -129,5 +135,34 @@ func TestPlotAgainstDistance(t *testing.T) {
 	}
 	if first := strings.SplitN(out, "\n", 2)[0]; first != "pace (min/mi) against distance (mi)" {
 		t.Errorf("title %q", first)
+	}
+}
+
+// --out writes a PNG of the size asked for, says where, and refuses a name
+// that is not a PNG's rather than writing PNG bytes under it.
+func TestPlotWritesAPNG(t *testing.T) {
+	path := writePlotActivity(t)
+	out := filepath.Join(t.TempDir(), "hr.png")
+	_, errOut, err := runPlotCmd(t, path, "--y", "heart-rate", "--out", out, "--width", "640", "--height", "320")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cfg, err := png.DecodeConfig(f)
+	if err != nil {
+		t.Fatalf("%s is not a PNG: %v", out, err)
+	}
+	if cfg.Width != 640 || cfg.Height != 320 {
+		t.Errorf("a PNG %d by %d, want 640 by 320", cfg.Width, cfg.Height)
+	}
+	if !strings.Contains(errOut, out) {
+		t.Errorf("not said where the chart went: %q", errOut)
+	}
+	if _, _, err := runPlotCmd(t, path, "--y", "heart-rate", "--out", filepath.Join(t.TempDir(), "hr.jpg")); err == nil {
+		t.Error("--out hr.jpg was accepted")
 	}
 }

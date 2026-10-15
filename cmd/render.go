@@ -643,7 +643,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// then the system's; see loadFonts.
 	fallbacks, err := loadFonts(renderOpts.fonts)
 	if err != nil {
-		return err
+		return fmt.Errorf("render: %w", err)
 	}
 	fonts, err := panel.NewFaceCacheWith(fallbacks...)
 	if err != nil {

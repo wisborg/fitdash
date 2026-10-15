@@ -76,7 +76,7 @@ func loadFonts(extra []string) ([]*opentype.Font, error) {
 	for _, path := range extra {
 		f, err := parseFont(path)
 		if err != nil {
-			return nil, fmt.Errorf("render: --font %s: %w", path, err)
+			return nil, fmt.Errorf("--font %s: %w", path, err)
 		}
 		list = append(list, f)
 	}

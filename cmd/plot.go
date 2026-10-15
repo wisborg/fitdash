@@ -3,8 +3,10 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -16,24 +18,37 @@ import (
 	"github.com/wisborg/fitactivity/units"
 
 	"github.com/wisborg/fitdash/internal/inspect"
+	"github.com/wisborg/fitdash/internal/panel"
 	"github.com/wisborg/fitdash/internal/plot"
 )
 
 var plotOpts struct {
 	y, x          string
+	out           string
 	width, height int
 	smooth        time.Duration
+	theme         string
+	fonts         []string
 	units         string
 	unitEach      []string
 }
 
+// The size of a PNG where --width and --height do not say: wide, as a
+// chart over time reads best, and at a size a screen shows whole.
+const (
+	plotImageWidth  = 1600
+	plotImageHeight = 600
+)
+
 var plotCmd = &cobra.Command{
 	Use:   "plot ACTIVITY [ACTIVITY ...] --y METRIC",
-	Short: "Chart one of an activity's metrics against time or distance, in the terminal",
+	Short: "Chart one of an activity's metrics against time or distance, in the terminal or as a PNG",
 	Long: `plot draws one metric of an activity -- power, heart rate, pace, a
-footpod's developer field -- against elapsed time or distance, in braille
-dots in the terminal: two by four to a character, so a chart the width of a
-terminal window is a couple of hundred dots across.
+footpod's developer field -- against elapsed time or distance. In the
+terminal it is drawn in braille dots, two by four to a character, so a
+chart the width of a terminal window is a couple of hundred dots across;
+with --out it is a PNG, in the dashboard's type and themes, with a faint
+band behind the line from each moment's lowest reading to its highest.
 
 Without --y it lists the metrics the activity can be charted by, with how
 much of it carries each: the names are inspect's, so plot never disagrees
@@ -58,8 +73,15 @@ func init() {
 		"speed, pace, elevation, distance, temperature, vertical-oscillation, stance-time, step-length -- or a developer "+
 		"field's own name; without it, the metrics this activity has are listed")
 	f.StringVar(&plotOpts.x, "x", "time", "what the chart runs along -- \"time\" (elapsed, pauses included) or \"distance\"")
-	f.IntVar(&plotOpts.width, "width", 0, "the chart's width in characters, labels included (default: the terminal's, or 100)")
-	f.IntVar(&plotOpts.height, "height", 0, "the chart's height in lines, title and labels included (default: 24, or less in a short terminal)")
+	f.StringVar(&plotOpts.out, "out", "", "write the chart to this PNG rather than drawing it in the terminal")
+	f.IntVar(&plotOpts.width, "width", 0, "the chart's width: in characters in the terminal, labels included (default: the "+
+		"terminal's, or 100); in pixels in a PNG (default: "+strconv.Itoa(plotImageWidth)+")")
+	f.IntVar(&plotOpts.height, "height", 0, "the chart's height: in lines in the terminal, title and labels included (default: "+
+		"24, or less in a short terminal); in pixels in a PNG (default: "+strconv.Itoa(plotImageHeight)+")")
+	f.StringVar(&plotOpts.theme, "theme", panel.LightTheme().Name, "a PNG's palette, as the render's --theme names them -- "+
+		"light (the default: a chart is read on a page more often than over video), dark or night")
+	f.StringArrayVar(&plotOpts.fonts, "font", nil, "a TrueType or OpenType font for a PNG's letters the built-in font lacks, "+
+		"as the render's --font; repeat for several")
 	f.DurationVar(&plotOpts.smooth, "smooth", 0, "average each reading with those within half of this either side of it in time "+
 		"-- 30s takes the noise out of a power trace -- never across a break in the line")
 	f.StringVar(&plotOpts.units, "units", string(units.Metric), "the units readings and distances are drawn in -- \"metric\" "+
@@ -104,22 +126,89 @@ func runPlot(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("plot: this activity has no %s: inspect lists what it has", m.name)
 	}
 
-	width, height := chartSize(cmd.Flags().Changed("width"), cmd.Flags().Changed("height"))
-	chart, err := buildChart(track, m, u, plotOpts.x, width, plotOpts.smooth)
+	if plotOpts.out != "" {
+		err = writePlotImage(track, m, u, cmd.Flags().Changed("width"), cmd.Flags().Changed("height"))
+	} else {
+		err = writePlotBraille(out, track, m, u, cmd.Flags().Changed("width"), cmd.Flags().Changed("height"))
+	}
 	if err != nil {
 		return fmt.Errorf("plot: %w", err)
 	}
-	lines := chart.Braille(width, height)
-	if lines == nil {
-		return fmt.Errorf("plot: %d by %d characters is too small for a chart", width, height)
-	}
-	for _, l := range lines {
-		fmt.Fprintln(out, l)
+	if plotOpts.out != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "chart      %s\n", plotOpts.out)
 	}
 	if c := cov.Coverage(rep.Samples); c < 0.995 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "%s present %.0f%% of the time; the line breaks where it is missing\n", m.name, 100*c)
 	}
 	return nil
+}
+
+// writePlotBraille draws m's chart in braille to out, the size of the
+// terminal or of --width and --height.
+func writePlotBraille(out io.Writer, track *fitactivity.Track, m plotMetric, u units.Set, widthSet, heightSet bool) error {
+	width, height := chartSize(widthSet, heightSet)
+	chart, err := buildChart(track, m, u, plotOpts.x, 2*width, max(width/12, 2), 5, plotOpts.smooth)
+	if err != nil {
+		return err
+	}
+	lines := chart.Braille(width, height)
+	if lines == nil {
+		return fmt.Errorf("%d by %d characters is too small for a chart", width, height)
+	}
+	for _, l := range lines {
+		fmt.Fprintln(out, l)
+	}
+	return nil
+}
+
+// writePlotImage draws m's chart as a PNG at --out, --width by --height
+// pixels or the default size.
+func writePlotImage(track *fitactivity.Track, m plotMetric, u units.Set, widthSet, heightSet bool) error {
+	if !strings.EqualFold(filepath.Ext(plotOpts.out), ".png") {
+		return fmt.Errorf("--out %q: a chart is written as a PNG; name it .png", plotOpts.out)
+	}
+	width, height := plotImageWidth, plotImageHeight
+	if widthSet {
+		width = plotOpts.width
+	}
+	if heightSet {
+		height = plotOpts.height
+	}
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("a chart %d by %d pixels has nothing to draw on", width, height)
+	}
+	theme, err := panel.SelectTheme(plotOpts.theme)
+	if err != nil {
+		return err
+	}
+	fallbacks, err := loadFonts(plotOpts.fonts)
+	if err != nil {
+		return err
+	}
+	fonts, err := panel.NewFaceCacheWith(fallbacks...)
+	if err != nil {
+		return err
+	}
+	chart, err := buildChart(track, m, u, plotOpts.x, width, max(width/140, 2), max(height/90, 3), plotOpts.smooth)
+	if err != nil {
+		return err
+	}
+	img, err := chart.Image(width, height, theme, fonts)
+	if err != nil {
+		return err
+	}
+	if img == nil {
+		return fmt.Errorf("%d by %d pixels is too small for a chart", width, height)
+	}
+	f, err := os.Create(plotOpts.out)
+	if err != nil {
+		return err
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		return fmt.Errorf("writing %s: %w", plotOpts.out, err)
+	}
+	return f.Close()
 }
 
 // chartSize is the chart's size in characters: --width and --height where
@@ -152,8 +241,10 @@ func envInt(name string, fallback int) int {
 }
 
 // buildChart is m's readings over track charted against x, "time" or
-// "distance", for a drawing columns characters wide, smoothed over smooth.
-func buildChart(track *fitactivity.Track, m plotMetric, u units.Set, x string, columns int, smooth time.Duration) (plot.Chart, error) {
+// "distance", for a drawing of resolution columns -- dots across, or
+// pixels -- with at most xTicks and yTicks steps between ticks, smoothed
+// over smooth.
+func buildChart(track *fitactivity.Track, m plotMetric, u units.Set, x string, resolution, xTicks, yTicks int, smooth time.Duration) (plot.Chart, error) {
 	if len(track.Samples) == 0 {
 		return plot.Chart{}, errors.New("the activity has no samples")
 	}
@@ -173,11 +264,11 @@ func buildChart(track *fitactivity.Track, m plotMetric, u units.Set, x string, c
 	}
 
 	// The line breaks where the readings stop for longer than the
-	// recording's own rhythm allows -- or than two dot columns of the
-	// chart, whichever is longer: a gap narrower than that cannot be seen
-	// as one, and a break there would only shred the line.
+	// recording's own rhythm allows -- or than two columns of the drawing,
+	// whichever is longer: a gap narrower than that cannot be seen as one,
+	// and a break there would only shred the line.
 	span := end.Sub(start)
-	maxGap := max(track.GapTolerance(), 2*span/time.Duration(max(2*columns, 1)))
+	maxGap := max(track.GapTolerance(), 2*span/time.Duration(max(resolution, 1)))
 	segs := plot.Smooth(plot.Segments(points, maxGap), smooth)
 	lo, hi, ok := plot.RobustRange(segs)
 	if !ok {
@@ -191,22 +282,23 @@ func buildChart(track *fitactivity.Track, m plotMetric, u units.Set, x string, c
 		if !ok {
 			return plot.Chart{}, errors.New("the activity records no distance to chart against; use --x time")
 		}
-		xs = plot.ExactScale(u.Distance.FromSI(first), u.Distance.FromSI(last), max(columns/12, 2), plot.Number)
+		xs = plot.ExactScale(u.Distance.FromSI(first), u.Distance.FromSI(last), xTicks, plot.Number)
 		against = "distance (" + u.Distance.Name + ")"
 	} else {
-		xs = plot.ExactScale(0, span.Seconds(), max(columns/12, 2), plot.Clock)
+		xs = plot.ExactScale(0, span.Seconds(), xTicks, plot.Clock)
 	}
-	ys := plot.NewScale(lo, hi, 5, m.kind)
+	ys := plot.NewScale(lo, hi, yTicks, m.kind)
 	ys.Inverted = m.inverted
 
 	title := m.name
 	if m.unit != "" {
 		title += " (" + m.unit + ")"
 	}
+	title += " against " + against
 	if smooth > 0 {
 		title += fmt.Sprintf(", smoothed over %s", smooth)
 	}
-	return plot.Chart{Title: title + " against " + against, X: xs, Y: ys, Segments: segs}, nil
+	return plot.Chart{Title: title, X: xs, Y: ys, Segments: segs}, nil
 }
 
 // distanceSpan is the first and last distance the activity records, in
