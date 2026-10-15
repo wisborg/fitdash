@@ -48,7 +48,7 @@ func runPlotCmd(t *testing.T, args ...string) (out, errOut string, err error) {
 		}
 		f.Changed = false
 	})
-	plotOpts.unitEach, plotOpts.fonts = nil, nil
+	plotOpts.y, plotOpts.unitEach, plotOpts.fonts = nil, nil, nil
 	var o, e bytes.Buffer
 	cmd.SetOut(&o)
 	cmd.SetErr(&e)
@@ -184,5 +184,56 @@ func TestPlotTerminalChoice(t *testing.T) {
 	}
 	if !strings.HasPrefix(out, "\x1b_Ga=T,f=100,q=2,c=60,") {
 		t.Errorf("--terminal kitty drew %q", out[:min(len(out), 40)])
+	}
+}
+
+// Several metrics, comma-separated or repeated, are charted one strip each
+// under one title; a metric named twice, or one the activity lacks among
+// several, is refused; and each partial metric is said to be.
+func TestPlotSeveralMetrics(t *testing.T) {
+	path := writePlotActivity(t)
+	for _, args := range [][]string{{"--y", "heart-rate,power"}, {"--y", "heart-rate", "--y", "power"}} {
+		out, errOut, err := runPlotCmd(t, append([]string{path, "--width", "70", "--height", "30"}, args...)...)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		if len(lines) != 30 || lines[0] != "heart-rate and power against time" {
+			t.Errorf("%v: %d lines titled %q", args, len(lines), lines[0])
+		}
+		for _, head := range []string{"│heart-rate (bpm)", "│power (W)"} {
+			if !strings.Contains(out, head) {
+				t.Errorf("%v: no strip headed %q", args, head)
+			}
+		}
+		if !strings.Contains(errOut, "power present 50%") {
+			t.Errorf("%v: power's partial coverage not said: %q", args, errOut)
+		}
+	}
+	if _, _, err := runPlotCmd(t, path, "--y", "power,power"); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("power twice: %v", err)
+	}
+	if _, _, err := runPlotCmd(t, path, "--y", "power,temperature"); err == nil || !strings.Contains(err.Error(), "no temperature") {
+		t.Errorf("temperature among several: %v", err)
+	}
+}
+
+// A PNG of several metrics is taller by default, so each strip has room.
+func TestPlotSeveralMetricsPNGHeight(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "two.png")
+	if _, _, err := runPlotCmd(t, writePlotActivity(t), "--y", "heart-rate,power", "--out", out); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cfg, err := png.DecodeConfig(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != plotImageWidth || cfg.Height != plotImageHeightFor(2) || plotImageHeightFor(2) <= plotImageHeight {
+		t.Errorf("two metrics' PNG is %d by %d, want %d by %d, taller than one's", cfg.Width, cfg.Height, plotImageWidth, plotImageHeightFor(2))
 	}
 }

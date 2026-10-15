@@ -546,12 +546,15 @@ fitdash plot activity.fit                                 # what can it chart?
 fitdash plot activity.fit --y power --smooth 30s          # power over time, in the terminal
 fitdash plot activity.fit --y pace --x distance           # pace by kilometre
 fitdash plot activity.fit --y heart-rate --out hr.png     # a PNG instead
+fitdash plot activity.fit --y power,heart-rate,cadence    # several, one above the other
 ```
 
 Without `--y` it lists the metrics the activity carries and how much of it carries each;
 the names are `inspect`'s, so the two never disagree about what a file holds. A developer
 field is charted under its own name, matched exactly first: Stryd records a `Power` of
-its own beside the watch's `power`, and `--y Power` is Stryd's.
+its own beside the watch's `power`, and `--y Power` is Stryd's. Several metrics are
+charted in strips one above the other, each on its own scale and sharing the x axis, so
+a moment in one is directly above the same moment in the next.
 
 In iTerm2, WezTerm, kitty and Ghostty the chart is a picture in the terminal, the width
 of the window. Anywhere else it is drawn in braille dots, two by four to a character —

@@ -16,10 +16,9 @@ func ramp(gapFrom, gapTo float64) Chart {
 		ps = append(ps, Point{X: t, T: t, Y: t, Ok: t < gapFrom || t >= gapTo})
 	}
 	return Chart{
-		Title:    "ramp",
-		X:        ExactScale(0, 100, 5, Clock),
-		Y:        NewScale(0, 100, 4, Number),
-		Segments: Segments(ps, time.Second),
+		Title:  "ramp",
+		X:      ExactScale(0, 100, 5, Clock),
+		Strips: []Strip{{Title: "ramp", Y: NewScale(0, 100, 4, Number), Segments: Segments(ps, time.Second)}},
 	}
 }
 
@@ -132,5 +131,58 @@ func TestLineFillsASteepRise(t *testing.T) {
 		if !dots[y][0] && !dots[y][1] {
 			t.Errorf("row %d of a rise from 9 to 0 is not set", y)
 		}
+	}
+}
+
+// stack is two strips sharing ramp's x axis: the ramp whole, then the ramp
+// without readings from gapFrom to gapTo seconds.
+func stack(gapFrom, gapTo float64) Chart {
+	c := ramp(1000, 1000)
+	gapped := ramp(gapFrom, gapTo).Strips[0]
+	gapped.Title = "gapped"
+	c.Strips = append(c.Strips, gapped)
+	return c
+}
+
+// Several strips are stacked under the title, each headed by its own, on
+// plots that line up -- one gutter for all -- and share the height; a gap
+// in one strip is blank in that strip only.
+func TestBrailleStacksStrips(t *testing.T) {
+	lines := stack(40, 60).Braille(44, 30)
+	if len(lines) != 30 {
+		t.Fatalf("%d lines, want 30", len(lines))
+	}
+	var heads []int
+	for i, l := range lines {
+		if strings.HasSuffix(l, "│ramp") || strings.HasSuffix(l, "│gapped") {
+			heads = append(heads, i)
+		}
+		if i == 0 || i >= len(lines)-2 {
+			continue
+		}
+		if r := []rune(l); r[3] != '│' && r[3] != '┤' {
+			t.Errorf("line %d has no axis where the others do: %q", i, l)
+		}
+	}
+	if len(heads) != 2 || heads[0] != 1 {
+		t.Fatalf("strip headings on lines %v, want two, the first under the title:\n%s", heads, strings.Join(lines, "\n"))
+	}
+	// Each strip's rows, without its heading.
+	top := append([]string{""}, lines[heads[0]+1:heads[1]]...)
+	bottom := append([]string{""}, lines[heads[1]+1:]...)
+	cols := 44 - 3 - 1
+	c0, c1 := cols*43/100, cols*57/100
+	if dotsIn(append(top, "", ""), 3, c0, c1) == 0 {
+		t.Error("the whole ramp's strip is blank where only the other has a gap")
+	}
+	if n := dotsIn(bottom, 3, c0, c1); n != 0 {
+		t.Errorf("%d dots in the gapped strip's gap:\n%s", n, strings.Join(lines, "\n"))
+	}
+}
+
+// A height that cannot give every strip two rows is no drawing.
+func TestBrailleTooShortForItsStrips(t *testing.T) {
+	if lines := stack(1000, 1000).Braille(44, 8); lines != nil {
+		t.Errorf("two strips in 8 lines: %q", lines)
 	}
 }

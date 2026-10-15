@@ -33,8 +33,13 @@ func near(a, b color.Color, tol int) bool {
 // accentIn counts the pixels of the line's colour in the columns from x0 up
 // to x1.
 func accentIn(img *image.RGBA, x0, x1 int) int {
+	return accentWithin(img, x0, x1, 0, img.Bounds().Dy())
+}
+
+// accentWithin counts them in the rows from y0 up to y1 too.
+func accentWithin(img *image.RGBA, x0, x1, y0, y1 int) int {
 	n := 0
-	for y := 0; y < img.Bounds().Dy(); y++ {
+	for y := y0; y < y1; y++ {
 		for x := x0; x < x1; x++ {
 			if near(img.At(x, y), panel.LightTheme().Accent, 12) {
 				n++
@@ -79,5 +84,22 @@ func TestImageLeavesAGapEmpty(t *testing.T) {
 func TestImageTooSmall(t *testing.T) {
 	if img := chartImage(t, ramp(1000, 1000), 40, 30); img != nil {
 		t.Errorf("a 40 by 30 picture was drawn")
+	}
+}
+
+// Two strips are stacked, the upper above the middle of the picture and
+// the lower below it, each drawing its own line; a gap in the lower is
+// empty there only.
+func TestImageStacksStrips(t *testing.T) {
+	img := chartImage(t, stack(40, 60), 800, 600)
+	x0, x1 := 800*47/100, 800*53/100
+	if accentWithin(img, x0, x1, 0, 300) == 0 {
+		t.Error("the upper strip draws nothing over the lower strip's gap")
+	}
+	if accentWithin(chartImage(t, stack(1000, 1000), 800, 600), x0, x1, 300, 600) == 0 {
+		t.Fatal("the lower strip draws nothing there even without its gap; the test is measuring the wrong place")
+	}
+	if n := accentWithin(img, x0, x1, 300, 600); n != 0 {
+		t.Errorf("%d pixels of line in the lower strip's gap", n)
 	}
 }
