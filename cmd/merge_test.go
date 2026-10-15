@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,7 +18,10 @@ import (
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/fittest"
 
+	"github.com/wisborg/output/table"
+
 	"github.com/wisborg/fitdash/internal/encode"
+	"github.com/wisborg/fitdash/internal/inspect"
 )
 
 // mergeBase is an arbitrary round instant for the fixtures below to hang off.
@@ -505,5 +509,62 @@ func TestDecodeActivities_RefusesARouteWithoutTimes(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "times it was recorded") {
 		t.Errorf("the refusal does not say why fitdash needs times: %v", err)
+	}
+}
+
+// A file recording distance but no speed -- an indoor machine's TCX -- is
+// given a speed worked out from its distance, and says so: in the summary,
+// in inspect's source column, and per file, so a FIT merged with it that
+// records its own speed is not said to have been worked out.
+func TestDecodeActivities_WorksOutSpeedFromDistance(t *testing.T) {
+	dir := t.TempDir()
+	fit := mergePiece(t, dir, "later.fit", mergeBase.Add(10*time.Minute))
+	tcx := filepath.Join(dir, "machine.tcx")
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"><Activities><Activity Sport="Other"><Lap StartTime="` +
+		mergeBase.Format(time.RFC3339) + `"><Track>`)
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&b, `<Trackpoint><Time>%s</Time><DistanceMeters>%d</DistanceMeters></Trackpoint>`,
+			mergeBase.Add(time.Duration(i)*time.Second).Format(time.RFC3339), 5*i)
+	}
+	b.WriteString(`</Track></Lap></Activity></Activities></TrainingCenterDatabase>`)
+	if err := os.WriteFile(tcx, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	track, sources, err := decodeActivities([]string{fit, tcx})
+	if err != nil {
+		t.Fatalf("decodeActivities: %v", err)
+	}
+	if s := track.Samples[30]; !s.HasSpeed || math.Abs(s.Speed-5) > 1e-9 {
+		t.Errorf("the machine's sample reads speed %v (has %v), want the 5 m/s its distance says", s.Speed, s.HasSpeed)
+	}
+	if !sources[0].DerivedSpeed || sources[1].DerivedSpeed {
+		t.Errorf("sources %+v; want only the TCX's speed worked out", sources)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetErr(&out)
+	quiet := renderOpts.quiet
+	renderOpts.quiet = false
+	defer func() { renderOpts.quiet = quiet }()
+	writeDistanceSummary(cmd, sources)
+	if !strings.Contains(out.String(), "speed: worked out from the distance of "+tcx) {
+		t.Errorf("the summary does not say the TCX's speed was worked out:\n%s", out.String())
+	}
+	var row []string
+	tbl := inspectTable(inspect.Build(track), summedDistance(sources), derivedSpeed(sources))
+	var csv bytes.Buffer
+	if err := tbl.WriteCSV(&csv, table.CSVStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(csv.String(), "\n") {
+		if strings.HasPrefix(l, "Speed,") {
+			row = strings.Split(l, ",")
+		}
+	}
+	if len(row) < 2 || row[1] != "dist" {
+		t.Errorf("inspect's Speed row is %q; want its source given as dist", row)
 	}
 }

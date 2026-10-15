@@ -28,6 +28,10 @@ type activitySource struct {
 	// SummedDistance is whether the file recorded no distance and was given
 	// one summed from its GPS fixes; see decodeActivities.
 	SummedDistance bool
+
+	// DerivedSpeed is whether the file recorded no speed and was given one
+	// worked out from its distance; see decodeActivities.
+	DerivedSpeed bool
 }
 
 // decodeActivities decodes every path and merges them into one Track, also
@@ -55,6 +59,7 @@ type activitySource struct {
 func decodeActivities(paths []string) (*fitactivity.Track, []activitySource, error) {
 	tracks := make([]*fitactivity.Track, len(paths))
 	summed := make(map[string]bool, len(paths))
+	derived := make(map[string]bool, len(paths))
 	for i, p := range paths {
 		t, err := fitactivity.Read(p)
 		if errors.Is(err, fitactivity.ErrNoTimes) {
@@ -73,6 +78,11 @@ func decodeActivities(paths []string) (*fitactivity.Track, []activitySource, err
 		// onto the one before -- and said so in the summary and in
 		// inspect's source column, since the file never had it.
 		summed[p] = t.FillDistanceFromGPS()
+		// Then speed, which an indoor machine's TCX and a GPX record none
+		// of, so the speed and pace readouts declined for them: worked out
+		// from the distance -- recorded, or summed just now -- over a few
+		// seconds of each sample, and said so, as summed distance is.
+		derived[p] = t.FillSpeedFromDistance()
 		tracks[i] = t
 	}
 	merged, err := fitactivity.Merge(tracks...)
@@ -96,7 +106,7 @@ func decodeActivities(paths []string) (*fitactivity.Track, []activitySource, err
 	timer := fitactivity.BuildTimerModel(merged)
 	sources := make([]activitySource, len(merged.Sources))
 	for i, path := range merged.Sources {
-		sources[i] = activitySource{Path: path, Offset: timer.Elapsed(starts[path]), SummedDistance: summed[path]}
+		sources[i] = activitySource{Path: path, Offset: timer.Elapsed(starts[path]), SummedDistance: summed[path], DerivedSpeed: derived[path]}
 	}
 	return merged, sources, nil
 }
@@ -146,7 +156,8 @@ func mergedSourceLines(sources []activitySource) []string {
 // hole between two files is worth seeing before watching the render, not
 // after.
 // writeDistanceSummary says which files' distance was summed from their GPS
-// fixes rather than recorded: a figure on screen the file never carried.
+// fixes rather than recorded, and which files' speed was worked out from
+// their distance: figures on screen the file never carried.
 func writeDistanceSummary(cmd *cobra.Command, sources []activitySource) {
 	if renderOpts.quiet {
 		return
@@ -163,6 +174,19 @@ func writeDistanceSummary(cmd *cobra.Command, sources []activitySource) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "distance: the file records none; summed from its GPS fixes, as a device would\n")
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "distance: summed from the GPS fixes of %s, which record none\n", strings.Join(summed, ", "))
+	}
+	var derived []string
+	for _, s := range sources {
+		if s.DerivedSpeed {
+			derived = append(derived, s.Path)
+		}
+	}
+	switch {
+	case len(derived) == 0:
+	case len(sources) == 1:
+		fmt.Fprintf(cmd.ErrOrStderr(), "speed: the file records none; worked out from its distance\n")
+	default:
+		fmt.Fprintf(cmd.ErrOrStderr(), "speed: worked out from the distance of %s, which record none\n", strings.Join(derived, ", "))
 	}
 }
 

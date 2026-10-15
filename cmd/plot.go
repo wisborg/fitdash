@@ -184,7 +184,7 @@ func runPlot(cmd *cobra.Command, args []string) error {
 // charted by, in the units and with the power source the flags ask for:
 // what a chart is drawn from, and what completing --y offers.
 func plotActivity(cmd *cobra.Command, args []string) (*fitactivity.Track, units.Set, fitactivity.PowerSource, []plotMetric, error) {
-	track, _, err := decodeActivities(args)
+	track, sources, err := decodeActivities(args)
 	if err != nil {
 		return nil, units.Set{}, 0, nil, err
 	}
@@ -204,7 +204,11 @@ func plotActivity(cmd *cobra.Command, args []string) (*fitactivity.Track, units.
 		return nil, units.Set{}, 0, nil, err
 	}
 	rep := inspect.Build(track)
-	return track, u, power, plotMetrics(track.Sport, u, rep.DevFields, power, powerFrom(track, power)), nil
+	speedFrom := ""
+	if derivedSpeed(sources) {
+		speedFrom = "from distance"
+	}
+	return track, u, power, plotMetrics(track.Sport, u, rep.DevFields, power, powerFrom(track, power), speedFrom), nil
 }
 
 // writePlotTerminal draws m's chart in the terminal, as a picture or in

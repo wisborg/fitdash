@@ -24,7 +24,9 @@ type plotMetric struct {
 	// unit is the unit its readings are drawn in.
 	unit string
 	// from names where the readings come from, where more than one sensor
-	// could have taken them: "Stryd" or "native", for power.
+	// could have taken them -- "Stryd" or "native", for power -- or where
+	// they were worked out rather than recorded: "from distance", for a
+	// speed the file did not record.
 	from string
 	kind plot.Kind
 	// inverted runs the axis backwards: a pace, faster higher.
@@ -53,7 +55,10 @@ func flagName(inspectName string) string {
 // anyone wants, and the route is what a map is for. Distance is, since a
 // chart of distance against time is how far the activity had gone, which
 // is.
-func plotMetrics(sport string, u units.Set, devFields []inspect.Metric, power fitactivity.PowerSource, powerFrom string) []plotMetric {
+//
+// speedFrom, where not empty, names where speed and pace came from when
+// the file recorded none: "from distance".
+func plotMetrics(sport string, u units.Set, devFields []inspect.Metric, power fitactivity.PowerSource, powerFrom, speedFrom string) []plotMetric {
 	cadenceFactor, cadenceUnit := fitactivity.CadenceUnit(sport)
 	ms := []plotMetric{
 		{inspect: inspect.MetricHeartRate, unit: "bpm", value: func(s fitactivity.Sample) (float64, bool) {
@@ -65,13 +70,13 @@ func plotMetrics(sport string, u units.Set, devFields []inspect.Metric, power fi
 		{inspect: inspect.MetricCadence, unit: cadenceUnit, value: func(s fitactivity.Sample) (float64, bool) {
 			return float64(s.Cadence) * cadenceFactor, s.HasCadence
 		}},
-		{inspect: inspect.MetricSpeed, unit: u.Speed.Name, value: func(s fitactivity.Sample) (float64, bool) {
+		{inspect: inspect.MetricSpeed, unit: u.Speed.Name, from: speedFrom, value: func(s fitactivity.Sample) (float64, bool) {
 			return u.Speed.FromSI(s.Speed), s.HasSpeed
 		}},
 		// A pace is the time a distance takes, and standing still takes
 		// forever: no pace at all, rather than one drawn off the bottom of
 		// the scale that a reader would take for very slow.
-		{name: "pace", inspect: inspect.MetricSpeed, unit: u.Pace.Name, kind: plot.Clock, inverted: true,
+		{name: "pace", inspect: inspect.MetricSpeed, unit: u.Pace.Name, from: speedFrom, kind: plot.Clock, inverted: true,
 			value: func(s fitactivity.Sample) (float64, bool) {
 				return u.Pace.FromSI(s.Speed), s.HasSpeed && s.Speed > 0
 			}},

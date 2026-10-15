@@ -68,7 +68,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	// report for JSON/YAML, the table carries the rows worth reading on a
 	// terminal. Deriving one from the other forces the richer shape through
 	// the poorer one and makes both worse -- see github.com/wisborg/output.
-	doc := output.Document{Data: jsonReport(rep), Table: inspectTable(rep, summedDistance(sources))}
+	doc := output.Document{Data: jsonReport(rep), Table: inspectTable(rep, summedDistance(sources), derivedSpeed(sources))}
 	if err := doc.Write(out, format.Format); err != nil {
 		return fmt.Errorf("inspect: writing report: %w", err)
 	}
@@ -131,7 +131,7 @@ func writeSummary(w io.Writer, rep inspect.Report, sources []activitySource) {
 // printing zeros there would read as a real measurement of zero -- which is
 // the same absent-is-not-zero mistake this project spends its care avoiding,
 // just committed in a table instead of in pixels.
-func inspectTable(rep inspect.Report, summed bool) *table.Table {
+func inspectTable(rep inspect.Report, summed, derived bool) *table.Table {
 	t := table.New(
 		table.Column{Header: "metric"},
 		table.Column{Header: "source"},
@@ -160,10 +160,15 @@ func inspectTable(rep inspect.Report, summed bool) *table.Table {
 		t.MustAppend(m.Name, source, m.Unit, m.Coverage(rep.Samples)*100, m.Present, lo, hi)
 	}
 	// A distance summed from the fixes is no field of the file's, and says
-	// so: "gps", where the format's own would be "std".
+	// so: "gps", where the format's own would be "std". A speed worked out
+	// from the distance says "dist".
 	for _, m := range rep.Metrics {
 		if summed && m.Name == inspect.MetricDistance {
 			add(m, "gps")
+			continue
+		}
+		if derived && m.Name == inspect.MetricSpeed {
+			add(m, "dist")
 			continue
 		}
 		add(m, "std")
@@ -172,6 +177,17 @@ func inspectTable(rep inspect.Report, summed bool) *table.Table {
 		add(m, "dev")
 	}
 	return t
+}
+
+// derivedSpeed is whether any of sources' speed was worked out from its
+// distance.
+func derivedSpeed(sources []activitySource) bool {
+	for _, s := range sources {
+		if s.DerivedSpeed {
+			return true
+		}
+	}
+	return false
 }
 
 // summedDistance is whether any of sources' distance was summed from GPS.
