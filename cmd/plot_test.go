@@ -14,9 +14,9 @@ import (
 	"github.com/wisborg/fitactivity/fittest"
 )
 
-// writePlotActivity is twenty synthetic minutes with power on the first
-// half only, and a footpod's developer field named as Stryd names its
-// power.
+// writePlotActivity is twenty synthetic minutes with the watch's power on
+// the first half only, and a footpod's developer field named as Stryd
+// names its power, on all of it.
 func writePlotActivity(t *testing.T) string {
 	t.Helper()
 	opts := fittest.DefaultOptions()
@@ -64,7 +64,7 @@ func TestPlotListsTheMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"heart-rate", "power", "pace", "50.0%", "Power"} {
+	for _, want := range []string{"heart-rate", "power", "W, Stryd", "pace", "Power"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the listing lacks %q:\n%s", want, out)
 		}
@@ -78,7 +78,7 @@ func TestPlotListsTheMetrics(t *testing.T) {
 // a metric the activity carries part of the time is drawn, and said to be
 // partial.
 func TestPlotDrawsAChart(t *testing.T) {
-	out, errOut, err := runPlotCmd(t, writePlotActivity(t), "--y", "power", "--width", "70", "--height", "15")
+	out, errOut, err := runPlotCmd(t, writePlotActivity(t), "--y", "power", "--power-source", "native", "--width", "70", "--height", "15")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestPlotDrawsAChart(t *testing.T) {
 	if len(lines) != 15 {
 		t.Errorf("%d lines, want 15:\n%s", len(lines), out)
 	}
-	if lines[0] != "power (W) against time" {
+	if lines[0] != "power (W, watch) against time" {
 		t.Errorf("title %q", lines[0])
 	}
 	if !strings.Contains(errOut, "power present 50% of the time") {
@@ -97,18 +97,49 @@ func TestPlotDrawsAChart(t *testing.T) {
 	}
 }
 
-// The watch's power and a footpod's "Power" are told apart by their case.
-func TestPlotTellsTheFootpodsPowerApart(t *testing.T) {
-	watch, _, err := runPlotCmd(t, writePlotActivity(t), "--y", "power", "--width", "70", "--height", "15")
+// Power is the source --power-source names, as the render reads it: by
+// default a Stryd footpod's where the activity has one, all of it here,
+// and the watch's own with native, half of it here; the title says which.
+// A source the activity lacks is refused, not swapped for the other.
+func TestPlotPowerSource(t *testing.T) {
+	path := writePlotActivity(t)
+	auto, errOut, err := runPlotCmd(t, path, "--y", "power", "--width", "70", "--height", "15")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pod, _, err := runPlotCmd(t, writePlotActivity(t), "--y", "Power", "--width", "70", "--height", "15")
+	if !strings.HasPrefix(auto, "power (W, Stryd) against time") || errOut != "" {
+		t.Errorf("auto charted %q, noting %q; want Stryd's, all of it", strings.SplitN(auto, "\n", 2)[0], errOut)
+	}
+	native, _, err := runPlotCmd(t, path, "--y", "power", "--power-source", "native", "--width", "70", "--height", "15")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.HasPrefix(pod, "power (W)") || watch == pod {
-		t.Errorf("--y Power drew the watch's power, not the footpod's:\n%s", pod)
+	if !strings.HasPrefix(native, "power (W, watch)") {
+		t.Errorf("native charted %q", strings.SplitN(native, "\n", 2)[0])
+	}
+	list, _, err := runPlotCmd(t, path, "--power-source", "native")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(list, "W, watch") || !strings.Contains(list, "50.0%") {
+		t.Errorf("the listing does not give the watch's power and its half coverage:\n%s", list)
+	}
+
+	opts := fittest.DefaultOptions()
+	opts.Count, opts.PowerWatts = 600, 250
+	watchOnly := filepath.Join(t.TempDir(), "watch.fit")
+	if err := fittest.WriteFile(watchOnly, opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runPlotCmd(t, watchOnly, "--y", "power", "--power-source", "stryd"); err == nil || !strings.Contains(err.Error(), "no stryd power") {
+		t.Errorf("Stryd's power from a file without a Stryd: %v", err)
+	}
+	out, _, err := runPlotCmd(t, watchOnly, "--y", "power", "--width", "70", "--height", "15")
+	if err != nil || !strings.HasPrefix(out, "power (W, watch)") {
+		t.Errorf("auto without a Stryd charted %q (%v); want the watch's", strings.SplitN(out, "\n", 2)[0], err)
+	}
+	if _, _, err := runPlotCmd(t, path, "--y", "power", "--power-source", "garmin"); err == nil {
+		t.Error("--power-source garmin was accepted")
 	}
 }
 
@@ -193,7 +224,7 @@ func TestPlotTerminalChoice(t *testing.T) {
 func TestPlotSeveralMetrics(t *testing.T) {
 	path := writePlotActivity(t)
 	for _, args := range [][]string{{"--y", "heart-rate,power"}, {"--y", "heart-rate", "--y", "power"}} {
-		out, errOut, err := runPlotCmd(t, append([]string{path, "--width", "70", "--height", "30"}, args...)...)
+		out, errOut, err := runPlotCmd(t, append([]string{path, "--power-source", "native", "--width", "70", "--height", "30"}, args...)...)
 		if err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
@@ -201,7 +232,7 @@ func TestPlotSeveralMetrics(t *testing.T) {
 		if len(lines) != 30 || lines[0] != "heart-rate and power against time" {
 			t.Errorf("%v: %d lines titled %q", args, len(lines), lines[0])
 		}
-		for _, head := range []string{"│heart-rate (bpm)", "│power (W)"} {
+		for _, head := range []string{"│heart-rate (bpm)", "│power (W, watch)"} {
 			if !strings.Contains(out, head) {
 				t.Errorf("%v: no strip headed %q", args, head)
 			}

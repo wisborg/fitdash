@@ -33,6 +33,7 @@ var plotOpts struct {
 	theme         string
 	fonts         []string
 	terminal      string
+	power         string
 	units         string
 	unitEach      []string
 }
@@ -108,6 +109,9 @@ func init() {
 		"as the render's --font; repeat for several")
 	f.DurationVar(&plotOpts.smooth, "smooth", 0, "average each reading with those within half of this either side of it in time "+
 		"-- 30s takes the noise out of a power trace -- never across a break in the line")
+	f.StringVar(&plotOpts.power, "power-source", "auto", "which power --y power charts, as the render's --power-source: "+
+		"\"auto\" (default: a Stryd footpod's where the activity has it, the watch's otherwise), \"stryd\" or \"native\" "+
+		"(the watch's own); the two are different sensors and can disagree by half")
 	f.StringVar(&plotOpts.units, "units", string(units.Metric), "the units readings and distances are drawn in -- \"metric\" "+
 		"or \"imperial\"; a flight's default is nautical miles, feet and knots")
 	f.StringArrayVar(&plotOpts.unitEach, "unit", nil, "one quantity's unit, over --units (repeatable) -- distance=km|mi|nm, "+
@@ -134,11 +138,15 @@ func runPlot(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("plot: %w", err)
 		}
 	}
+	power, err := parsePowerSource(plotOpts.power)
+	if err != nil {
+		return fmt.Errorf("plot: %w", err)
+	}
 	rep := inspect.Build(track)
-	metrics := plotMetrics(track.Sport, u, rep.DevFields)
+	metrics := plotMetrics(track.Sport, u, rep.DevFields, power, powerFrom(track, power))
 	out := cmd.OutOrStdout()
 	if len(plotOpts.y) == 0 {
-		writePlotMetrics(out, rep, metrics)
+		writePlotMetrics(out, track, metrics)
 		return nil
 	}
 	var ms []plotMetric
@@ -152,7 +160,10 @@ func runPlot(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("plot: --y names %s twice", m.name)
 			}
 		}
-		if cov, _ := rep.Metric(m.inspect); cov.Present == 0 {
+		if m.coverage(track) == 0 {
+			if m.name == "power" && power != fitactivity.PowerAuto {
+				return fmt.Errorf("plot: this activity has no %s power: --power-source auto charts whichever it has", plotOpts.power)
+			}
 			return fmt.Errorf("plot: this activity has no %s: inspect lists what it has", m.name)
 		}
 		ms = append(ms, m)
@@ -171,8 +182,7 @@ func runPlot(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "chart      %s\n", plotOpts.out)
 	}
 	for _, m := range ms {
-		cov, _ := rep.Metric(m.inspect)
-		if c := cov.Coverage(rep.Samples); c < 0.995 {
+		if c := m.coverage(track); c < 0.995 {
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s present %.0f%% of the time; the line breaks where it is missing\n", m.name, 100*c)
 		}
 	}
@@ -416,7 +426,10 @@ func buildChart(track *fitactivity.Track, ms []plotMetric, u units.Set, x string
 		ys := plot.NewScale(lo, hi, yTicks, m.kind)
 		ys.Inverted = m.inverted
 		title := m.name
-		if m.unit != "" {
+		switch {
+		case m.unit != "" && m.from != "":
+			title += " (" + m.unit + ", " + m.from + ")"
+		case m.unit != "":
 			title += " (" + m.unit + ")"
 		}
 		chart.Strips = append(chart.Strips, plot.Strip{Title: title, Y: ys, Segments: segs})
@@ -454,19 +467,24 @@ func distanceSpan(track *fitactivity.Track) (first, last float64, ok bool) {
 // writePlotMetrics lists the metrics the activity can be charted by, with
 // how much of it carries each; the ones it does not carry are left out,
 // since there is nothing of theirs to chart, and inspect lists them.
-func writePlotMetrics(w io.Writer, rep inspect.Report, ms []plotMetric) {
+// Power's source is named beside it, as its chart's title names it.
+func writePlotMetrics(w io.Writer, track *fitactivity.Track, ms []plotMetric) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "--y\tunit\tcoverage")
 	for _, m := range ms {
-		cov, ok := rep.Metric(m.inspect)
-		if !ok || cov.Present == 0 {
+		c := m.coverage(track)
+		if c == 0 {
 			continue
 		}
 		name := m.name
 		if strings.ContainsRune(name, ' ') {
 			name = strconv.Quote(name)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%.1f%%\n", name, m.unit, 100*cov.Coverage(rep.Samples))
+		unit := m.unit
+		if m.from != "" {
+			unit += ", " + m.from
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%.1f%%\n", name, unit, 100*c)
 	}
 	tw.Flush()
 }

@@ -18,12 +18,14 @@ type plotMetric struct {
 	// name is how --y spells it: inspect's name, lower case, hyphenated --
 	// "heart-rate" -- or a developer field's own name as inspect lists it.
 	name string
-	// inspect is the metric's name in inspect's report, where its coverage
-	// is counted, so plot and inspect cannot disagree about what a file
-	// carries.
+	// inspect is the metric's name in inspect's report, from which its
+	// name is taken, so plot and inspect name a file's metrics alike.
 	inspect string
 	// unit is the unit its readings are drawn in.
 	unit string
+	// from names where the readings come from, where more than one sensor
+	// could have taken them: "Stryd" or "watch", for power.
+	from string
 	kind plot.Kind
 	// inverted runs the axis backwards: a pace, faster higher.
 	inverted bool
@@ -37,21 +39,28 @@ func flagName(inspectName string) string {
 }
 
 // plotMetrics are the metrics plot knows, for an activity of sport whose
-// readings are written in u: every one inspect counts that has a reading
-// to draw, pace beside speed, and the activity's developer fields.
+// readings are written in u and whose power is read from power: every one
+// inspect counts that has a reading to draw, pace beside speed, and the
+// activity's developer fields.
+//
+// power is read as the render reads it, from the source --power-source
+// names, so a chart of a run's power is the power its dashboard shows: on
+// a run with a Stryd footpod, by default, the footpod's, not the watch's,
+// which can read half as much again. powerFrom names the source the title
+// gives it.
 //
 // Position is not among them: a latitude against time is not a chart
 // anyone wants, and the route is what a map is for. Distance is, since a
 // chart of distance against time is how far the activity had gone, which
 // is.
-func plotMetrics(sport string, u units.Set, devFields []inspect.Metric) []plotMetric {
+func plotMetrics(sport string, u units.Set, devFields []inspect.Metric, power fitactivity.PowerSource, powerFrom string) []plotMetric {
 	cadenceFactor, cadenceUnit := fitactivity.CadenceUnit(sport)
 	ms := []plotMetric{
 		{inspect: inspect.MetricHeartRate, unit: "bpm", value: func(s fitactivity.Sample) (float64, bool) {
 			return float64(s.HeartRate), s.HasHeartRate
 		}},
-		{inspect: inspect.MetricPower, unit: "W", value: func(s fitactivity.Sample) (float64, bool) {
-			return float64(s.Power), s.HasPower
+		{inspect: inspect.MetricPower, unit: "W", from: powerFrom, value: func(s fitactivity.Sample) (float64, bool) {
+			return s.ResolvedPower(power)
 		}},
 		{inspect: inspect.MetricCadence, unit: cadenceUnit, value: func(s fitactivity.Sample) (float64, bool) {
 			return float64(s.Cadence) * cadenceFactor, s.HasCadence
@@ -125,4 +134,34 @@ func findPlotMetric(ms []plotMetric, name string) (plotMetric, error) {
 	}
 	sort.Strings(names)
 	return plotMetric{}, fmt.Errorf("--y %q is not a metric plot knows; it knows %s", name, strings.Join(names, ", "))
+}
+
+// coverage is the fraction of track's samples carrying m's reading,
+// counted from the reading the chart draws -- so power's is the chosen
+// source's, and pace's leaves out standing still, which has none.
+func (m plotMetric) coverage(track *fitactivity.Track) float64 {
+	if len(track.Samples) == 0 {
+		return 0
+	}
+	n := 0
+	for _, s := range track.Samples {
+		if _, ok := m.value(s); ok {
+			n++
+		}
+	}
+	return float64(n) / float64(len(track.Samples))
+}
+
+// powerFrom names the source power is read from, for a chart's title:
+// "Stryd" or "watch". Under auto, which prefers Stryd and falls back to
+// the watch, it is the one the activity has; a file that records neither
+// has no power to chart, and none is named.
+func powerFrom(track *fitactivity.Track, src fitactivity.PowerSource) string {
+	switch {
+	case src == fitactivity.PowerStryd, src == fitactivity.PowerAuto && track.HasPower(fitactivity.PowerStryd):
+		return "Stryd"
+	case track.HasPower(fitactivity.PowerNative):
+		return "watch"
+	}
+	return ""
 }

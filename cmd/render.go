@@ -150,6 +150,7 @@ var powerSources = map[string]fitactivity.PowerSource{
 
 // parsePowerSource maps a --power-source value to its enum, rejecting an
 // unknown one where the user typed it rather than falling back to a default.
+// The error names the flag; the caller names the command.
 //
 // Falling back would be the worse failure: a typo would silently render the
 // activity against a different sensor, and the two disagree by enough to be
@@ -157,7 +158,7 @@ var powerSources = map[string]fitactivity.PowerSource{
 func parsePowerSource(mode string) (fitactivity.PowerSource, error) {
 	src, ok := powerSources[mode]
 	if !ok {
-		return 0, fmt.Errorf("render: --power-source %q is invalid; use auto, stryd, or native", mode)
+		return 0, fmt.Errorf("--power-source %q is invalid; use auto, stryd, or native", mode)
 	}
 	return src, nil
 }
@@ -512,7 +513,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 
 	powerSrc, err := parsePowerSource(renderOpts.power)
 	if err != nil {
-		return err
+		return fmt.Errorf("render: %w", err)
 	}
 	unitSet, err := parseUnits(renderOpts.units, renderOpts.unitEach)
 	if err != nil {
