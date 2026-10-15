@@ -535,10 +535,46 @@ fitdash activity.fit --frames --frame-at 12m30s
 fitdash inspect activity.fit    # what metrics does this file actually carry?
 ```
 
+## Charting one metric
+
+`fitdash plot` draws one of an activity's metrics against elapsed time or distance,
+without rendering anything else: a quick look at a ride's power, a run's heart rate, or a
+footpod's developer field.
+
+```
+fitdash plot activity.fit                                 # what can it chart?
+fitdash plot activity.fit --y power --smooth 30s          # power over time, in the terminal
+fitdash plot activity.fit --y pace --x distance           # pace by kilometre
+fitdash plot activity.fit --y heart-rate --out hr.png     # a PNG instead
+```
+
+Without `--y` it lists the metrics the activity carries and how much of it carries each;
+the names are `inspect`'s, so the two never disagree about what a file holds. A developer
+field is charted under its own name, matched exactly first: Stryd records a `Power` of
+its own beside the watch's `power`, and `--y Power` is Stryd's.
+
+In iTerm2, WezTerm, kitty and Ghostty the chart is a picture in the terminal, the width
+of the window. Anywhere else it is drawn in braille dots, two by four to a character —
+coarse, but readable, and it works over ssh and in a log. Output into a pipe or a file,
+or through tmux or screen, is braille too, since a picture's escape sequence would
+otherwise arrive as a page of base64; `--terminal iterm|kitty|braille` chooses outright,
+for a terminal the detection misses or a tmux set to pass pictures through. `--out`
+writes a PNG, 1600 by 600 unless `--width` and `--height` say otherwise, in the
+dashboard's type and `--theme` (light by default), with a faint band behind the line
+from each moment's lowest reading to its highest.
+
+A missing reading is never drawn as zero: the line breaks where the readings stop for
+longer than the recording's own rhythm and the chart's resolution can hide, and a metric
+the activity carries only part of the time is drawn with a note saying how much. The y
+axis is set from where most readings lie, leaving the highest and lowest hundredth out,
+so a power meter's dropouts and sprints do not flatten the rest of the ride; a reading
+beyond it is drawn at its edge. Pace runs faster-up, and units follow `--units` and
+`--unit` as the render's do, a flight's in nautical miles, feet and knots.
+
 ## Privacy
 
 A rendered dashboard is a video of where you were, minute by minute, and what your
-body was doing. That is the whole point of the program, and it is yours to publish or
+body was doing; a chart from `fitdash plot` is the same data in another shape. That is the whole point of the program, and it is yours to publish or
 not — but nothing here should make that choice quietly on your behalf. No sample
 activity is committed to this repository; tests generate synthetic ones.
 

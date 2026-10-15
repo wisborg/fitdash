@@ -51,12 +51,13 @@ footpod's developer field -- against elapsed time or distance. With --out
 it is a PNG, in the dashboard's type and themes, with a faint band behind
 the line from each moment's lowest reading to its highest.
 
-In the terminal, a terminal that shows images -- iTerm2, WezTerm, kitty,
-Ghostty -- is shown that picture, the width of the window. Any other is
-drawn the chart in braille dots, two by four to a character, so a chart
-the width of a terminal window is a couple of hundred dots across; and so
-is output into a pipe or a file, or through tmux or screen, which would
-otherwise receive a page of base64. --terminal chooses outright.
+Without --out the chart is drawn in the terminal. iTerm2, WezTerm, kitty
+and Ghostty are shown that picture, the width of the window. Any other
+terminal gets the chart in braille dots, two by four to a character, so a
+chart the width of a window is a couple of hundred dots across. Output
+into a pipe or a file, or through tmux or screen, is braille too: a
+picture would arrive there as a page of base64. --terminal chooses
+outright.
 
 Without --y it lists the metrics the activity can be charted by, with how
 much of it carries each: the names are inspect's, so plot never disagrees
@@ -86,10 +87,10 @@ func init() {
 		"terminal's, or 100); in pixels in a PNG (default: "+strconv.Itoa(plotImageWidth)+")")
 	f.IntVar(&plotOpts.height, "height", 0, "the chart's height: in lines in the terminal, title and labels included (default: "+
 		"24, or less in a short terminal); in pixels in a PNG (default: "+strconv.Itoa(plotImageHeight)+")")
-	f.StringVar(&plotOpts.theme, "theme", panel.LightTheme().Name, "a PNG's palette, as the render's --theme names them -- "+
-		"light (the default: a chart is read on a page more often than over video), dark or night")
+	f.StringVar(&plotOpts.theme, "theme", panel.LightTheme().Name, "the picture's palette, in a PNG or the terminal, as the "+
+		"render's --theme names them -- light (a chart is read on a page more often than over video), dark or night")
 	f.StringVar(&plotOpts.terminal, "terminal", termAuto, "how the chart is drawn in the terminal -- \""+termAuto+
-		"\" (the default: a picture in a terminal known to show one, braille otherwise), \""+termITerm+"\" (a picture "+
+		"\" (a picture in a terminal known to show one, braille otherwise), \""+termITerm+"\" (a picture "+
 		"in iTerm2's protocol, which WezTerm reads too), \""+termKitty+"\" (kitty's, which Ghostty reads too) or \""+
 		termBraille+"\"")
 	f.StringArrayVar(&plotOpts.fonts, "font", nil, "a TrueType or OpenType font for a PNG's letters the built-in font lacks, "+

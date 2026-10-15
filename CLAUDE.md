@@ -117,7 +117,7 @@ contract, the layout model, the absent-data policy and the timeline choice, incl
 alternatives that were rejected and why. The summary below is only the map.
 
 - `cmd/` — the CLI. The render is the ROOT command (`fitdash ACTIVITY.fit`); `inspect`
-  is a subcommand.
+  and `plot` are subcommands.
 - `internal/panel/` — the `Panel` contract and the layout model. One panel per file.
   Panels are placed by weight in a tree of nested rows and columns, so a layout scales
   across resolutions and closes up around a panel that declines to draw.
@@ -126,6 +126,9 @@ alternatives that were rejected and why. The summary below is only the map.
 - `internal/route/` — GPS projection and route drawing. The map-service integration
   (Mapbox / Google / OSM tiles, and later a 3D view) lands here, behind an interface,
   and is **opt-in**: see the note on third-party map services below.
+- `internal/plot/` — a chart of one metric (`fitdash plot`): the model every rendering
+  shares (where the line breaks, each column's readings, the scale and its ticks), and
+  the braille and PNG renderings of it. The terminal's picture protocols are in `cmd/`.
 - `internal/inspect/` — the coverage report, and the single source of truth for whether
   an activity carries a given metric at all. Panels ask it rather than walking the
   samples themselves, so a panel cannot disagree with what `fitdash inspect` just printed.
