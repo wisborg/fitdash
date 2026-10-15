@@ -6,9 +6,9 @@
 // decisions that make it truthful must not differ between them. So they are
 // made here, once, and a renderer only turns the result into marks:
 //
-//   - which samples a line may join (Segments): never across a sample
-//     without the reading, and never across a stretch with no samples at
-//     all, because a line drawn there claims readings nobody took;
+//   - which readings a line may join (Segments): never across a stretch
+//     without readings long enough to show, because a line drawn there
+//     claims readings nobody took -- and a missing reading is never a zero;
 //   - what each column of the drawing shows (Bin), however many samples
 //     fall in it;
 //   - the scale (RobustRange, NewScale), set from where most readings lie
@@ -40,34 +40,37 @@ type Point struct {
 }
 
 // Segments splits points, in time order, into the runs a line may join:
-// unbroken runs of samples with the reading, ended by a sample without it or
-// by more than maxGap of time with no sample at all.
+// the readings, broken wherever two in a row are more than maxGap apart in
+// time.
 //
-// A gap in time is a break as surely as a missing reading. A watch that
-// stopped recording for ten minutes has no readings there, and a line drawn
-// straight across would be a confident claim about ten minutes nobody
-// measured. maxGap of zero or less breaks only at missing readings.
+// A sample without the reading is time without one, no different from time
+// without a sample: the watch that dropped its heart rate strap for a
+// second and the watch that recorded nothing for a second say the same
+// thing, and both are a break only when they last long enough to be one. A
+// line straight across ten minutes nobody measured is a confident claim
+// about them, which the chart must not make; across one second, at a
+// resolution where a second is a fraction of a pixel, a break would claim
+// more than the data does, and shred a line with occasional dropouts into
+// pieces. So the tolerance is the caller's, and a caller picks it from the
+// recording's own rhythm and the chart's resolution. A maxGap of zero or
+// less joins only readings recorded at the same instant.
 func Segments(points []Point, maxGap time.Duration) [][]Point {
 	var out [][]Point
 	var run []Point
-	end := func() {
-		if len(run) > 0 {
-			out = append(out, run)
-			run = nil
-		}
-	}
 	gap := maxGap.Seconds()
 	for _, p := range points {
 		if !p.Ok {
-			end()
 			continue
 		}
-		if len(run) > 0 && gap > 0 && p.T-run[len(run)-1].T > gap {
-			end()
+		if len(run) > 0 && p.T-run[len(run)-1].T > max(gap, 0) {
+			out = append(out, run)
+			run = nil
 		}
 		run = append(run, p)
 	}
-	end()
+	if len(run) > 0 {
+		out = append(out, run)
+	}
 	return out
 }
 

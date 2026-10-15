@@ -34,14 +34,15 @@ func bindUnitFlags(f *pflag.FlagSet) {
 
 // parseUnits is the units --units and every --unit over it ask for, refused
 // where the user typed them rather than rendering in a unit nobody chose.
+// The error names the flag; the caller names the command.
 func parseUnits(system string, each []string) (units.Set, error) {
 	set, err := units.Of(units.System(system))
 	if err != nil {
-		return set, fmt.Errorf("render: --units: %w", err)
+		return set, fmt.Errorf("--units: %w", err)
 	}
 	for _, spec := range each {
 		if err := set.UseSpec(spec); err != nil {
-			return set, fmt.Errorf("render: --unit: %w", err)
+			return set, fmt.Errorf("--unit: %w", err)
 		}
 	}
 	return set, nil
@@ -58,7 +59,7 @@ func aviationUnits(each []string) (units.Set, error) {
 	set.Distance, set.Elevation, set.Speed = units.NauticalMile, units.Foot, units.Knot
 	for _, spec := range each {
 		if err := set.UseSpec(spec); err != nil {
-			return set, fmt.Errorf("render: --unit: %w", err)
+			return set, fmt.Errorf("--unit: %w", err)
 		}
 	}
 	return set, nil

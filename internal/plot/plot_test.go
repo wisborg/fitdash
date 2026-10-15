@@ -26,26 +26,34 @@ func lengths(segs [][]Point) []int {
 	return n
 }
 
-// A line breaks at a sample without the reading -- never drawn through it
-// as a zero -- and at a stretch with no samples longer than the gap allowed.
-func TestSegmentsBreakAtMissingReadingsAndGaps(t *testing.T) {
+// A line breaks where two readings in a row are further apart than the gap
+// allowed, whether a sample without the reading or no sample at all lies
+// between them -- and a sample without the reading is never drawn as a
+// zero.
+func TestSegmentsBreakWhereReadingsAreTooFarApart(t *testing.T) {
 	ps := series(1, 2, none, 3, 4, 5)
-	if got := lengths(Segments(ps, 0)); !reflect.DeepEqual(got, []int{2, 3}) {
-		t.Errorf("segments %v, want [2 3]: broken at the missing reading only", got)
+	if got := lengths(Segments(ps, 1500*time.Millisecond)); !reflect.DeepEqual(got, []int{2, 3}) {
+		t.Errorf("segments %v, want [2 3]: two seconds between readings is more than the gap allowed", got)
+	}
+	if got := lengths(Segments(ps, 2*time.Second)); !reflect.DeepEqual(got, []int{5}) {
+		t.Errorf("segments %v, want [5]: a missing reading shorter than the gap allowed is no break", got)
 	}
 	ps[5].T = 60 // a minute after the sample before it
-	if got := lengths(Segments(ps, 30*time.Second)); !reflect.DeepEqual(got, []int{2, 2, 1}) {
-		t.Errorf("segments %v, want [2 2 1]: broken at the minute without samples too", got)
+	if got := lengths(Segments(ps, 2*time.Second)); !reflect.DeepEqual(got, []int{4, 1}) {
+		t.Errorf("segments %v, want [4 1]: broken at the minute without samples", got)
 	}
-	for _, seg := range Segments(series(none, 7, none), 0) {
+	for _, seg := range Segments(series(none, 7, none), time.Hour) {
 		for _, p := range seg {
 			if !p.Ok {
 				t.Errorf("a segment holds a point without its reading: %+v", p)
 			}
 		}
 	}
-	if segs := Segments(series(none, none), 0); len(segs) != 0 {
+	if segs := Segments(series(none, none), time.Hour); len(segs) != 0 {
 		t.Errorf("no readings made %d segments", len(segs))
+	}
+	if got := lengths(Segments(series(1, 2, 3), 0)); !reflect.DeepEqual(got, []int{1, 1, 1}) {
+		t.Errorf("segments %v with no gap allowed, want each reading alone", got)
 	}
 }
 
@@ -53,18 +61,18 @@ func TestSegmentsBreakAtMissingReadingsAndGaps(t *testing.T) {
 // reading level; and it never averages across a break.
 func TestSmoothIsCentredAndStaysInItsSegment(t *testing.T) {
 	ys := []float64{0, 0, 0, 0, 0, 10, 10, 10, 10, 10}
-	sm := Smooth(Segments(series(ys...), 0), 2*time.Second)[0]
+	sm := Smooth(Segments(series(ys...), time.Second), 2*time.Second)[0]
 	if sm[4].Y >= 5 || sm[5].Y <= 5 {
 		t.Errorf("the step at 5 s smoothed to %.2f then %.2f; a centred mean keeps it between them", sm[4].Y, sm[5].Y)
 	}
 	if sm[0].Y != 0 || sm[9].Y != 10 {
 		t.Errorf("level readings smoothed to %.2f and %.2f", sm[0].Y, sm[9].Y)
 	}
-	segs := Smooth(Segments(series(0, 0, 0, none, 100, 100, 100), 0), time.Hour)
+	segs := Smooth(Segments(series(0, 0, 0, none, 100, 100, 100), time.Second), time.Hour)
 	if segs[0][2].Y != 0 || segs[1][0].Y != 100 {
 		t.Errorf("smoothing reached across the break: %.2f, %.2f", segs[0][2].Y, segs[1][0].Y)
 	}
-	if got := Smooth(Segments(series(1, 5, 1), 0), 0)[0][1].Y; got != 5 {
+	if got := Smooth(Segments(series(1, 5, 1), time.Second), 0)[0][1].Y; got != 5 {
 		t.Errorf("no window smoothed 5 to %.2f", got)
 	}
 }
@@ -73,7 +81,7 @@ func TestSmoothIsCentredAndStaysInItsSegment(t *testing.T) {
 // across columns its sparse readings skip; a break between segments is
 // a break in the line; a reading outside the span is left out.
 func TestBin(t *testing.T) {
-	cols := Bin(Segments(series(1, 3, 5, 7), 0), 0, 4, 2)
+	cols := Bin(Segments(series(1, 3, 5, 7), time.Second), 0, 4, 2)
 	if c := cols[0]; !c.Ok || c.Mean != 2 || c.Min != 1 || c.Max != 3 || c.Joined {
 		t.Errorf("first column %+v, want 1 to 3 about 2, not joined", c)
 	}
@@ -87,12 +95,12 @@ func TestBin(t *testing.T) {
 		t.Errorf("columns between two readings of one segment: %+v; the last should be joined across them", cols)
 	}
 
-	cols = Bin(Segments(series(1, none, 2), 0), 0, 3, 3)
+	cols = Bin(Segments(series(1, none, 2), time.Second), 0, 3, 3)
 	if cols[1].Ok || cols[2].Joined {
 		t.Errorf("columns %+v: the missing reading should leave the middle empty and the line broken", cols)
 	}
 
-	cols = Bin(Segments(series(1, 2, 3, 4), 0), 1, 2, 1)
+	cols = Bin(Segments(series(1, 2, 3, 4), time.Second), 1, 2, 1)
 	if c := cols[0]; c.Mean != 2.5 || c.Min != 2 || c.Max != 3 {
 		t.Errorf("column %+v, want only the readings at 1 and 2 s", c)
 	}
@@ -109,7 +117,7 @@ func TestRobustRangeLeavesOutliersOut(t *testing.T) {
 		ys = append(ys, 200+50*math.Sin(float64(i)/20))
 	}
 	ys = append(ys, 0, 0, 0, 0, 0, 1500, 1500, 1500)
-	lo, hi, ok := RobustRange(Segments(series(ys...), 0))
+	lo, hi, ok := RobustRange(Segments(series(ys...), time.Second))
 	if !ok || lo < 140 || hi > 260 {
 		t.Errorf("range %.0f to %.0f, want about 150 to 250, the dropouts and spikes left out", lo, hi)
 	}

@@ -516,7 +516,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	}
 	unitSet, err := parseUnits(renderOpts.units, renderOpts.unitEach)
 	if err != nil {
-		return err
+		return fmt.Errorf("render: %w", err)
 	}
 	if _, err := panel.ResolveSpeedReadout(renderOpts.speedReadout, ""); err != nil {
 		return fmt.Errorf("render: %w", err)
@@ -573,7 +573,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	flight := isFlight(track, airports)
 	if flight && !cmd.Flags().Changed("units") {
 		if unitSet, err = aviationUnits(renderOpts.unitEach); err != nil {
-			return err
+			return fmt.Errorf("render: %w", err)
 		}
 	}
 	routeEnds, err := panel.ParseRouteEnds(renderOpts.routeEnds)

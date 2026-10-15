@@ -1,0 +1,133 @@
+package cmd
+
+import (
+	"bytes"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
+	"github.com/wisborg/fitactivity/fittest"
+)
+
+// writePlotActivity is twenty synthetic minutes with power on the first
+// half only, and a footpod's developer field named as Stryd names its
+// power.
+func writePlotActivity(t *testing.T) string {
+	t.Helper()
+	opts := fittest.DefaultOptions()
+	opts.Count = 1200
+	opts.PowerWatts = 250
+	opts.PoweredRecords = 600
+	opts.DeveloperField = "Power"
+	path := filepath.Join(t.TempDir(), "plot.fit")
+	if err := fittest.WriteFile(path, opts); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// runPlotCmd runs plot with args, every flag at its default first.
+func runPlotCmd(t *testing.T, args ...string) (out, errOut string, err error) {
+	t.Helper()
+	cmd := &cobra.Command{Use: "plot", Args: cobra.MinimumNArgs(1), RunE: runPlot, SilenceUsage: true, SilenceErrors: true}
+	cmd.Flags().AddFlagSet(plotCmd.Flags())
+	// The flags are shared with plotCmd and write into plotOpts, so one
+	// test's --y would otherwise be the next one's too.
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if err := f.Value.Set(f.DefValue); err != nil && f.Name != "unit" {
+			t.Fatalf("restoring the default for --%s: %v", f.Name, err)
+		}
+		f.Changed = false
+	})
+	plotOpts.unitEach = nil
+	var o, e bytes.Buffer
+	cmd.SetOut(&o)
+	cmd.SetErr(&e)
+	cmd.SetArgs(args)
+	err = cmd.Execute()
+	return o.String(), e.String(), err
+}
+
+// Without --y the metrics the activity has are listed with their coverage,
+// and the ones it has not are left out.
+func TestPlotListsTheMetrics(t *testing.T) {
+	out, _, err := runPlotCmd(t, writePlotActivity(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"heart-rate", "power", "pace", "50.0%", "Power"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the listing lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "temperature") {
+		t.Errorf("the listing offers temperature, which the activity does not have:\n%s", out)
+	}
+}
+
+// A chart is drawn the size asked for, titled with the metric and its unit;
+// a metric the activity carries part of the time is drawn, and said to be
+// partial.
+func TestPlotDrawsAChart(t *testing.T) {
+	out, errOut, err := runPlotCmd(t, writePlotActivity(t), "--y", "power", "--width", "70", "--height", "15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 15 {
+		t.Errorf("%d lines, want 15:\n%s", len(lines), out)
+	}
+	if lines[0] != "power (W) against time" {
+		t.Errorf("title %q", lines[0])
+	}
+	if !strings.Contains(errOut, "power present 50% of the time") {
+		t.Errorf("no word that power is partial: %q", errOut)
+	}
+	if _, errOut, _ := runPlotCmd(t, writePlotActivity(t), "--y", "heart-rate", "--width", "70", "--height", "15"); errOut != "" {
+		t.Errorf("a metric present throughout is said to be partial: %q", errOut)
+	}
+}
+
+// The watch's power and a footpod's "Power" are told apart by their case.
+func TestPlotTellsTheFootpodsPowerApart(t *testing.T) {
+	watch, _, err := runPlotCmd(t, writePlotActivity(t), "--y", "power", "--width", "70", "--height", "15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, _, err := runPlotCmd(t, writePlotActivity(t), "--y", "Power", "--width", "70", "--height", "15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(pod, "power (W)") || watch == pod {
+		t.Errorf("--y Power drew the watch's power, not the footpod's:\n%s", pod)
+	}
+}
+
+// A metric the activity does not carry, or one plot does not know, is
+// refused with the reason, not drawn as a flat line at zero.
+func TestPlotRefusesWhatIsNotThere(t *testing.T) {
+	path := writePlotActivity(t)
+	if _, _, err := runPlotCmd(t, path, "--y", "temperature"); err == nil || !strings.Contains(err.Error(), "no temperature") {
+		t.Errorf("temperature, which the activity lacks: %v", err)
+	}
+	if _, _, err := runPlotCmd(t, path, "--y", "watts"); err == nil || !strings.Contains(err.Error(), "heart-rate") {
+		t.Errorf("an unknown metric is refused without the list of known ones: %v", err)
+	}
+	if _, _, err := runPlotCmd(t, path, "--y", "power", "--x", "altitude"); err == nil {
+		t.Error("--x altitude was accepted")
+	}
+}
+
+// Against distance, the x axis is in the chart's distance unit.
+func TestPlotAgainstDistance(t *testing.T) {
+	out, _, err := runPlotCmd(t, writePlotActivity(t), "--y", "pace", "--x", "distance", "--units", "imperial", "--width", "70", "--height", "15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first := strings.SplitN(out, "\n", 2)[0]; first != "pace (min/mi) against distance (mi)" {
+		t.Errorf("title %q", first)
+	}
+}
