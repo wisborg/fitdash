@@ -89,11 +89,15 @@ inspect merge them.`,
 
 func init() {
 	f := plotCmd.Flags()
-	f.StringSliceVar(&plotOpts.y, "y", nil, "the metric to chart, as inspect names it with hyphens -- heart-rate, power, "+
+	// --y and --x are -y and -x as well. Besides being shorter, that is
+	// what lets the shell complete their values: cobra, while completing,
+	// takes a flag named by one letter for a shorthand, and a long flag of
+	// one letter with no shorthand is never found -- as of cobra 1.10.
+	f.StringSliceVarP(&plotOpts.y, "y", "y", nil, "the metric to chart, as inspect names it with hyphens -- heart-rate, power, "+
 		"cadence, speed, pace, elevation, distance, temperature, vertical-oscillation, stance-time, step-length -- or a "+
 		"developer field's own name; several, comma-separated or repeated, are charted one above the other; without it, "+
 		"the metrics this activity has are listed")
-	f.StringVar(&plotOpts.x, "x", "time", "what the chart runs along -- \"time\" (elapsed, pauses included) or \"distance\"")
+	f.StringVarP(&plotOpts.x, "x", "x", "time", "what the chart runs along -- \"time\" (elapsed, pauses included) or \"distance\"")
 	f.StringVar(&plotOpts.out, "out", "", "write the chart to this PNG rather than drawing it in the terminal")
 	f.IntVar(&plotOpts.width, "width", 0, "the chart's width: in characters in the terminal, labels included (default: the "+
 		"terminal's, or 100); in pixels in a PNG (default: "+strconv.Itoa(plotImageWidth)+")")
@@ -125,27 +129,10 @@ func runPlot(cmd *cobra.Command, args []string) error {
 	if plotOpts.x != "time" && plotOpts.x != "distance" {
 		return fmt.Errorf("plot: --x %q: use time or distance", plotOpts.x)
 	}
-	track, _, err := decodeActivities(args)
+	track, u, power, metrics, err := plotActivity(cmd, args)
 	if err != nil {
 		return fmt.Errorf("plot: %w", err)
 	}
-	u, err := parseUnits(plotOpts.units, plotOpts.unitEach)
-	if err != nil {
-		return fmt.Errorf("plot: %w", err)
-	}
-	// A flight is read in aviation's units unless --units said otherwise,
-	// as the render reads it.
-	if (track.Sport == "flying" || len(track.Flights) > 0) && !cmd.Flags().Changed("units") {
-		if u, err = aviationUnits(plotOpts.unitEach); err != nil {
-			return fmt.Errorf("plot: %w", err)
-		}
-	}
-	power, err := parsePowerSource(plotOpts.power)
-	if err != nil {
-		return fmt.Errorf("plot: %w", err)
-	}
-	rep := inspect.Build(track)
-	metrics := plotMetrics(track.Sport, u, rep.DevFields, power, powerFrom(track, power))
 	out := cmd.OutOrStdout()
 	if len(plotOpts.y) == 0 {
 		writePlotMetrics(out, track, metrics)
@@ -189,6 +176,33 @@ func runPlot(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// plotActivity reads the activities args name and the metrics they can be
+// charted by, in the units and with the power source the flags ask for:
+// what a chart is drawn from, and what completing --y offers.
+func plotActivity(cmd *cobra.Command, args []string) (*fitactivity.Track, units.Set, fitactivity.PowerSource, []plotMetric, error) {
+	track, _, err := decodeActivities(args)
+	if err != nil {
+		return nil, units.Set{}, 0, nil, err
+	}
+	u, err := parseUnits(plotOpts.units, plotOpts.unitEach)
+	if err != nil {
+		return nil, units.Set{}, 0, nil, err
+	}
+	// A flight is read in aviation's units unless --units said otherwise,
+	// as the render reads it.
+	if (track.Sport == "flying" || len(track.Flights) > 0) && !cmd.Flags().Changed("units") {
+		if u, err = aviationUnits(plotOpts.unitEach); err != nil {
+			return nil, units.Set{}, 0, nil, err
+		}
+	}
+	power, err := parsePowerSource(plotOpts.power)
+	if err != nil {
+		return nil, units.Set{}, 0, nil, err
+	}
+	rep := inspect.Build(track)
+	return track, u, power, plotMetrics(track.Sport, u, rep.DevFields, power, powerFrom(track, power)), nil
 }
 
 // writePlotTerminal draws m's chart in the terminal, as a picture or in
@@ -486,13 +500,17 @@ func writePlotMetrics(w io.Writer, track *fitactivity.Track, ms []plotMetric) {
 		if strings.ContainsRune(name, ' ') {
 			name = strconv.Quote(name)
 		}
-		unit := m.unit
-		if m.from != "" {
-			unit += ", " + m.from
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%.1f%%\n", name, unit, 100*c)
+		fmt.Fprintf(tw, "%s\t%s\t%.1f%%\n", name, m.unitFrom(), 100*c)
 	}
 	tw.Flush()
+}
+
+// unitFrom is the metric's unit and, where it says, its source: "W, Stryd".
+func (m plotMetric) unitFrom() string {
+	if m.from != "" {
+		return m.unit + ", " + m.from
+	}
+	return m.unit
 }
 
 // themeAuto is --theme's default: a palette chosen for where the picture

@@ -549,7 +549,8 @@ fitdash plot activity.fit --y heart-rate --out hr.png     # a PNG instead
 fitdash plot activity.fit --y power,heart-rate,cadence    # several, one above the other
 ```
 
-Without `--y` it lists the metrics the activity carries and how much of it carries each;
+Without `--y` it lists the metrics the activity carries and how much of it carries each
+(and with shell completion installed, Tab after `--y` offers the same list);
 the names are `inspect`'s, so the two never disagree about what a file holds. A developer
 field is charted under its own name, matched exactly first: Stryd records a `Power` of
 its own beside the watch's `power`, and `--y Power` is Stryd's. `--y power` itself is
