@@ -116,8 +116,9 @@ or implementing anything in the render path — it carries the reasoning behind 
 contract, the layout model, the absent-data policy and the timeline choice, including the
 alternatives that were rejected and why. The summary below is only the map.
 
-- `cmd/` — the CLI. The render is the ROOT command (`fitdash ACTIVITY.fit`); `inspect`
-  and `plot` are subcommands.
+- `cmd/` — the CLI. The render is the ROOT command (`fitdash ACTIVITY.fit`); `inspect`,
+  `plot` and `describe` are subcommands. `describe` puts into words the structure
+  fitactivity's `workout` package finds; the finding is the library's, shared with course.
 - `internal/panel/` — the `Panel` contract and the layout model. One panel per file.
   Panels are placed by weight in a tree of nested rows and columns, so a layout scales
   across resolutions and closes up around a panel that declines to draw.

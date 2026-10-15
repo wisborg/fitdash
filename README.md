@@ -584,6 +584,35 @@ so a power meter's dropouts and sprints do not flatten the rest of the ride; a r
 beyond it is drawn at its edge. Pace runs faster-up, and units follow `--units` and
 `--unit` as the render's do, a flight's in nautical miles, feet and knots.
 
+## Describing a workout
+
+`fitdash describe` says what a workout was, from the recording alone: the warm-up, each
+set of intervals — how many, how far or how long, at what effort, with what recoveries —
+the cool-down, the stops, and the climbs.
+
+```
+$ fitdash describe intervals.fit
+intervals.fit
+running · 12.40 km · 1:10:12 (moving 1:06:40) · effort by power (Stryd)
+
+warm-up    15:02, 2.48 km, at ~240 W
+6 × 1 km   ~4:30 each, at ~305 W, ~2:00 recoveries
+cool-down  10:15, 1.70 km, at ~230 W
+stops      4, 3:10 in all, the longest 1:05
+climbs     3 × +12 m at 3.5%, the same hill
+```
+
+(an invented workout, not anybody's recording),
+followed by a table of every interval. Effort is measured by power where the activity
+records it (from `--power-source`), by grade-adjusted pace for a run without, then speed,
+then heart rate. A set is three or more hard stretches of much the same effort with real
+recoveries between, jogged or stood — a steady run stopped at the lights is said to be
+steady, and a hike is never a set. A set is told by distance when its intervals were alike
+in distance and by time when they were set by the clock, as a machine's or a power-led
+workout's are, with the range of its efforts where its targets changed. The same hill met
+lap after lap is said once, with how often. `--format json` or `yaml` gives all of it in
+metres and seconds; `csv`, the intervals.
+
 ## Privacy
 
 A rendered dashboard is a video of where you were, minute by minute, and what your
