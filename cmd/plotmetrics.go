@@ -24,7 +24,7 @@ type plotMetric struct {
 	// unit is the unit its readings are drawn in.
 	unit string
 	// from names where the readings come from, where more than one sensor
-	// could have taken them: "Stryd" or "watch", for power.
+	// could have taken them: "Stryd" or "native", for power.
 	from string
 	kind plot.Kind
 	// inverted runs the axis backwards: a pace, faster higher.
@@ -80,6 +80,15 @@ func plotMetrics(sport string, u units.Set, devFields []inspect.Metric, power fi
 		}},
 		{inspect: inspect.MetricDistance, unit: u.Distance.Name, value: func(s fitactivity.Sample) (float64, bool) {
 			return u.Distance.FromSI(s.Distance), s.HasDistance
+		}},
+		// Calories are a running total, so their chart rises through the
+		// activity; resistance is the machine's level on its own scale,
+		// so it has no unit to give.
+		{inspect: inspect.MetricCalories, unit: "kcal", value: func(s fitactivity.Sample) (float64, bool) {
+			return s.Calories, s.HasCalories
+		}},
+		{inspect: inspect.MetricResistance, value: func(s fitactivity.Sample) (float64, bool) {
+			return s.Resistance, s.HasResistance
 		}},
 		{inspect: inspect.MetricTemperature, unit: u.Temperature.Name, value: func(s fitactivity.Sample) (float64, bool) {
 			return u.Temperature.FromSI(float64(s.Temperature)), s.HasTemperature
@@ -153,7 +162,10 @@ func (m plotMetric) coverage(track *fitactivity.Track) float64 {
 }
 
 // powerFrom names the source power is read from, for a chart's title:
-// "Stryd" or "watch". Under auto, which prefers Stryd and falls back to
+// "Stryd", or "native" for the file's own power field -- a watch's, a
+// power meter's, an exercise machine's: whichever device recorded it,
+// which the field does not say. Under auto, which prefers Stryd and falls
+// back to
 // the watch, it is the one the activity has; a file that records neither
 // has no power to chart, and none is named.
 func powerFrom(track *fitactivity.Track, src fitactivity.PowerSource) string {
@@ -161,7 +173,7 @@ func powerFrom(track *fitactivity.Track, src fitactivity.PowerSource) string {
 	case src == fitactivity.PowerStryd, src == fitactivity.PowerAuto && track.HasPower(fitactivity.PowerStryd):
 		return "Stryd"
 	case track.HasPower(fitactivity.PowerNative):
-		return "watch"
+		return "native"
 	}
 	return ""
 }

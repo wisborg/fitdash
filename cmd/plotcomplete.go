@@ -20,7 +20,7 @@ func init() {
 		"x":            {"time\telapsed time, pauses included", "distance\tthe distance covered"},
 		"terminal":     {termAuto + "\ta picture where the terminal shows one, braille otherwise", termITerm + "\tiTerm2's picture, which WezTerm reads too", termKitty + "\tkitty's picture, which Ghostty reads too", termBraille + "\tbraille dots"},
 		"theme":        {themeAuto + "\tlight for a PNG, the terminal's own in the terminal", "light", "dark", "night"},
-		"power-source": {"auto\tStryd's where the activity has it, the watch's otherwise", "stryd\tthe footpod's", "native\tthe watch's own"},
+		"power-source": {"auto\tStryd's where the activity has it, the file's own otherwise", "stryd\tthe footpod's", "native\tthe file's own power field"},
 		"units":        {string(units.Metric) + "\tkm, m, km/h, min/km", string(units.Imperial) + "\tmi, ft, mph, min/mi"},
 	}
 	for flag, values := range fixed {

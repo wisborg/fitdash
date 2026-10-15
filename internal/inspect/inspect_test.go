@@ -50,7 +50,7 @@ func TestBuild_ReportsEveryKnownMetricIncludingAbsentOnes(t *testing.T) {
 
 	want := []string{
 		"Position", "Elevation", "Speed", "Distance", "Heart rate", "Cadence",
-		"Power", "Temperature", "Vertical oscillation", "Stance time", "Step length",
+		"Power", "Calories", "Resistance", "Temperature", "Vertical oscillation", "Stance time", "Step length",
 	}
 	if len(rep.Metrics) != len(want) {
 		t.Fatalf("Metrics has %d rows, want %d", len(rep.Metrics), len(want))

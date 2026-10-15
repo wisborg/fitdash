@@ -53,7 +53,7 @@ func TestCompletePlotY(t *testing.T) {
 	if strings.Contains(offers, "temperature") {
 		t.Errorf("temperature offered, which the activity lacks:\n%s", offers)
 	}
-	if offers := strings.Join(complete(t, "plot", path, "--power-source", "native", "-y", ""), "\n"); !strings.Contains(offers, "power\tW, watch, 50%") {
+	if offers := strings.Join(complete(t, "plot", path, "--power-source", "native", "-y", ""), "\n"); !strings.Contains(offers, "power\tW, native, 50%") {
 		t.Errorf("under --power-source native, power not offered as the watch's half:\n%s", offers)
 	}
 }

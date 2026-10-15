@@ -86,7 +86,7 @@ func TestPlotDrawsAChart(t *testing.T) {
 	if len(lines) != 15 {
 		t.Errorf("%d lines, want 15:\n%s", len(lines), out)
 	}
-	if lines[0] != "power (W, watch) against time" {
+	if lines[0] != "power (W, native) against time" {
 		t.Errorf("title %q", lines[0])
 	}
 	if !strings.Contains(errOut, "power present 50% of the time") {
@@ -114,14 +114,14 @@ func TestPlotPowerSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(native, "power (W, watch)") {
+	if !strings.HasPrefix(native, "power (W, native)") {
 		t.Errorf("native charted %q", strings.SplitN(native, "\n", 2)[0])
 	}
 	list, _, err := runPlotCmd(t, path, "--power-source", "native")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(list, "W, watch") || !strings.Contains(list, "50.0%") {
+	if !strings.Contains(list, "W, native") || !strings.Contains(list, "50.0%") {
 		t.Errorf("the listing does not give the watch's power and its half coverage:\n%s", list)
 	}
 
@@ -135,7 +135,7 @@ func TestPlotPowerSource(t *testing.T) {
 		t.Errorf("Stryd's power from a file without a Stryd: %v", err)
 	}
 	out, _, err := runPlotCmd(t, watchOnly, "--y", "power", "--width", "70", "--height", "15")
-	if err != nil || !strings.HasPrefix(out, "power (W, watch)") {
+	if err != nil || !strings.HasPrefix(out, "power (W, native)") {
 		t.Errorf("auto without a Stryd charted %q (%v); want the watch's", strings.SplitN(out, "\n", 2)[0], err)
 	}
 	if _, _, err := runPlotCmd(t, path, "--y", "power", "--power-source", "garmin"); err == nil {
@@ -232,7 +232,7 @@ func TestPlotSeveralMetrics(t *testing.T) {
 		if len(lines) != 30 || lines[0] != "heart-rate and power against time" {
 			t.Errorf("%v: %d lines titled %q", args, len(lines), lines[0])
 		}
-		for _, head := range []string{"│heart-rate (bpm)", "│power (W, watch)"} {
+		for _, head := range []string{"│heart-rate (bpm)", "│power (W, native)"} {
 			if !strings.Contains(out, head) {
 				t.Errorf("%v: no strip headed %q", args, head)
 			}
@@ -301,5 +301,36 @@ func TestPlotTheme(t *testing.T) {
 	}
 	if _, err := plotTheme("sepia", true, func(string) string { return "" }); err == nil {
 		t.Error("--theme sepia was accepted")
+	}
+}
+
+// A machine's calories and resistance are charted where the activity
+// carries them -- calories in kcal, resistance on the machine's own scale,
+// with no unit -- and not offered where it does not.
+func TestPlotCaloriesAndResistance(t *testing.T) {
+	opts := fittest.DefaultOptions()
+	opts.Count, opts.CaloriesPerSecond, opts.Resistance = 600, 0.3, 14
+	path := filepath.Join(t.TempDir(), "machine.fit")
+	if err := fittest.WriteFile(path, opts); err != nil {
+		t.Fatal(err)
+	}
+	list, _, err := runPlotCmd(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"calories", "kcal", "resistance"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("the listing lacks %q:\n%s", want, list)
+		}
+	}
+	out, _, err := runPlotCmd(t, path, "--y", "calories,resistance", "--width", "70", "--height", "24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "│calories (kcal)") || !strings.Contains(out, "│resistance\n") {
+		t.Errorf("the strips are not headed calories (kcal) and resistance:\n%s", out)
+	}
+	if list, _, _ := runPlotCmd(t, writePlotActivity(t)); strings.Contains(list, "calories") {
+		t.Errorf("calories offered for an activity without them:\n%s", list)
 	}
 }

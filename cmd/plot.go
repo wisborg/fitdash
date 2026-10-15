@@ -94,7 +94,8 @@ func init() {
 	// takes a flag named by one letter for a shorthand, and a long flag of
 	// one letter with no shorthand is never found -- as of cobra 1.10.
 	f.StringSliceVarP(&plotOpts.y, "y", "y", nil, "the metric to chart, as inspect names it with hyphens -- heart-rate, power, "+
-		"cadence, speed, pace, elevation, distance, temperature, vertical-oscillation, stance-time, step-length -- or a "+
+		"cadence, speed, pace, elevation, distance, calories, resistance, temperature, vertical-oscillation, stance-time, "+
+		"step-length -- or a "+
 		"developer field's own name; several, comma-separated or repeated, are charted one above the other; without it, "+
 		"the metrics this activity has are listed")
 	f.StringVarP(&plotOpts.x, "x", "x", "time", "what the chart runs along -- \"time\" (elapsed, pauses included) or \"distance\"")
@@ -116,8 +117,9 @@ func init() {
 	f.DurationVar(&plotOpts.smooth, "smooth", 0, "average each reading with those within half of this either side of it in time "+
 		"-- 30s takes the noise out of a power trace -- never across a break in the line")
 	f.StringVar(&plotOpts.power, "power-source", "auto", "which power --y power charts, as the render's --power-source: "+
-		"\"auto\" (default: a Stryd footpod's where the activity has it, the watch's otherwise), \"stryd\" or \"native\" "+
-		"(the watch's own); the two are different sensors and can disagree by half")
+		"\"auto\" (default: a Stryd footpod's where the activity has it, the file's own otherwise), \"stryd\" or \"native\" "+
+		"(the file's own power field, from a watch, a power meter or an exercise machine); the two are different sensors and "+
+		"can disagree by half")
 	f.StringVar(&plotOpts.units, "units", string(units.Metric), "the units readings and distances are drawn in -- \"metric\" "+
 		"or \"imperial\"; a flight's default is nautical miles, feet and knots")
 	f.StringArrayVar(&plotOpts.unitEach, "unit", nil, "one quantity's unit, over --units (repeatable) -- distance=km|mi|nm, "+

@@ -555,7 +555,8 @@ the names are `inspect`'s, so the two never disagree about what a file holds. A 
 field is charted under its own name, matched exactly first: Stryd records a `Power` of
 its own beside the watch's `power`, and `--y Power` is Stryd's. `--y power` itself is
 read as the dashboard reads it, from `--power-source`: by default a Stryd footpod's where
-the activity has one and the watch's otherwise, `native` for the watch's own; the chart
+the activity has one and the file's own power field otherwise, `native` for that field
+whichever device recorded it — a watch, a power meter, an exercise machine; the chart
 says which. Several metrics are
 charted in strips one above the other, each on its own scale and sharing the x axis, so
 a moment in one is directly above the same moment in the next.

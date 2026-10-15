@@ -39,6 +39,8 @@ const (
 	MetricHeartRate           = "Heart rate"
 	MetricCadence             = "Cadence"
 	MetricPower               = "Power"
+	MetricCalories            = "Calories"
+	MetricResistance          = "Resistance"
 	MetricTemperature         = "Temperature"
 	MetricVerticalOscillation = "Vertical oscillation"
 	MetricStanceTime          = "Stance time"
@@ -170,6 +172,8 @@ func Build(track *fitactivity.Track) Report {
 		{MetricHeartRate, "bpm", func(s fitactivity.Sample) (float64, bool) { return float64(s.HeartRate), s.HasHeartRate }},
 		{MetricCadence, "rpm", func(s fitactivity.Sample) (float64, bool) { return float64(s.Cadence), s.HasCadence }},
 		{MetricPower, "W", func(s fitactivity.Sample) (float64, bool) { return float64(s.Power), s.HasPower }},
+		{MetricCalories, "kcal", func(s fitactivity.Sample) (float64, bool) { return s.Calories, s.HasCalories }},
+		{MetricResistance, "", func(s fitactivity.Sample) (float64, bool) { return s.Resistance, s.HasResistance }},
 		{MetricTemperature, "C", func(s fitactivity.Sample) (float64, bool) { return float64(s.Temperature), s.HasTemperature }},
 		{MetricVerticalOscillation, "mm", func(s fitactivity.Sample) (float64, bool) {
 			return s.VerticalOscillation, s.HasVerticalOscillation
