@@ -166,3 +166,23 @@ func TestPlotWritesAPNG(t *testing.T) {
 		t.Error("--out hr.jpg was accepted")
 	}
 }
+
+// Into anything but a terminal the chart is braille; --terminal kitty is
+// a picture whatever the output.
+func TestPlotTerminalChoice(t *testing.T) {
+	path := writePlotActivity(t)
+	out, _, err := runPlotCmd(t, path, "--y", "heart-rate", "--width", "60", "--height", "12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "\x1b") || !strings.HasPrefix(out, "heart-rate (bpm)") {
+		t.Errorf("not braille into a buffer: %q", out[:min(len(out), 60)])
+	}
+	out, _, err = runPlotCmd(t, path, "--y", "heart-rate", "--width", "60", "--height", "12", "--terminal", "kitty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "\x1b_Ga=T,f=100,q=2,c=60,") {
+		t.Errorf("--terminal kitty drew %q", out[:min(len(out), 40)])
+	}
+}

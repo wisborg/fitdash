@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"image"
 	"image/png"
 	"io"
 	"os"
@@ -29,6 +31,7 @@ var plotOpts struct {
 	smooth        time.Duration
 	theme         string
 	fonts         []string
+	terminal      string
 	units         string
 	unitEach      []string
 }
@@ -44,11 +47,16 @@ var plotCmd = &cobra.Command{
 	Use:   "plot ACTIVITY [ACTIVITY ...] --y METRIC",
 	Short: "Chart one of an activity's metrics against time or distance, in the terminal or as a PNG",
 	Long: `plot draws one metric of an activity -- power, heart rate, pace, a
-footpod's developer field -- against elapsed time or distance. In the
-terminal it is drawn in braille dots, two by four to a character, so a
-chart the width of a terminal window is a couple of hundred dots across;
-with --out it is a PNG, in the dashboard's type and themes, with a faint
-band behind the line from each moment's lowest reading to its highest.
+footpod's developer field -- against elapsed time or distance. With --out
+it is a PNG, in the dashboard's type and themes, with a faint band behind
+the line from each moment's lowest reading to its highest.
+
+In the terminal, a terminal that shows images -- iTerm2, WezTerm, kitty,
+Ghostty -- is shown that picture, the width of the window. Any other is
+drawn the chart in braille dots, two by four to a character, so a chart
+the width of a terminal window is a couple of hundred dots across; and so
+is output into a pipe or a file, or through tmux or screen, which would
+otherwise receive a page of base64. --terminal chooses outright.
 
 Without --y it lists the metrics the activity can be charted by, with how
 much of it carries each: the names are inspect's, so plot never disagrees
@@ -80,6 +88,10 @@ func init() {
 		"24, or less in a short terminal); in pixels in a PNG (default: "+strconv.Itoa(plotImageHeight)+")")
 	f.StringVar(&plotOpts.theme, "theme", panel.LightTheme().Name, "a PNG's palette, as the render's --theme names them -- "+
 		"light (the default: a chart is read on a page more often than over video), dark or night")
+	f.StringVar(&plotOpts.terminal, "terminal", termAuto, "how the chart is drawn in the terminal -- \""+termAuto+
+		"\" (the default: a picture in a terminal known to show one, braille otherwise), \""+termITerm+"\" (a picture "+
+		"in iTerm2's protocol, which WezTerm reads too), \""+termKitty+"\" (kitty's, which Ghostty reads too) or \""+
+		termBraille+"\"")
 	f.StringArrayVar(&plotOpts.fonts, "font", nil, "a TrueType or OpenType font for a PNG's letters the built-in font lacks, "+
 		"as the render's --font; repeat for several")
 	f.DurationVar(&plotOpts.smooth, "smooth", 0, "average each reading with those within half of this either side of it in time "+
@@ -126,10 +138,11 @@ func runPlot(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("plot: this activity has no %s: inspect lists what it has", m.name)
 	}
 
+	widthSet, heightSet := cmd.Flags().Changed("width"), cmd.Flags().Changed("height")
 	if plotOpts.out != "" {
-		err = writePlotImage(track, m, u, cmd.Flags().Changed("width"), cmd.Flags().Changed("height"))
+		err = writePlotImage(track, m, u, widthSet, heightSet)
 	} else {
-		err = writePlotBraille(out, track, m, u, cmd.Flags().Changed("width"), cmd.Flags().Changed("height"))
+		err = writePlotTerminal(out, cmd.ErrOrStderr(), track, m, u, widthSet, heightSet)
 	}
 	if err != nil {
 		return fmt.Errorf("plot: %w", err)
@@ -143,10 +156,71 @@ func runPlot(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// writePlotBraille draws m's chart in braille to out, the size of the
-// terminal or of --width and --height.
-func writePlotBraille(out io.Writer, track *fitactivity.Track, m plotMetric, u units.Set, widthSet, heightSet bool) error {
-	width, height := chartSize(widthSet, heightSet)
+// writePlotTerminal draws m's chart in the terminal, as a picture or in
+// braille as chooseTerminal decides, the size of the terminal or of
+// --width and --height in characters, with chooseTerminal's note on
+// errOut.
+func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, m plotMetric, u units.Set, widthSet, heightSet bool) error {
+	ts, tty := terminalSize(os.Stdout)
+	if f, ok := out.(*os.File); !ok || f != os.Stdout {
+		// Written somewhere other than the process's own output -- a test's
+		// buffer -- which is no terminal, whatever stdout is.
+		tty = false
+	}
+	how, note, err := chooseTerminal(plotOpts.terminal, os.Getenv, tty)
+	if err != nil {
+		return err
+	}
+	if note != "" {
+		fmt.Fprintln(errOut, note)
+	}
+	width, height := chartSize(ts, tty, widthSet, heightSet)
+	if how == termBraille {
+		return writePlotBraille(out, track, m, u, width, height)
+	}
+	pw, ph := terminalPixels(ts, width, height)
+	img, err := plotPicture(track, m, u, pw, ph)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return err
+	}
+	if how == termKitty {
+		return writeKittyImage(out, buf.Bytes(), width)
+	}
+	return writeITermImage(out, buf.Bytes(), width)
+}
+
+// terminalPixels is the picture drawn for a chart cols by rows characters
+// in a terminal of size ts: as many pixels as those characters cover --
+// twice as many, so that on a screen of two pixels a point the terminal
+// still draws it sharp -- in the PNG's proportions, and no taller than the
+// rows, less one for the prompt. A terminal that does not say its size in
+// pixels is taken to have characters ten pixels wide and twenty tall. The
+// picture is held to plotTerminalMaxWidth, and its height with it.
+func terminalPixels(ts termSize, cols, rows int) (width, height int) {
+	cellW, cellH := 10.0, 20.0
+	if ts.Width > 0 && ts.Height > 0 && ts.Cols > 0 && ts.Rows > 0 {
+		cellW, cellH = float64(ts.Width)/float64(ts.Cols), float64(ts.Height)/float64(ts.Rows)
+	}
+	scale := min(1, plotTerminalMaxWidth/(2*cellW*float64(cols)))
+	width = int(2 * cellW * float64(cols) * scale)
+	height = min(width*plotImageHeight/plotImageWidth, int(2*cellH*float64(max(rows-1, 1))*scale))
+	return width, height
+}
+
+// plotTerminalMaxWidth is the widest picture drawn for the terminal, in
+// pixels. A terminal that reports its pixels as the screen's own, on a
+// screen of two to a point, would otherwise have a full-width chart drawn
+// some six thousand pixels across: seconds to draw and megabytes to send,
+// for a picture the terminal shows no sharper than this.
+const plotTerminalMaxWidth = 3200.0
+
+// writePlotBraille draws m's chart in braille to out, width by height
+// characters.
+func writePlotBraille(out io.Writer, track *fitactivity.Track, m plotMetric, u units.Set, width, height int) error {
 	chart, err := buildChart(track, m, u, plotOpts.x, 2*width, max(width/12, 2), 5, plotOpts.smooth)
 	if err != nil {
 		return err
@@ -174,31 +248,9 @@ func writePlotImage(track *fitactivity.Track, m plotMetric, u units.Set, widthSe
 	if heightSet {
 		height = plotOpts.height
 	}
-	if width <= 0 || height <= 0 {
-		return fmt.Errorf("a chart %d by %d pixels has nothing to draw on", width, height)
-	}
-	theme, err := panel.SelectTheme(plotOpts.theme)
+	img, err := plotPicture(track, m, u, width, height)
 	if err != nil {
 		return err
-	}
-	fallbacks, err := loadFonts(plotOpts.fonts)
-	if err != nil {
-		return err
-	}
-	fonts, err := panel.NewFaceCacheWith(fallbacks...)
-	if err != nil {
-		return err
-	}
-	chart, err := buildChart(track, m, u, plotOpts.x, width, max(width/140, 2), max(height/90, 3), plotOpts.smooth)
-	if err != nil {
-		return err
-	}
-	img, err := chart.Image(width, height, theme, fonts)
-	if err != nil {
-		return err
-	}
-	if img == nil {
-		return fmt.Errorf("%d by %d pixels is too small for a chart", width, height)
 	}
 	f, err := os.Create(plotOpts.out)
 	if err != nil {
@@ -211,13 +263,49 @@ func writePlotImage(track *fitactivity.Track, m plotMetric, u units.Set, widthSe
 	return f.Close()
 }
 
+// plotPicture is m's chart drawn width by height pixels, in --theme and
+// with --font.
+func plotPicture(track *fitactivity.Track, m plotMetric, u units.Set, width, height int) (*image.RGBA, error) {
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("a chart %d by %d pixels has nothing to draw on", width, height)
+	}
+	theme, err := panel.SelectTheme(plotOpts.theme)
+	if err != nil {
+		return nil, err
+	}
+	fallbacks, err := loadFonts(plotOpts.fonts)
+	if err != nil {
+		return nil, err
+	}
+	fonts, err := panel.NewFaceCacheWith(fallbacks...)
+	if err != nil {
+		return nil, err
+	}
+	// Ticks are spaced by the picture's size in proportion to its text,
+	// which is sized from its shorter side: a picture drawn at twice the
+	// pixels for a sharp terminal gets the same ticks, not twice as many.
+	text := float64(min(width, height)) / 32
+	chart, err := buildChart(track, m, u, plotOpts.x, width, max(int(float64(width)/(text*7)), 2), max(int(float64(height)/(text*4.5)), 3), plotOpts.smooth)
+	if err != nil {
+		return nil, err
+	}
+	img, err := chart.Image(width, height, theme, fonts)
+	if err != nil {
+		return nil, err
+	}
+	if img == nil {
+		return nil, fmt.Errorf("%d by %d pixels is too small for a chart", width, height)
+	}
+	return img, nil
+}
+
 // chartSize is the chart's size in characters: --width and --height where
 // given; otherwise the terminal's width and a height that leaves the prompt
 // and a line of notes on screen, with COLUMNS and LINES, then 100 by 24,
 // standing in where there is no terminal to ask.
-func chartSize(widthSet, heightSet bool) (width, height int) {
-	cols, rows, ok := terminalSize(os.Stdout)
-	if !ok {
+func chartSize(ts termSize, tty, widthSet, heightSet bool) (width, height int) {
+	cols, rows := ts.Cols, ts.Rows
+	if !tty {
 		cols, rows = envInt("COLUMNS", 100), envInt("LINES", 0)
 	}
 	width, height = cols, 24
