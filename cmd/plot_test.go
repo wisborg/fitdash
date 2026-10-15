@@ -268,3 +268,38 @@ func TestPlotSeveralMetricsPNGHeight(t *testing.T) {
 		t.Errorf("two metrics' PNG is %d by %d, want %d by %d, taller than one's", cfg.Width, cfg.Height, plotImageWidth, plotImageHeightFor(2))
 	}
 }
+
+// A PNG is light by default; a picture in the terminal follows the
+// terminal's background where it says, and is night where it does not;
+// a named palette is used wherever the picture goes.
+func TestPlotTheme(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		terminal  bool
+		colorfgbg string
+		want      string
+	}{
+		{"auto", false, "15;0", "light"},
+		{"auto", true, "15;0", "night"},
+		{"auto", true, "7;0", "night"},
+		{"auto", true, "0;15", "light"},
+		{"auto", true, "0;default;7", "light"},
+		{"auto", true, "", "night"},
+		{"auto", true, "nonsense", "night"},
+		{"dark", true, "0;15", "dark"},
+		{"light", true, "15;0", "light"},
+	} {
+		theme, err := plotTheme(c.name, c.terminal, func(k string) string {
+			if k == "COLORFGBG" {
+				return c.colorfgbg
+			}
+			return ""
+		})
+		if err != nil || theme.Name != c.want {
+			t.Errorf("--theme %s, terminal %v, COLORFGBG %q: %s (%v), want %s", c.name, c.terminal, c.colorfgbg, theme.Name, err, c.want)
+		}
+	}
+	if _, err := plotTheme("sepia", true, func(string) string { return "" }); err == nil {
+		t.Error("--theme sepia was accepted")
+	}
+}

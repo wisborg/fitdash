@@ -99,8 +99,10 @@ func init() {
 		"terminal's, or 100); in pixels in a PNG (default: "+strconv.Itoa(plotImageWidth)+")")
 	f.IntVar(&plotOpts.height, "height", 0, "the chart's height: in lines in the terminal, title and labels included (default: "+
 		"24, and 10 more for each further metric, or less in a short terminal); in pixels in a PNG (default: "+strconv.Itoa(plotImageHeight)+", and 300 more for each further metric)")
-	f.StringVar(&plotOpts.theme, "theme", panel.LightTheme().Name, "the picture's palette, in a PNG or the terminal, as the "+
-		"render's --theme names them -- light (a chart is read on a page more often than over video), dark or night")
+	f.StringVar(&plotOpts.theme, "theme", themeAuto, "the picture's palette, in a PNG or the terminal -- \""+themeAuto+
+		"\" (light for a PNG, which is read on a page more often than over video; in the terminal, the terminal's own: "+
+		"light on a light background, night on a dark one or where the terminal does not say) or a palette as the "+
+		"render's --theme names them, light, dark or night")
 	f.StringVar(&plotOpts.terminal, "terminal", termAuto, "how the chart is drawn in the terminal -- \""+termAuto+
 		"\" (a picture in a terminal known to show one, braille otherwise), \""+termITerm+"\" (a picture "+
 		"in iTerm2's protocol, which WezTerm reads too), \""+termKitty+"\" (kitty's, which Ghostty reads too) or \""+
@@ -212,7 +214,11 @@ func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, ms []plo
 		return writePlotBraille(out, track, ms, u, width, height)
 	}
 	pw, ph := terminalPixels(ts, width, height, len(ms))
-	img, err := plotPicture(track, ms, u, pw, ph)
+	theme, err := plotTheme(plotOpts.theme, true, os.Getenv)
+	if err != nil {
+		return err
+	}
+	img, err := plotPicture(track, ms, u, theme, pw, ph)
 	if err != nil {
 		return err
 	}
@@ -290,7 +296,11 @@ func writePlotImage(track *fitactivity.Track, ms []plotMetric, u units.Set, widt
 	if heightSet {
 		height = plotOpts.height
 	}
-	img, err := plotPicture(track, ms, u, width, height)
+	theme, err := plotTheme(plotOpts.theme, false, os.Getenv)
+	if err != nil {
+		return err
+	}
+	img, err := plotPicture(track, ms, u, theme, width, height)
 	if err != nil {
 		return err
 	}
@@ -305,15 +315,11 @@ func writePlotImage(track *fitactivity.Track, ms []plotMetric, u units.Set, widt
 	return f.Close()
 }
 
-// plotPicture is the chart of ms drawn width by height pixels, in --theme
-// and with --font.
-func plotPicture(track *fitactivity.Track, ms []plotMetric, u units.Set, width, height int) (*image.RGBA, error) {
+// plotPicture is the chart of ms drawn width by height pixels in theme,
+// with --font.
+func plotPicture(track *fitactivity.Track, ms []plotMetric, u units.Set, theme panel.Theme, width, height int) (*image.RGBA, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("a chart %d by %d pixels has nothing to draw on", width, height)
-	}
-	theme, err := panel.SelectTheme(plotOpts.theme)
-	if err != nil {
-		return nil, err
 	}
 	fallbacks, err := loadFonts(plotOpts.fonts)
 	if err != nil {
@@ -487,4 +493,44 @@ func writePlotMetrics(w io.Writer, track *fitactivity.Track, ms []plotMetric) {
 		fmt.Fprintf(tw, "%s\t%s\t%.1f%%\n", name, unit, 100*c)
 	}
 	tw.Flush()
+}
+
+// themeAuto is --theme's default: a palette chosen for where the picture
+// is shown.
+const themeAuto = "auto"
+
+// plotTheme is the palette --theme names, or for auto the one for where
+// the picture is shown: a PNG's is light, read on a page more often than
+// over video; the terminal's is the terminal's own -- light on a light
+// background, night on a dark one -- so the chart is not a bright block in
+// a dark window, nor a dark one in a light window.
+//
+// The terminal's background is read from COLORFGBG, "foreground;background"
+// as colour numbers, which iTerm2, Konsole, rxvt and others set and an ssh
+// session can carry: 7 and 15 are white, and every number from 9 up but
+// those is a bright colour, read as light too; 0 to 6 and 8 are dark. A
+// terminal that does not say is taken to be dark, as iTerm2, kitty, WezTerm
+// and Ghostty -- the terminals that show pictures -- are by default.
+//
+// Night rather than dark because its labels are a step brighter: on a
+// chart, the labels are most of what is not the line.
+func plotTheme(name string, terminal bool, getenv func(string) string) (panel.Theme, error) {
+	if name != themeAuto {
+		return panel.SelectTheme(name)
+	}
+	if !terminal || lightBackground(getenv("COLORFGBG")) {
+		return panel.LightTheme(), nil
+	}
+	return panel.NightTheme(), nil
+}
+
+// lightBackground says COLORFGBG names a light background: its last field,
+// the background's colour number, is white or a bright colour.
+func lightBackground(colorfgbg string) bool {
+	fields := strings.Split(colorfgbg, ";")
+	bg, err := strconv.Atoi(fields[len(fields)-1])
+	if err != nil {
+		return false
+	}
+	return bg == 7 || bg >= 9 && bg <= 15
 }

@@ -566,8 +566,10 @@ or through tmux or screen, is braille too, since a picture's escape sequence wou
 otherwise arrive as a page of base64; `--terminal iterm|kitty|braille` chooses outright,
 for a terminal the detection misses or a tmux set to pass pictures through. `--out`
 writes a PNG, 1600 by 600 unless `--width` and `--height` say otherwise, in the
-dashboard's type and `--theme` (light by default), with a faint band behind the line
-from each moment's lowest reading to its highest.
+dashboard's type and `--theme`, with a faint band behind the line from each moment's
+lowest reading to its highest. A PNG is light by default; a picture in the terminal
+follows the terminal's background where it says (`COLORFGBG`) and is dark where it
+does not.
 
 A missing reading is never drawn as zero: the line breaks where the readings stop for
 longer than the recording's own rhythm and the chart's resolution can hide, and a metric
