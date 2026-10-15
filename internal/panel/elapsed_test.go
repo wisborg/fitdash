@@ -510,3 +510,45 @@ func TestElapsedPanel_FlightCountsFromPushback(t *testing.T) {
 		t.Error("before the pushback the clock does not read zero")
 	}
 }
+
+// A flight's aircraft is written under the clocks, inside the panel's box
+// and clear of the time of day above it; a flight whose file names no
+// aircraft, and anything that is not a flight, draws the panel as before.
+func TestElapsedPanel_FlightAircraftUnderTheClocks(t *testing.T) {
+	c, img, ctx := elapsedFixture(t, 400, 300)
+	box := Box{X: 0, Y: 0, W: 400, H: 300}
+	static := func(flight bool, aircraft string) ([]byte, *elapsedPainter) {
+		fctx := *ctx
+		fctx.Flight, fctx.FlightTitle, fctx.FlightAircraft = flight, "XY123 AAA → BBB", aircraft
+		p := ElapsedPanel{}.Prepare(&fctx, box).(*elapsedPainter)
+		c.Fill(c.Theme.Background)
+		p.Static(c)
+		return append([]byte(nil), img.Pix...), p
+	}
+	without, _ := static(true, "")
+	with, p := static(true, "Example 320 · XX-ABC")
+	if string(with) == string(without) {
+		t.Fatal("the aircraft was not drawn")
+	}
+	stride := img.Stride
+	first, last := -1, -1
+	for y := 0; y < img.Bounds().Dy(); y++ {
+		if string(with[y*stride:(y+1)*stride]) != string(without[y*stride:(y+1)*stride]) {
+			if first < 0 {
+				first = y
+			}
+			last = y
+		}
+	}
+	if float64(first) <= p.subY+p.subPx/2 {
+		t.Errorf("the aircraft reaches up to row %d, into the time of day's row at %.0f", first, p.subY)
+	}
+	if float64(last) >= box.Y+box.H {
+		t.Errorf("the aircraft reaches down to row %d, out of the box", last)
+	}
+	run, _ := static(false, "Example 320 · XX-ABC")
+	plain, _ := static(false, "")
+	if string(run) != string(plain) {
+		t.Error("an aircraft was drawn on a panel that is not a flight's")
+	}
+}

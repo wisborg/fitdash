@@ -82,7 +82,7 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 	// no active time for --clock active to put there.
 	e := &elapsedPainter{box: box, timeOfDay: ctx.Flight, activeFirst: ctx.Clock == ClockActive && !ctx.Flight}
 	if ctx.Flight {
-		e.title, e.since = ctx.FlightTitle, ctx.FlightStart
+		e.title, e.since, e.aircraft = ctx.FlightTitle, ctx.FlightStart, ctx.FlightAircraft
 	}
 
 	// Sizes are fractions of the box, not of the frame: this panel must fit
@@ -94,6 +94,7 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 	e.labelPx = unit * 0.13
 	e.clockPx = unit * 0.34
 	e.subPx = unit * 0.11
+	e.aircraftPx = unit * 0.10
 
 	// Then shrink whatever does not fit the box's WIDTH. A box that is wide
 	// and short sizes from its height above and would overflow horizontally.
@@ -116,6 +117,11 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 				e.labelPx = px
 			}
 		}
+		if e.aircraft != "" {
+			if px, err := ctx.Fonts.FitSize(e.aircraft, box.W*0.92, e.aircraftPx); err == nil {
+				e.aircraftPx = px
+			}
+		}
 	}
 
 	// Rows are spaced against `unit` and centred in the box rather than placed
@@ -126,6 +132,7 @@ func (p ElapsedPanel) Prepare(ctx *Context, box Box) Painter {
 	centerY := box.Y + box.H/2
 	e.clockY = centerY
 	e.subY = centerY + unit*0.30
+	e.aircraftY = e.subY + unit*0.15
 	e.centerX = box.X + box.W/2
 
 	// The CAPTION alone is the exception: it is positioned off box.H, not
@@ -171,6 +178,10 @@ type elapsedPainter struct {
 	// flight's name. See Context.FlightTitle.
 	title string
 
+	// aircraft, when not empty, is written beneath the clocks: the
+	// aircraft that flew the flight. See Context.FlightAircraft.
+	aircraft string
+
 	// since, when not zero, is the instant elapsed counts from in place of
 	// the activity's start: a flight's pushback. See Context.FlightStart.
 	since time.Time
@@ -179,6 +190,10 @@ type elapsedPainter struct {
 	clockPx float64
 	subPx   float64
 	labelY  float64
+
+	aircraftPx float64
+	aircraftY  float64
+
 	ruleY   float64
 	ruleH   float64
 	ruleW   float64
@@ -187,11 +202,15 @@ type elapsedPainter struct {
 	centerX float64
 }
 
-// Static draws the chrome: the label and the rule beneath it. Neither changes
-// across the render, so both are rasterized once.
+// Static draws the chrome: the label and the rule beneath it, and a
+// flight's aircraft under the clocks. None of them changes across the
+// render, so all are rasterized once.
 func (e *elapsedPainter) Static(c *Canvas) {
 	_ = c.Text(e.mainCaption(), e.centerX, e.labelY, 0.5, 0.5, e.labelPx, c.Theme.Dim)
 	c.Rect(Box{X: e.centerX - e.ruleW/2, Y: e.ruleY, W: e.ruleW, H: e.ruleH}, c.Theme.Dim)
+	if e.aircraft != "" {
+		_ = c.Text(e.aircraft, e.centerX, e.aircraftY, 0.5, 0.5, e.aircraftPx, c.Theme.Dim)
+	}
 }
 
 // Dynamic draws the two clocks.

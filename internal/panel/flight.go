@@ -216,3 +216,34 @@ func FlightTitle(flights []fitactivity.Flight) string {
 	}
 	return strings.Join(parts, " · ")
 }
+
+// FlightAircraft is the aircraft each flight was flown by, as its dashboard
+// writes it under the flight's name: the model and the registration,
+// "Boeing 777-3D7(ER) · HS-TKX" -- the type designator, "B77W", where the
+// file has no model -- and the legs of a journey one after another, a leg
+// flown by the aircraft before it written once. Empty when the file names
+// no aircraft.
+func FlightAircraft(flights []fitactivity.Flight) string {
+	var parts []string
+	var last fitactivity.Flight
+	for i, f := range flights {
+		if i > 0 && f.Aircraft == last.Aircraft && f.AircraftType == last.AircraftType && f.Registration == last.Registration {
+			continue
+		}
+		last = f
+		model := f.Aircraft
+		if model == "" {
+			model = f.AircraftType
+		}
+		var leg []string
+		for _, s := range []string{model, f.Registration} {
+			if s != "" {
+				leg = append(leg, s)
+			}
+		}
+		if len(leg) > 0 {
+			parts = append(parts, strings.Join(leg, " · "))
+		}
+	}
+	return strings.Join(parts, " / ")
+}

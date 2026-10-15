@@ -51,6 +51,31 @@ func TestFlightTitle(t *testing.T) {
 	}
 }
 
+// A flight's aircraft is its model and registration, its type designator
+// where the file has no model; a journey's legs flown by one aircraft name
+// it once, and a file naming no aircraft names none.
+func TestFlightAircraft(t *testing.T) {
+	for _, c := range []struct {
+		flights []fitactivity.Flight
+		want    string
+	}{
+		{nil, ""},
+		{[]fitactivity.Flight{{Number: "XY1"}}, ""},
+		{[]fitactivity.Flight{{Aircraft: "Example 320", AircraftType: "A20N", Registration: "XX-ABC"}}, "Example 320 · XX-ABC"},
+		{[]fitactivity.Flight{{AircraftType: "A20N"}}, "A20N"},
+		{[]fitactivity.Flight{{Registration: "XX-ABC"}}, "XX-ABC"},
+		{[]fitactivity.Flight{
+			{Number: "XY1", Aircraft: "Example 320", Registration: "XX-ABC"},
+			{Number: "XY2", Aircraft: "Example 320", Registration: "XX-ABC"},
+			{Number: "XY3", Aircraft: "Example 330", Registration: "XX-DEF"},
+		}, "Example 320 · XX-ABC / Example 330 · XX-DEF"},
+	} {
+		if got := FlightAircraft(c.flights); got != c.want {
+			t.Errorf("FlightAircraft(%+v) = %q, want %q", c.flights, got, c.want)
+		}
+	}
+}
+
 // climbTrack climbs at rate metres a second for an hour, a sample a second,
 // heading due east at 200 m/s.
 func climbTrack(rate float64) *fitactivity.Track {

@@ -15,12 +15,13 @@ import (
 	"github.com/wisborg/fitdash/internal/panel"
 )
 
-// A flight's card is titled with the flight and gives its day where it
+// A flight's card is titled with the flight, names the aircraft under it,
+// and gives its day where it
 // began, its distance and time from pushback, and its top speed and
 // cruising level, in aviation's units.
 func TestSummaryCardForAFlight(t *testing.T) {
 	track := syntheticFlight()
-	track.Flights = []fitactivity.Flight{{Number: "XY123", From: "AAA", To: "BBB"}}
+	track.Flights = []fitactivity.Flight{{Number: "XY123", From: "AAA", To: "BBB", Aircraft: "Example 320", Registration: "XX-ABC"}}
 	track.FillDistanceFromGPS()
 	for i := range track.Samples {
 		s := &track.Samples[i]
@@ -37,6 +38,9 @@ func TestSummaryCardForAFlight(t *testing.T) {
 	card := summaryCard(track, timer, nil, u, panel.SpeedReadoutSpeed, true, pushback)
 	if card.Title != "XY123 AAA → BBB" {
 		t.Errorf("title %q", card.Title)
+	}
+	if len(card.Lines) == 0 || card.Lines[0] != "Example 320 · XX-ABC" {
+		t.Errorf("lines %q, want the aircraft first, under the title", card.Lines)
 	}
 	// Sydney's longitude, ten hours ahead: 08:00 UTC is 18:00 there, the
 	// same day.

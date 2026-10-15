@@ -387,6 +387,11 @@ type Context struct {
 	// flight, and the caption is as it was. See FlightTitle.
 	FlightTitle string
 
+	// FlightAircraft is the aircraft that flew it -- "Boeing 777-3D7(ER) ·
+	// HS-TKX" -- written under the time panel's clocks; empty where the
+	// file does not say, and nothing is written. See FlightAircraft.
+	FlightAircraft string
+
 	// Summary is the card a full-frame flyover shows over its overview at
 	// the start and the end; see FlyoverLayout. Empty draws none.
 	Summary SummaryCard

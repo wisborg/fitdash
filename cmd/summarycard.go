@@ -25,7 +25,7 @@ var sportTitles = map[string]string{
 }
 
 // summaryCard is a full-frame flyover's summary of the activity: what it was
-// and when, how far and how long, and the figures that say most about it --
+// -- and, for a flight, the aircraft that flew it -- and when, how far and how long, and the figures that say most about it --
 // a flight's top speed and cruising level, anything else's climb and its
 // average pace or speed -- each written in the render's units and left out
 // where the file does not have it.
@@ -37,6 +37,9 @@ func summaryCard(track *fitactivity.Track, timer *fitactivity.TimerModel, elev *
 		if card.Title == "" && track.Sport != "" {
 			card.Title = strings.ToUpper(track.Sport[:1]) + strings.ReplaceAll(track.Sport[1:], "_", " ")
 		}
+	}
+	if aircraft := panel.FlightAircraft(track.Flights); aircraft != "" {
+		card.Lines = append(card.Lines, aircraft)
 	}
 	start, end := timer.Window()
 	if day, ok := localDay(track, start); ok {

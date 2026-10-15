@@ -769,6 +769,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		RouteEnds:           routeEnds,
 		RouteIcon:           routeIcon,
 		FlightTitle:         panel.FlightTitle(track.Flights),
+		FlightAircraft:      panel.FlightAircraft(track.Flights),
 		FlightStart:         pushback,
 		Pauses:              pauses,
 		Units:               unitSet,
