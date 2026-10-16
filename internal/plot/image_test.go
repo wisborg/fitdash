@@ -103,3 +103,58 @@ func TestImageStacksStrips(t *testing.T) {
 		t.Errorf("%d pixels of line in the lower strip's gap", n)
 	}
 }
+
+// A shade colours its stretch of the plot from top to bottom, behind the
+// line, and nothing outside it; the legend names it, on the title's line.
+func TestImageShades(t *testing.T) {
+	plain := ramp(1000, 1000)
+	shaded := ramp(1000, 1000)
+	shaded.Shades = []Shade{{From: 20, To: 30, Kind: ShadeInterval}, {From: 60, To: 70, Kind: ShadeClimb}}
+	a, b := chartImage(t, plain, 800, 300), chartImage(t, shaded, 800, 300)
+	bg := panel.LightTheme().Background
+	// Near the top of the plot, where the ramp has not yet risen, at 25 s
+	// and 65 s -- each inside its shade -- and at 45 s, outside both.
+	// The plot runs from the y axis -- the first ink from the left on a
+	// row between two of its labels -- to the margin, a text size from the
+	// right.
+	x := func(sec float64) int {
+		for px := range 800 {
+			if !near(a.At(px, 120), bg, 0) {
+				return px + int(sec/100*float64(800-px-int(TextPx(800, 300, 1))))
+			}
+		}
+		t.Fatal("no y axis")
+		return 0
+	}
+	for _, sec := range []float64{25, 65} {
+		if !near(a.At(x(sec), 60), bg, 0) {
+			t.Fatalf("the unshaded chart is not background at %.0f s; the test is measuring the wrong place", sec)
+		}
+		if near(b.At(x(sec), 60), bg, 2) {
+			t.Errorf("no shade at %.0f s", sec)
+		}
+		if near(b.At(x(sec), 250), bg, 2) {
+			t.Errorf("the shade at %.0f s does not reach the bottom of the plot", sec)
+		}
+	}
+	if near(b.At(x(25), 60), b.At(x(65), 60), 2) {
+		t.Error("an interval and a climb are shaded alike")
+	}
+	if !near(b.At(x(45), 60), bg, 0) {
+		t.Error("shaded outside the shades")
+	}
+	inked := func(img *image.RGBA) int {
+		n := 0
+		for y := range 25 {
+			for px := 600; px < 800; px++ {
+				if !near(img.At(px, y), bg, 8) {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	if inked(a) != 0 || inked(b) < 50 {
+		t.Errorf("the title line's right end has %d pixels inked without shades and %d with, want none and a legend", inked(a), inked(b))
+	}
+}

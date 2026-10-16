@@ -48,7 +48,7 @@ func runPlotCmd(t *testing.T, args ...string) (out, errOut string, err error) {
 		}
 		f.Changed = false
 	})
-	plotOpts.y, plotOpts.unitEach, plotOpts.fonts = nil, nil, nil
+	plotOpts.y, plotOpts.unitEach, plotOpts.fonts, plotOpts.shade = nil, nil, nil, nil
 	var o, e bytes.Buffer
 	cmd.SetOut(&o)
 	cmd.SetErr(&e)

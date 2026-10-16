@@ -550,6 +550,7 @@ fitdash plot activity.fit --y power --smooth 30s          # power over time, in 
 fitdash plot activity.fit --y pace --x distance           # pace by kilometre
 fitdash plot activity.fit --y heart-rate --out hr.png     # a PNG instead
 fitdash plot activity.fit --y power,heart-rate,cadence    # several, one above the other
+fitdash plot activity.fit --y power --shade intervals     # the workout's intervals shaded
 ```
 
 Without `--y` it lists the metrics the activity carries and how much of it carries each
@@ -612,6 +613,10 @@ in distance and by time when they were set by the clock, as a machine's or a pow
 workout's are, with the range of its efforts where its targets changed. The same hill met
 lap after lap is said once, with how often. `--format json` or `yaml` gives all of it in
 metres and seconds; `csv`, the intervals.
+
+`fitdash plot --shade intervals,climbs` shows the same finding on a chart: each interval of
+a set and each climb shaded behind the line, a faint band in a picture and a row of marks
+beneath the axis in braille. Nothing is shaded unless asked.
 
 ## Privacy
 

@@ -16,6 +16,7 @@ import (
 // suggested. The flags with a fixed set of values are completed from it.
 func init() {
 	_ = plotCmd.RegisterFlagCompletionFunc("y", completePlotY)
+	_ = plotCmd.RegisterFlagCompletionFunc("shade", completePlotShade)
 	fixed := map[string][]string{
 		"x":            {"time\telapsed time, pauses included", "distance\tthe distance covered"},
 		"terminal":     {termAuto + "\ta picture where the terminal shows one, braille otherwise", termITerm + "\tiTerm2's picture, which WezTerm reads too", termKitty + "\tkitty's picture, which Ghostty reads too", termBraille + "\tbraille dots"},
@@ -65,5 +66,24 @@ func completePlotY(cmd *cobra.Command, args []string, toComplete string) ([]stri
 	}
 	// NoSpace after a choice, so another can follow its comma; the shell
 	// filters by what is typed.
+	return out, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
+}
+
+// completePlotShade offers the kinds of shade not yet chosen, after any
+// already chosen: "intervals," completes to "intervals,climbs".
+func completePlotShade(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	prefix, chosen := "", map[string]bool{}
+	if i := strings.LastIndex(toComplete, ","); i >= 0 {
+		prefix = toComplete[:i+1]
+		for _, name := range strings.Split(toComplete[:i], ",") {
+			chosen[strings.TrimSpace(name)] = true
+		}
+	}
+	var out []string
+	for _, k := range [][2]string{{shadeIntervals, "each interval of a set"}, {shadeClimbs, "each climb"}} {
+		if !chosen[k[0]] {
+			out = append(out, prefix+k[0]+"\t"+k[1])
+		}
+	}
 	return out, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
 }

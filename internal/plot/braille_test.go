@@ -186,3 +186,48 @@ func TestBrailleTooShortForItsStrips(t *testing.T) {
 		t.Errorf("two strips in 8 lines: %q", lines)
 	}
 }
+
+// Shades are marked beneath the x labels, a row a kind over a legend,
+// within the height asked for: each where its stretch is, two a character
+// or more apart kept apart, and one too short to cover a character's
+// middle marked all the same.
+func TestBrailleShades(t *testing.T) {
+	c := ramp(1000, 1000)
+	c.Shades = []Shade{
+		{From: 10, To: 20, Kind: ShadeInterval}, {From: 23, To: 33, Kind: ShadeInterval},
+		{From: 60.5, To: 60.9, Kind: ShadeInterval}, {From: 80, To: 90, Kind: ShadeClimb},
+	}
+	lines := c.Braille(44, 14)
+	if len(lines) != 14 {
+		t.Fatalf("%d lines, want 14", len(lines))
+	}
+	// The gutter is "100" and the axis: the plot's 40 characters, 2.5 s
+	// each, start at the fifth.
+	intervals, climbs := []rune(lines[11]), []rune(lines[12])
+	at := func(row []rune, sec float64) rune {
+		if i := 4 + int(sec/2.5); i < len(row) {
+			return row[i]
+		}
+		return ' '
+	}
+	for _, sec := range []float64{11, 19, 24, 32, 60.7} {
+		if at(intervals, sec) != '━' {
+			t.Errorf("no interval marked at %.1f s: %q", sec, string(intervals))
+		}
+	}
+	for _, sec := range []float64{5, 21.3, 45, 85} {
+		if at(intervals, sec) != ' ' {
+			t.Errorf("an interval marked at %.1f s: %q", sec, string(intervals))
+		}
+	}
+	if at(climbs, 85) != '╱' || at(climbs, 50) != ' ' {
+		t.Errorf("climbs %q, want one at 80 to 90 s", string(climbs))
+	}
+	if lines[13] != "    ━ intervals   ╱ climbs" {
+		t.Errorf("legend %q", lines[13])
+	}
+	plain := ramp(1000, 1000).Braille(44, 14)
+	if strings.Contains(strings.Join(plain, "\n"), "intervals") || len(plain) != 14 {
+		t.Errorf("a chart without shades has a legend or the wrong height:\n%s", strings.Join(plain, "\n"))
+	}
+}

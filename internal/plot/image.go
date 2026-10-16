@@ -72,6 +72,12 @@ func (c Chart) Image(width, height int, theme panel.Theme, fonts *panel.FaceCach
 		if n > 1 {
 			_ = cv.Text(s.Title, box.X, box.Y-head/2, 0, 0.5, px, theme.Foreground)
 		}
+		for _, sh := range c.Shades {
+			x0, x1 := math.Max(xAt(sh.From), box.X), math.Min(xAt(sh.To), box.X+box.W)
+			if x1 > x0 {
+				cv.Rect(panel.Box{X: x0, Y: box.Y, W: math.Max(x1-x0, 1), H: box.H}, shadeColour(sh.Kind, theme))
+			}
+		}
 		for _, v := range c.X.Ticks() {
 			x := xAt(v)
 			cv.Polyline([]float64{x, x}, []float64{box.Y, box.Y + box.H}, thin, grid)
@@ -96,8 +102,51 @@ func (c Chart) Image(width, height int, theme panel.Theme, fonts *panel.FaceCach
 		right = left + w
 	}
 	cv.Polyline([]float64{all.X, all.X + all.W}, []float64{bottom, bottom}, thin, theme.Dim)
-	_ = cv.Text(c.Title, all.X-gutter-px/2, margin, 0, 0, px*1.15, theme.Foreground)
+	titleX := all.X - gutter - px/2
+	_ = cv.Text(c.Title, titleX, margin, 0, 0, px*1.15, theme.Foreground)
+	tw, _, _ := cv.MeasureText(c.Title, px*1.15)
+	c.legend(cv, titleX+tw+px*2, float64(width)-margin, margin, px, thin, theme)
 	return img, nil
+}
+
+// legend names the chart's kinds of shade by a swatch of each, on the
+// title's baseline, ending at right; one that would reach left of left -- into
+// the title -- is not drawn.
+func (c Chart) legend(cv *panel.Canvas, left, right, baseline, px, thin float64, theme panel.Theme) {
+	kinds := shadeKinds(c.Shades)
+	if len(kinds) == 0 {
+		return
+	}
+	gap := px * 1.5
+	w := -gap
+	for _, k := range kinds {
+		tw, _, _ := cv.MeasureText(k.Name(), px)
+		w += px*1.2 + tw + gap
+	}
+	x := right - w
+	if x < left {
+		return
+	}
+	for _, k := range kinds {
+		sw := panel.Box{X: x, Y: baseline - px*0.75, W: px * 0.75, H: px * 0.75}
+		cv.Rect(sw, shadeColour(k, theme))
+		cv.Polyline([]float64{sw.X, sw.X + sw.W, sw.X + sw.W, sw.X, sw.X}, []float64{sw.Y, sw.Y, sw.Y + sw.H, sw.Y + sw.H, sw.Y}, thin, theme.Dim)
+		_ = cv.Text(k.Name(), x+px*1.2, baseline, 0, 0, px, theme.Dim)
+		tw, _, _ := cv.MeasureText(k.Name(), px)
+		x += px*1.2 + tw + gap
+	}
+}
+
+// shadeColour is the colour a kind of shade is drawn in: an interval in
+// the line's own colour, as the hard part of the trace it is; a climb in
+// the chrome's, which keeps it apart from an interval where the two
+// overlap. Both are faint, behind the grid and the line, so a shaded
+// stretch is still read as easily as any other.
+func shadeColour(k ShadeKind, theme panel.Theme) color.NRGBA {
+	if k == ShadeClimb {
+		return faded(theme.Dim, 0.2)
+	}
+	return faded(theme.Accent, 0.14)
 }
 
 // TextPx is the size of a chart's text, width by height pixels and strips

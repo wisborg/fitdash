@@ -22,7 +22,7 @@ func complete(t *testing.T, args ...string) []string {
 		}
 		f.Changed = false
 	})
-	plotOpts.y, plotOpts.unitEach, plotOpts.fonts = nil, nil, nil
+	plotOpts.y, plotOpts.unitEach, plotOpts.fonts, plotOpts.shade = nil, nil, nil, nil
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&bytes.Buffer{})
@@ -82,5 +82,16 @@ func TestCompletePlotFlags(t *testing.T) {
 		if offers := strings.Join(complete(t, "plot", flag, ""), "\n"); !strings.Contains(offers, want) {
 			t.Errorf("%s offered %q, without %s", flag, offers, want)
 		}
+	}
+}
+
+// --shade offers its kinds, and after a comma the one not yet chosen.
+func TestCompletePlotShade(t *testing.T) {
+	path := writePlotActivity(t)
+	if got := strings.Join(complete(t, "plot", path, "--shade", ""), "|"); got != "intervals\teach interval of a set|climbs\teach climb" {
+		t.Errorf("--shade offers %q", got)
+	}
+	if got := complete(t, "plot", path, "--shade", "intervals,"); len(got) != 1 || got[0] != "intervals,climbs\teach climb" {
+		t.Errorf("after intervals, --shade offers %q", got)
 	}
 }

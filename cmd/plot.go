@@ -36,6 +36,7 @@ var plotOpts struct {
 	power         string
 	units         string
 	unitEach      []string
+	shade         []string
 }
 
 // The size of a PNG where --width and --height do not say: wide, as a
@@ -81,6 +82,11 @@ from where most of the readings lie -- the highest and lowest hundredth are
 left out -- so a power meter's dropouts to zero and its sprints do not
 flatten the rest of the ride; a reading beyond the axis is drawn at its edge.
 
+--shade intervals,climbs shades the intervals of a workout's sets and its
+climbs behind the line, as describe finds them: faint bands in a picture,
+a row of marks for each beneath the axis in braille. Nothing is shaded
+unless asked.
+
 Several activity files are merged into one activity, as the render and
 inspect merge them.`,
 	Args: cobra.MinimumNArgs(1),
@@ -124,12 +130,18 @@ func init() {
 		"or \"imperial\"; a flight's default is nautical miles, feet and knots")
 	f.StringArrayVar(&plotOpts.unitEach, "unit", nil, "one quantity's unit, over --units (repeatable) -- distance=km|mi|nm, "+
 		"elevation=m|ft, speed=km/h|mph|kn|m/s, pace=min/km|min/mi")
+	f.StringSliceVar(&plotOpts.shade, "shade", nil, "shade what describe finds behind the line -- \""+shadeIntervals+
+		"\" (each interval of a set), \""+shadeClimbs+"\" (each climb), or both, comma-separated; nothing is shaded by default")
 	root.AddCommand(plotCmd)
 }
 
 func runPlot(cmd *cobra.Command, args []string) error {
 	if plotOpts.x != "time" && plotOpts.x != "distance" {
 		return fmt.Errorf("plot: --x %q: use time or distance", plotOpts.x)
+	}
+	kinds, err := parseShades(plotOpts.shade)
+	if err != nil {
+		return fmt.Errorf("plot: %w", err)
 	}
 	track, u, power, metrics, err := plotActivity(cmd, args)
 	if err != nil {
@@ -160,11 +172,12 @@ func runPlot(cmd *cobra.Command, args []string) error {
 		ms = append(ms, m)
 	}
 
+	shades, notes := plotShades(track, kinds, plotOpts.x, u, power)
 	widthSet, heightSet := cmd.Flags().Changed("width"), cmd.Flags().Changed("height")
 	if plotOpts.out != "" {
-		err = writePlotImage(track, ms, u, widthSet, heightSet)
+		err = writePlotImage(track, ms, shades, u, widthSet, heightSet)
 	} else {
-		err = writePlotTerminal(out, cmd.ErrOrStderr(), track, ms, u, widthSet, heightSet)
+		err = writePlotTerminal(out, cmd.ErrOrStderr(), track, ms, shades, u, widthSet, heightSet)
 	}
 	if err != nil {
 		return fmt.Errorf("plot: %w", err)
@@ -176,6 +189,9 @@ func runPlot(cmd *cobra.Command, args []string) error {
 		if c := m.coverage(track); c < 0.995 {
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s present %.0f%% of the time; the line breaks where it is missing\n", m.name, 100*c)
 		}
+	}
+	for _, n := range notes {
+		fmt.Fprintln(cmd.ErrOrStderr(), n)
 	}
 	return nil
 }
@@ -215,7 +231,7 @@ func plotActivity(cmd *cobra.Command, args []string) (*fitactivity.Track, units.
 // braille as chooseTerminal decides, the size of the terminal or of
 // --width and --height in characters, with chooseTerminal's note on
 // errOut.
-func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, ms []plotMetric, u units.Set, widthSet, heightSet bool) error {
+func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, ms []plotMetric, shades []plot.Shade, u units.Set, widthSet, heightSet bool) error {
 	ts, tty := terminalSize(os.Stdout)
 	if f, ok := out.(*os.File); !ok || f != os.Stdout {
 		// Written somewhere other than the process's own output -- a test's
@@ -231,14 +247,14 @@ func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, ms []plo
 	}
 	width, height := chartSize(ts, tty, len(ms), widthSet, heightSet)
 	if how == termBraille {
-		return writePlotBraille(out, track, ms, u, width, height)
+		return writePlotBraille(out, track, ms, shades, u, width, height)
 	}
 	pw, ph := terminalPixels(ts, width, height, len(ms))
 	theme, err := plotTheme(plotOpts.theme, true, os.Getenv)
 	if err != nil {
 		return err
 	}
-	img, err := plotPicture(track, ms, u, theme, pw, ph)
+	img, err := plotPicture(track, ms, shades, u, theme, pw, ph)
 	if err != nil {
 		return err
 	}
@@ -279,20 +295,22 @@ const plotTerminalMaxWidth = 3200.0
 
 // writePlotBraille draws the chart of ms in braille to out, width by
 // height characters.
-func writePlotBraille(out io.Writer, track *fitactivity.Track, ms []plotMetric, u units.Set, width, height int) error {
+func writePlotBraille(out io.Writer, track *fitactivity.Track, ms []plotMetric, shades []plot.Shade, u units.Set, width, height int) error {
 	// Each strip's rows, as Braille shares them out, ticked about every
 	// three -- a tick that would share a row with another is left
 	// unlabelled, so more steps cost nothing, and fewer round the scale out
 	// to steps so coarse a third of a short strip is empty -- and the x
 	// axis about every twelve characters.
-	rows := (height - 3 - len(ms)) / len(ms)
+	fixed := 3 + plot.ShadeRows(shadeKindCount(shades))
+	rows := (height - fixed - len(ms)) / len(ms)
 	if len(ms) == 1 {
-		rows = height - 3
+		rows = height - fixed
 	}
 	chart, err := buildChart(track, ms, u, plotOpts.x, 2*width, max(width/12, 2), max(rows/3, 3), plotOpts.smooth)
 	if err != nil {
 		return err
 	}
+	chart.Shades = shades
 	lines := chart.Braille(width, height)
 	if lines == nil {
 		return fmt.Errorf("%d by %d characters is too small for a chart", width, height)
@@ -305,7 +323,7 @@ func writePlotBraille(out io.Writer, track *fitactivity.Track, ms []plotMetric, 
 
 // writePlotImage draws the chart of ms as a PNG at --out, --width by
 // --height pixels or the default size.
-func writePlotImage(track *fitactivity.Track, ms []plotMetric, u units.Set, widthSet, heightSet bool) error {
+func writePlotImage(track *fitactivity.Track, ms []plotMetric, shades []plot.Shade, u units.Set, widthSet, heightSet bool) error {
 	if !strings.EqualFold(filepath.Ext(plotOpts.out), ".png") {
 		return fmt.Errorf("--out %q: a chart is written as a PNG; name it .png", plotOpts.out)
 	}
@@ -320,7 +338,7 @@ func writePlotImage(track *fitactivity.Track, ms []plotMetric, u units.Set, widt
 	if err != nil {
 		return err
 	}
-	img, err := plotPicture(track, ms, u, theme, width, height)
+	img, err := plotPicture(track, ms, shades, u, theme, width, height)
 	if err != nil {
 		return err
 	}
@@ -337,7 +355,7 @@ func writePlotImage(track *fitactivity.Track, ms []plotMetric, u units.Set, widt
 
 // plotPicture is the chart of ms drawn width by height pixels in theme,
 // with --font.
-func plotPicture(track *fitactivity.Track, ms []plotMetric, u units.Set, theme panel.Theme, width, height int) (*image.RGBA, error) {
+func plotPicture(track *fitactivity.Track, ms []plotMetric, shades []plot.Shade, u units.Set, theme panel.Theme, width, height int) (*image.RGBA, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("a chart %d by %d pixels has nothing to draw on", width, height)
 	}
@@ -359,6 +377,7 @@ func plotPicture(track *fitactivity.Track, ms []plotMetric, u units.Set, theme p
 	if err != nil {
 		return nil, err
 	}
+	chart.Shades = shades
 	img, err := chart.Image(width, height, theme, fonts)
 	if err != nil {
 		return nil, err

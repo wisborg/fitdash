@@ -21,6 +21,9 @@ type Chart struct {
 	X Scale
 	// Strips are the metrics, top to bottom.
 	Strips []Strip
+	// Shades are the stretches the chart marks, behind every strip in a
+	// picture and in rows beneath the x axis in text; see Shade.
+	Shades []Shade
 }
 
 // Strip is one metric of a chart: its readings and the scale they are
@@ -47,8 +50,9 @@ const brailleBlank = rune(0x2800)
 // two by four to a character, with its y scale's labels to its left, the
 // strips one above the other beneath the title, and the x scale's labels
 // beneath the last. Where there are several strips, each is headed by its
-// own title. width and height are the whole drawing's in characters,
-// labels and all; the strips share the height evenly, and a drawing too
+// own title, and its shades are marked in a row a kind beneath the x
+// labels, over a legend. width and height are the whole drawing's in
+// characters, labels and shades and all; the strips share the height evenly, and a drawing too
 // small to give each at least two rows is none.
 //
 // Text is the chart's lowest resolution, and the one place a renderer's
@@ -73,12 +77,14 @@ func (c Chart) Braille(width, height int) []string {
 	if n > 1 {
 		headed = 1
 	}
-	// Above the strips the title, below them the axis and its labels.
-	cols, rows := width-gutter-1, (height-3-n*headed)/n
+	// Above the strips the title, below them the axis and its labels,
+	// and below those the shades.
+	fixed := 3 + n*headed + ShadeRows(len(shadeKinds(c.Shades)))
+	cols, rows := width-gutter-1, (height-fixed)/n
 	if cols < 4 || rows < 2 {
 		return nil
 	}
-	spare := height - 3 - n*headed - n*rows
+	spare := height - fixed - n*rows
 	pad := strings.Repeat(" ", gutter)
 	out := []string{c.Title}
 	for i, s := range c.Strips {
@@ -94,7 +100,8 @@ func (c Chart) Braille(width, height int) []string {
 		out = append(out, s.braille(c.X, gutter, cols, r)...)
 	}
 	axis, xLabels := c.xAxis(cols)
-	return append(out, pad+"└"+axis, pad+" "+xLabels)
+	out = append(out, pad+"└"+axis, pad+" "+xLabels)
+	return append(out, c.brailleShades(gutter, cols)...)
 }
 
 // braille is the strip's rows: its line drawn cols characters wide and
