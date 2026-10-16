@@ -7,9 +7,9 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/units"
+	"github.com/wisborg/output/chart"
 
 	"github.com/wisborg/fitdash/internal/inspect"
-	"github.com/wisborg/fitdash/internal/plot"
 )
 
 // plotMetric is one thing `fitdash plot` can draw: a reading of a sample,
@@ -28,7 +28,7 @@ type plotMetric struct {
 	// they were worked out rather than recorded: "from distance", for a
 	// speed the file did not record.
 	from string
-	kind plot.Kind
+	kind chart.Kind
 	// inverted runs the axis backwards: a pace, faster higher.
 	inverted bool
 	// value is a sample's reading, and whether it has one.
@@ -76,7 +76,7 @@ func plotMetrics(sport string, u units.Set, devFields []inspect.Metric, power fi
 		// A pace is the time a distance takes, and standing still takes
 		// forever: no pace at all, rather than one drawn off the bottom of
 		// the scale that a reader would take for very slow.
-		{name: "pace", inspect: inspect.MetricSpeed, unit: u.Pace.Name, from: speedFrom, kind: plot.Clock, inverted: true,
+		{name: "pace", inspect: inspect.MetricSpeed, unit: u.Pace.Name, from: speedFrom, kind: chart.Clock, inverted: true,
 			value: func(s fitactivity.Sample) (float64, bool) {
 				return u.Pace.FromSI(s.Speed), s.HasSpeed && s.Speed > 0
 			}},

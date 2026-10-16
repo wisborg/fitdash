@@ -127,9 +127,14 @@ alternatives that were rejected and why. The summary below is only the map.
 - `internal/route/` — GPS projection and route drawing. The map-service integration
   (Mapbox / Google / OSM tiles, and later a 3D view) lands here, behind an interface,
   and is **opt-in**: see the note on third-party map services below.
-- `internal/plot/` — a chart of one metric (`fitdash plot`): the model every rendering
-  shares (where the line breaks, each column's readings, the scale and its ticks), and
-  the braille and PNG renderings of it. The terminal's picture protocols are in `cmd/`.
+- `fitdash plot` draws with **`github.com/wisborg/output/chart`**, not code here: the
+  chart model every rendering shares (where the line breaks, each column's readings, the
+  scale and its ticks, the bands), its braille, `chart/picture` for the PNG and
+  `chart/terminal` for the terminal's picture protocols. It is a general library, used
+  by programs that have nothing to do with activities, so a change to how a chart is
+  drawn belongs there, on its own branch and release, as a change to decoding belongs in
+  fitactivity. What is about activities stays in `cmd/plot*.go`: which metrics there
+  are, reading them from samples, units, and turning the workout analysis into bands.
 - `internal/inspect/` — the coverage report, and the single source of truth for whether
   an activity carries a given metric at all. Panels ask it rather than walking the
   samples themselves, so a panel cannot disagree with what `fitdash inspect` just printed.

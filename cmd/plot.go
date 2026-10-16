@@ -18,10 +18,12 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/units"
+	"github.com/wisborg/output/chart"
+	"github.com/wisborg/output/chart/picture"
+	"github.com/wisborg/output/chart/terminal"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/panel"
-	"github.com/wisborg/fitdash/internal/plot"
 )
 
 var plotOpts struct {
@@ -114,10 +116,10 @@ func init() {
 		"\" (light for a PNG, which is read on a page more often than over video; in the terminal, the terminal's own: "+
 		"light on a light background, night on a dark one or where the terminal does not say) or a palette as the "+
 		"render's --theme names them, light, dark or night")
-	f.StringVar(&plotOpts.terminal, "terminal", termAuto, "how the chart is drawn in the terminal -- \""+termAuto+
-		"\" (a picture in a terminal known to show one, braille otherwise), \""+termITerm+"\" (a picture "+
-		"in iTerm2's protocol, which WezTerm reads too), \""+termKitty+"\" (kitty's, which Ghostty reads too) or \""+
-		termBraille+"\"")
+	f.StringVar(&plotOpts.terminal, "terminal", string(terminal.Auto), "how the chart is drawn in the terminal -- \""+string(terminal.Auto)+
+		"\" (a picture in a terminal known to show one, braille otherwise), \""+string(terminal.ITerm)+"\" (a picture "+
+		"in iTerm2's protocol, which WezTerm reads too), \""+string(terminal.Kitty)+"\" (kitty's, which Ghostty reads too) or \""+
+		string(terminal.Braille)+"\"")
 	f.StringArrayVar(&plotOpts.fonts, "font", nil, "a TrueType or OpenType font for a PNG's letters the built-in font lacks, "+
 		"as the render's --font; repeat for several")
 	f.DurationVar(&plotOpts.smooth, "smooth", 0, "average each reading with those within half of this either side of it in time "+
@@ -232,22 +234,22 @@ func plotActivity(cmd *cobra.Command, args []string) (*fitactivity.Track, units.
 // braille as chooseTerminal decides, the size of the terminal or of
 // --width and --height in characters, with chooseTerminal's note on
 // errOut.
-func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, ms []plotMetric, shades []plot.Shade, u units.Set, widthSet, heightSet bool) error {
-	ts, tty := terminalSize(os.Stdout)
+func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, ms []plotMetric, shades []chart.Band, u units.Set, widthSet, heightSet bool) error {
+	ts, tty := terminal.SizeOf(os.Stdout)
 	if f, ok := out.(*os.File); !ok || f != os.Stdout {
 		// Written somewhere other than the process's own output -- a test's
 		// buffer -- which is no terminal, whatever stdout is.
 		tty = false
 	}
-	how, note, err := chooseTerminal(plotOpts.terminal, os.Getenv, tty)
+	how, note, err := terminal.Choose(terminal.Protocol(plotOpts.terminal), os.Getenv, tty)
 	if err != nil {
-		return err
+		return fmt.Errorf("--terminal %w", err)
 	}
 	if note != "" {
-		fmt.Fprintln(errOut, note)
+		fmt.Fprintln(errOut, note+"; --terminal iterm or kitty draws one anyway")
 	}
 	width, height := chartSize(ts, tty, len(ms), widthSet, heightSet)
-	if how == termBraille {
+	if how == terminal.Braille {
 		return writePlotBraille(out, track, ms, shades, u, width, height)
 	}
 	pw, ph := terminalPixels(ts, width, height, len(ms))
@@ -263,10 +265,7 @@ func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, ms []plo
 	if err := png.Encode(&buf, img); err != nil {
 		return err
 	}
-	if how == termKitty {
-		return writeKittyImage(out, buf.Bytes(), width)
-	}
-	return writeITermImage(out, buf.Bytes(), width)
+	return terminal.Write(out, how, buf.Bytes(), width)
 }
 
 // terminalPixels is the picture drawn for a chart of strips strips, cols
@@ -276,7 +275,7 @@ func writePlotTerminal(out, errOut io.Writer, track *fitactivity.Track, ms []plo
 // that many strips, and no taller than the rows, less one for the prompt. A terminal that does not say its size in
 // pixels is taken to have characters ten pixels wide and twenty tall. The
 // picture is held to plotTerminalMaxWidth, and its height with it.
-func terminalPixels(ts termSize, cols, rows, strips int) (width, height int) {
+func terminalPixels(ts terminal.Size, cols, rows, strips int) (width, height int) {
 	cellW, cellH := 10.0, 20.0
 	if ts.Width > 0 && ts.Height > 0 && ts.Cols > 0 && ts.Rows > 0 {
 		cellW, cellH = float64(ts.Width)/float64(ts.Cols), float64(ts.Height)/float64(ts.Rows)
@@ -296,23 +295,23 @@ const plotTerminalMaxWidth = 3200.0
 
 // writePlotBraille draws the chart of ms in braille to out, width by
 // height characters.
-func writePlotBraille(out io.Writer, track *fitactivity.Track, ms []plotMetric, shades []plot.Shade, u units.Set, width, height int) error {
+func writePlotBraille(out io.Writer, track *fitactivity.Track, ms []plotMetric, shades []chart.Band, u units.Set, width, height int) error {
 	// Each strip's rows, as Braille shares them out, ticked about every
 	// three -- a tick that would share a row with another is left
 	// unlabelled, so more steps cost nothing, and fewer round the scale out
 	// to steps so coarse a third of a short strip is empty -- and the x
 	// axis about every twelve characters.
-	fixed := 3 + plot.ShadeRows(shadeKindCount(shades))
+	fixed := 3 + chart.BandRows(shadeKindCount(shades))
 	rows := (height - fixed - len(ms)) / len(ms)
 	if len(ms) == 1 {
 		rows = height - fixed
 	}
-	chart, err := buildChart(track, ms, u, plotOpts.x, 2*width, max(width/12, 2), max(rows/3, 3), plotOpts.smooth)
+	c, err := buildChart(track, ms, u, plotOpts.x, 2*width, max(width/12, 2), max(rows/3, 3), plotOpts.smooth)
 	if err != nil {
 		return err
 	}
-	chart.Shades = shades
-	lines := chart.Braille(width, height)
+	c.Bands, c.BandKinds = shades, shadeBandKinds(panel.Theme{})
+	lines := c.Braille(width, height)
 	if lines == nil {
 		return fmt.Errorf("%d by %d characters is too small for a chart", width, height)
 	}
@@ -324,7 +323,7 @@ func writePlotBraille(out io.Writer, track *fitactivity.Track, ms []plotMetric, 
 
 // writePlotImage draws the chart of ms as a PNG at --out, --width by
 // --height pixels or the default size.
-func writePlotImage(track *fitactivity.Track, ms []plotMetric, shades []plot.Shade, u units.Set, widthSet, heightSet bool) error {
+func writePlotImage(track *fitactivity.Track, ms []plotMetric, shades []chart.Band, u units.Set, widthSet, heightSet bool) error {
 	if !strings.EqualFold(filepath.Ext(plotOpts.out), ".png") {
 		return fmt.Errorf("--out %q: a chart is written as a PNG; name it .png", plotOpts.out)
 	}
@@ -356,7 +355,7 @@ func writePlotImage(track *fitactivity.Track, ms []plotMetric, shades []plot.Sha
 
 // plotPicture is the chart of ms drawn width by height pixels in theme,
 // with --font.
-func plotPicture(track *fitactivity.Track, ms []plotMetric, shades []plot.Shade, u units.Set, theme panel.Theme, width, height int) (*image.RGBA, error) {
+func plotPicture(track *fitactivity.Track, ms []plotMetric, shades []chart.Band, u units.Set, theme panel.Theme, width, height int) (*image.RGBA, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("a chart %d by %d pixels has nothing to draw on", width, height)
 	}
@@ -364,22 +363,21 @@ func plotPicture(track *fitactivity.Track, ms []plotMetric, shades []plot.Shade,
 	if err != nil {
 		return nil, err
 	}
-	fonts, err := panel.NewFaceCacheWith(fallbacks...)
-	if err != nil {
-		return nil, err
-	}
 	// Ticks are spaced by the picture's size in proportion to its text: a
 	// picture drawn at twice the pixels for a sharp terminal gets the same
 	// ticks, not twice as many. A strip's ticks are spaced by its share of
 	// the height.
-	text := plot.TextPx(width, height, len(ms))
+	text := picture.TextPx(width, height, len(ms))
 	strip := float64(height) / float64(len(ms))
-	chart, err := buildChart(track, ms, u, plotOpts.x, width, max(int(float64(width)/(text*7)), 2), max(int(strip/(text*4.5)), 2), plotOpts.smooth)
+	c, err := buildChart(track, ms, u, plotOpts.x, width, max(int(float64(width)/(text*7)), 2), max(int(strip/(text*4.5)), 2), plotOpts.smooth)
 	if err != nil {
 		return nil, err
 	}
-	chart.Shades = shades
-	img, err := chart.Image(width, height, theme, fonts)
+	c.Bands, c.BandKinds = shades, shadeBandKinds(theme)
+	img, err := picture.Draw(c, width, height, picture.Options{
+		Palette: picture.Palette{Background: theme.Background, Foreground: theme.Foreground, Dim: theme.Dim, Line: theme.Accent},
+		Fonts:   fallbacks,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +392,7 @@ func plotPicture(track *fitactivity.Track, ms []plotMetric, shades []plot.Shade,
 // height of 24 lines for one strip and ten more for each further one, held
 // to what leaves the prompt and a line of notes on screen. COLUMNS and
 // LINES, then 100 columns, stand in where there is no terminal to ask.
-func chartSize(ts termSize, tty bool, strips int, widthSet, heightSet bool) (width, height int) {
+func chartSize(ts terminal.Size, tty bool, strips int, widthSet, heightSet bool) (width, height int) {
 	cols, rows := ts.Cols, ts.Rows
 	if !tty {
 		cols, rows = envInt("COLUMNS", 100), envInt("LINES", 0)
@@ -423,24 +421,24 @@ func envInt(name string, fallback int) int {
 // "distance", for a drawing of resolution columns -- dots across, or
 // pixels -- with at most xTicks steps between the x axis's ticks and
 // yTicks between each strip's, smoothed over smooth.
-func buildChart(track *fitactivity.Track, ms []plotMetric, u units.Set, x string, resolution, xTicks, yTicks int, smooth time.Duration) (plot.Chart, error) {
+func buildChart(track *fitactivity.Track, ms []plotMetric, u units.Set, x string, resolution, xTicks, yTicks int, smooth time.Duration) (chart.Chart, error) {
 	if len(track.Samples) == 0 {
-		return plot.Chart{}, errors.New("the activity has no samples")
+		return chart.Chart{}, errors.New("the activity has no samples")
 	}
 	start, end := fitactivity.BuildTimerModel(track).Window()
 	span := end.Sub(start)
 
-	var xs plot.Scale
+	var xs chart.Scale
 	against := "time"
 	if x == "distance" {
 		first, last, ok := distanceSpan(track)
 		if !ok {
-			return plot.Chart{}, errors.New("the activity records no distance to chart against; use --x time")
+			return chart.Chart{}, errors.New("the activity records no distance to chart against; use --x time")
 		}
-		xs = plot.ExactScale(u.Distance.FromSI(first), u.Distance.FromSI(last), xTicks, plot.Number)
+		xs = chart.ExactScale(u.Distance.FromSI(first), u.Distance.FromSI(last), xTicks, chart.Number)
 		against = "distance (" + u.Distance.Name + ")"
 	} else {
-		xs = plot.ExactScale(0, span.Seconds(), xTicks, plot.Clock)
+		xs = chart.ExactScale(0, span.Seconds(), xTicks, chart.Clock)
 	}
 
 	// The line breaks where the readings stop for longer than the
@@ -448,12 +446,12 @@ func buildChart(track *fitactivity.Track, ms []plotMetric, u units.Set, x string
 	// whichever is longer: a gap narrower than that cannot be seen as one,
 	// and a break there would only shred the line.
 	maxGap := max(track.GapTolerance(), 2*span/time.Duration(max(resolution, 1)))
-	chart := plot.Chart{X: xs}
+	c := chart.Chart{X: xs}
 	var names []string
 	for _, m := range ms {
-		points := make([]plot.Point, 0, len(track.Samples))
+		points := make([]chart.Point, 0, len(track.Samples))
 		for _, s := range track.Samples {
-			p := plot.Point{T: s.Time.Sub(start).Seconds()}
+			p := chart.Point{T: s.Time.Sub(start).Seconds()}
 			p.Y, p.Ok = m.value(s)
 			if x == "distance" {
 				// A sample with no distance has no place on the axis,
@@ -464,12 +462,12 @@ func buildChart(track *fitactivity.Track, ms []plotMetric, u units.Set, x string
 			}
 			points = append(points, p)
 		}
-		segs := plot.Smooth(plot.Segments(points, maxGap), smooth)
-		lo, hi, ok := plot.RobustRange(segs)
+		segs := chart.Smooth(chart.Segments(points, maxGap), smooth)
+		lo, hi, ok := chart.RobustRange(segs)
 		if !ok {
-			return plot.Chart{}, fmt.Errorf("no %s to chart", m.name)
+			return chart.Chart{}, fmt.Errorf("no %s to chart", m.name)
 		}
-		ys := plot.NewScale(lo, hi, yTicks, m.kind)
+		ys := chart.NewScale(lo, hi, yTicks, m.kind)
 		ys.Inverted = m.inverted
 		title := m.name
 		switch {
@@ -478,21 +476,21 @@ func buildChart(track *fitactivity.Track, ms []plotMetric, u units.Set, x string
 		case m.unit != "":
 			title += " (" + m.unit + ")"
 		}
-		chart.Strips = append(chart.Strips, plot.Strip{Title: title, Y: ys, Segments: segs})
+		c.Strips = append(c.Strips, chart.Strip{Title: title, Y: ys, Segments: segs})
 		names = append(names, m.name)
 	}
 
 	// One metric is named with its unit; several by name, each strip
 	// heading its own with its unit.
-	chart.Title = chart.Strips[0].Title
+	c.Title = c.Strips[0].Title
 	if len(ms) > 1 {
-		chart.Title = strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+		c.Title = strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 	}
-	chart.Title += " against " + against
+	c.Title += " against " + against
 	if smooth > 0 {
-		chart.Title += fmt.Sprintf(", smoothed over %s", smooth)
+		c.Title += fmt.Sprintf(", smoothed over %s", smooth)
 	}
-	return chart, nil
+	return c, nil
 }
 
 // distanceSpan is the first and last distance the activity records, in
@@ -549,32 +547,18 @@ const themeAuto = "auto"
 // background, night on a dark one -- so the chart is not a bright block in
 // a dark window, nor a dark one in a light window.
 //
-// The terminal's background is read from COLORFGBG, "foreground;background"
-// as colour numbers, which iTerm2, Konsole, rxvt and others set and an ssh
-// session can carry: 7 and 15 are white, and every number from 9 up but
-// those is a bright colour, read as light too; 0 to 6 and 8 are dark. A
-// terminal that does not say is taken to be dark, as iTerm2, kitty, WezTerm
-// and Ghostty -- the terminals that show pictures -- are by default.
+// The terminal's background is read from COLORFGBG, as
+// terminal.LightBackground reads it; a terminal that does not say is taken
+// to be dark, as the terminals that show pictures are by default.
 //
 // Night rather than dark because its labels are a step brighter: on a
 // chart, the labels are most of what is not the line.
-func plotTheme(name string, terminal bool, getenv func(string) string) (panel.Theme, error) {
+func plotTheme(name string, inTerminal bool, getenv func(string) string) (panel.Theme, error) {
 	if name != themeAuto {
 		return panel.SelectTheme(name)
 	}
-	if !terminal || lightBackground(getenv("COLORFGBG")) {
+	if !inTerminal || terminal.LightBackground(getenv) {
 		return panel.LightTheme(), nil
 	}
 	return panel.NightTheme(), nil
-}
-
-// lightBackground says COLORFGBG names a light background: its last field,
-// the background's colour number, is white or a bright colour.
-func lightBackground(colorfgbg string) bool {
-	fields := strings.Split(colorfgbg, ";")
-	bg, err := strconv.Atoi(fields[len(fields)-1])
-	if err != nil {
-		return false
-	}
-	return bg == 7 || bg >= 9 && bg <= 15
 }

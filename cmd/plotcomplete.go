@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wisborg/fitactivity/units"
+	"github.com/wisborg/output/chart/terminal"
 )
 
 // Completing plot's flags. --y is completed from the activity itself: the
@@ -18,8 +19,9 @@ func init() {
 	_ = plotCmd.RegisterFlagCompletionFunc("y", completePlotY)
 	_ = plotCmd.RegisterFlagCompletionFunc("shade", completePlotShade)
 	fixed := map[string][]string{
-		"x":            {"time\telapsed time, pauses included", "distance\tthe distance covered"},
-		"terminal":     {termAuto + "\ta picture where the terminal shows one, braille otherwise", termITerm + "\tiTerm2's picture, which WezTerm reads too", termKitty + "\tkitty's picture, which Ghostty reads too", termBraille + "\tbraille dots"},
+		"x": {"time\telapsed time, pauses included", "distance\tthe distance covered"},
+		"terminal": {string(terminal.Auto) + "\ta picture where the terminal shows one, braille otherwise", string(terminal.ITerm) + "\tiTerm2's picture, which WezTerm reads too",
+			string(terminal.Kitty) + "\tkitty's picture, which Ghostty reads too", string(terminal.Braille) + "\tbraille dots"},
 		"theme":        {themeAuto + "\tlight for a PNG, the terminal's own in the terminal", "light", "dark", "night"},
 		"power-source": {"auto\tStryd's where the activity has it, the file's own otherwise", "stryd\tthe footpod's", "native\tthe file's own power field"},
 		"units":        {string(units.Metric) + "\tkm, m, km/h, min/km", string(units.Imperial) + "\tmi, ft, mph, min/mi"},

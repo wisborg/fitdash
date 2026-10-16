@@ -7,15 +7,13 @@ import (
 
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/units"
-
-	"github.com/wisborg/fitdash/internal/plot"
 )
 
 // --shade names intervals, climbs and descents, in any order, once each;
 // anything else is refused.
 func TestParseShades(t *testing.T) {
 	kinds, err := parseShades([]string{"descents", "climbs", " intervals", "climbs"})
-	if err != nil || len(kinds) != 3 || kinds[0] != plot.ShadeInterval || kinds[1] != plot.ShadeClimb || kinds[2] != plot.ShadeDescent {
+	if err != nil || len(kinds) != 3 || kinds[0] != shadeInterval || kinds[1] != shadeClimb || kinds[2] != shadeDescent {
 		t.Errorf("parseShades = %v, %v; want intervals, climbs, descents", kinds, err)
 	}
 	if _, err := parseShades([]string{"hills"}); err == nil || !strings.Contains(err.Error(), "intervals, climbs or descents") {
@@ -40,14 +38,14 @@ func TestPlotShades(t *testing.T) {
 	parts = append(parts, stretch{600, 220, 3})
 	tr := session(parts...)
 	metric, _ := units.Of(units.Metric)
-	both := []plot.ShadeKind{plot.ShadeInterval, plot.ShadeClimb}
+	both := []shadeKind{shadeInterval, shadeClimb}
 
 	shades, notes := plotShades(tr, both, "time", metric, fitactivity.PowerAuto)
 	if len(shades) != 5 {
 		t.Fatalf("%d shades %+v, want the five intervals", len(shades), shades)
 	}
 	// The first interval runs from 600 s to 800 s, give or take a bin.
-	if s := shades[0]; s.Kind != plot.ShadeInterval || math.Abs(s.From-600) > 10 || math.Abs(s.To-800) > 10 {
+	if s := shades[0]; s.Kind != int(shadeInterval) || math.Abs(s.From-600) > 10 || math.Abs(s.To-800) > 10 {
 		t.Errorf("the first interval is shaded %+v, want 600 to 800 s", s)
 	}
 	if len(notes) != 1 || notes[0] != "no climbs found to shade" {
