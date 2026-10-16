@@ -589,7 +589,7 @@ beyond it is drawn at its edge. Pace runs faster-up, and units follow `--units` 
 
 `fitdash describe` says what a workout was, from the recording alone: the warm-up, each
 set of intervals — how many, how far or how long, at what effort, with what recoveries —
-the cool-down, the stops, and the climbs.
+the cool-down, the stops, and the climbs and descents.
 
 ```
 $ fitdash describe intervals.fit
@@ -601,6 +601,7 @@ warm-up    15:02, 2.48 km, at ~240 W
 cool-down  10:15, 1.70 km, at ~230 W
 stops      4, 3:10 in all, the longest 1:05
 climbs     3 × +12 m at 3.5% over 340 m, the same hill
+descents   3 × −12 m at 4.0% over 300 m, the same hill
 ```
 
 (an invented workout, not anybody's recording),
@@ -610,12 +611,13 @@ then heart rate. A set is three or more hard stretches of much the same effort w
 recoveries between, jogged or stood — a steady run stopped at the lights is said to be
 steady, and a hike is never a set. A set is told by distance when its intervals were alike
 in distance and by time when they were set by the clock, as a machine's or a power-led
-workout's are, with the range of its efforts where its targets changed. The same hill met
-lap after lap is said once, with how often. `--format json` or `yaml` gives all of it in
+workout's are, with the range of its efforts where its targets changed. A descent is a climb
+run the other way, by the same rules: five metres or more at three per cent or more. The
+same hill met lap after lap is said once, with how often. `--format json` or `yaml` gives all of it in
 metres and seconds; `csv`, the intervals.
 
-`fitdash plot --shade intervals,climbs` shows the same finding on a chart: each interval of
-a set and each climb shaded behind the line, a faint band in a picture and a row of marks
+`fitdash plot --shade intervals,climbs,descents` shows the same finding on a chart: each
+interval of a set, each climb and each descent shaded behind the line, a faint band in a picture and a row of marks
 beneath the axis in braille. Nothing is shaded unless asked.
 
 ## Privacy

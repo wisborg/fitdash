@@ -70,7 +70,8 @@ func completePlotY(cmd *cobra.Command, args []string, toComplete string) ([]stri
 }
 
 // completePlotShade offers the kinds of shade not yet chosen, after any
-// already chosen: "intervals," completes to "intervals,climbs".
+// already chosen: "intervals," completes to "intervals,climbs" and
+// "intervals,descents".
 func completePlotShade(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	prefix, chosen := "", map[string]bool{}
 	if i := strings.LastIndex(toComplete, ","); i >= 0 {
@@ -80,7 +81,7 @@ func completePlotShade(_ *cobra.Command, _ []string, toComplete string) ([]strin
 		}
 	}
 	var out []string
-	for _, k := range [][2]string{{shadeIntervals, "each interval of a set"}, {shadeClimbs, "each climb"}} {
+	for _, k := range [][2]string{{shadeIntervals, "each interval of a set"}, {shadeClimbs, "each climb"}, {shadeDescents, "each descent"}} {
 		if !chosen[k[0]] {
 			out = append(out, prefix+k[0]+"\t"+k[1])
 		}

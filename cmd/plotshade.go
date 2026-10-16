@@ -16,24 +16,27 @@ import (
 const (
 	shadeIntervals = "intervals"
 	shadeClimbs    = "climbs"
+	shadeDescents  = "descents"
 )
 
 // parseShades is the kinds of shade --shade names, each once, in the
 // order a legend lists them.
 func parseShades(names []string) ([]plot.ShadeKind, error) {
-	var want [2]bool
+	want := map[plot.ShadeKind]bool{}
 	for _, n := range names {
 		switch strings.TrimSpace(n) {
 		case shadeIntervals:
 			want[plot.ShadeInterval] = true
 		case shadeClimbs:
 			want[plot.ShadeClimb] = true
+		case shadeDescents:
+			want[plot.ShadeDescent] = true
 		default:
-			return nil, fmt.Errorf("--shade %q: use %s or %s", n, shadeIntervals, shadeClimbs)
+			return nil, fmt.Errorf("--shade %q: use %s, %s or %s", n, shadeIntervals, shadeClimbs, shadeDescents)
 		}
 	}
 	var kinds []plot.ShadeKind
-	for _, k := range []plot.ShadeKind{plot.ShadeInterval, plot.ShadeClimb} {
+	for _, k := range plot.ShadeKinds {
 		if want[k] {
 			kinds = append(kinds, k)
 		}
@@ -43,7 +46,7 @@ func parseShades(names []string) ([]plot.ShadeKind, error) {
 
 // plotShades is the stretches of kinds the workout analysis finds in
 // track -- the analysis describe puts into words, so a chart shades the
-// intervals and climbs describe says -- on the x axis x, "time" or
+// intervals, climbs and descents describe says -- on the x axis x, "time" or
 // "distance", in u. A stretch without a place on that axis -- a climb
 // without time, an interval without distance -- is left out. notes says
 // each kind asked for that the activity has none of, so an unshaded chart
@@ -78,6 +81,10 @@ func plotShades(track *fitactivity.Track, kinds []plot.ShadeKind, x string, u un
 			for _, c := range a.Climbs {
 				add(c.Span, k)
 			}
+		case plot.ShadeDescent:
+			for _, c := range a.Descents {
+				add(c.Span, k)
+			}
 		}
 		if len(shades) == n {
 			notes = append(notes, fmt.Sprintf("no %s found to shade", k.Name()))
@@ -89,7 +96,7 @@ func plotShades(track *fitactivity.Track, kinds []plot.ShadeKind, x string, u un
 // shadeKindCount is how many kinds of shade there are among shades: the
 // rows a braille chart gives them.
 func shadeKindCount(shades []plot.Shade) int {
-	var seen [2]bool
+	seen := map[plot.ShadeKind]bool{}
 	n := 0
 	for _, s := range shades {
 		if !seen[s.Kind] {

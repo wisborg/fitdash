@@ -85,13 +85,13 @@ func TestCompletePlotFlags(t *testing.T) {
 	}
 }
 
-// --shade offers its kinds, and after a comma the one not yet chosen.
+// --shade offers its kinds, and after a comma the ones not yet chosen.
 func TestCompletePlotShade(t *testing.T) {
 	path := writePlotActivity(t)
-	if got := strings.Join(complete(t, "plot", path, "--shade", ""), "|"); got != "intervals\teach interval of a set|climbs\teach climb" {
+	if got := strings.Join(complete(t, "plot", path, "--shade", ""), "|"); got != "intervals\teach interval of a set|climbs\teach climb|descents\teach descent" {
 		t.Errorf("--shade offers %q", got)
 	}
-	if got := complete(t, "plot", path, "--shade", "intervals,"); len(got) != 1 || got[0] != "intervals,climbs\teach climb" {
+	if got := complete(t, "plot", path, "--shade", "descents,intervals,"); len(got) != 1 || got[0] != "descents,intervals,climbs\teach climb" {
 		t.Errorf("after intervals, --shade offers %q", got)
 	}
 }

@@ -11,14 +11,14 @@ import (
 	"github.com/wisborg/fitdash/internal/plot"
 )
 
-// --shade names intervals and climbs, in either order, once each; anything
-// else is refused.
+// --shade names intervals, climbs and descents, in any order, once each;
+// anything else is refused.
 func TestParseShades(t *testing.T) {
-	kinds, err := parseShades([]string{"climbs", " intervals", "climbs"})
-	if err != nil || len(kinds) != 2 || kinds[0] != plot.ShadeInterval || kinds[1] != plot.ShadeClimb {
-		t.Errorf("parseShades = %v, %v; want intervals then climbs", kinds, err)
+	kinds, err := parseShades([]string{"descents", "climbs", " intervals", "climbs"})
+	if err != nil || len(kinds) != 3 || kinds[0] != plot.ShadeInterval || kinds[1] != plot.ShadeClimb || kinds[2] != plot.ShadeDescent {
+		t.Errorf("parseShades = %v, %v; want intervals, climbs, descents", kinds, err)
 	}
-	if _, err := parseShades([]string{"hills"}); err == nil || !strings.Contains(err.Error(), "intervals or climbs") {
+	if _, err := parseShades([]string{"hills"}); err == nil || !strings.Contains(err.Error(), "intervals, climbs or descents") {
 		t.Errorf("hills: %v", err)
 	}
 	if kinds, err := parseShades(nil); err != nil || kinds != nil {

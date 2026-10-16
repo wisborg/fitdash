@@ -13,21 +13,32 @@ const (
 	ShadeInterval ShadeKind = iota
 	// ShadeClimb is a climb.
 	ShadeClimb
+	// ShadeDescent is a descent.
+	ShadeDescent
 )
+
+// ShadeKinds are the kinds of shade, in the order a legend lists them.
+var ShadeKinds = []ShadeKind{ShadeInterval, ShadeClimb, ShadeDescent}
 
 // Name is the kind as a chart's legend names it.
 func (k ShadeKind) Name() string {
-	if k == ShadeClimb {
+	switch k {
+	case ShadeClimb:
 		return "climbs"
+	case ShadeDescent:
+		return "descents"
 	}
 	return "intervals"
 }
 
 // glyph is the kind's mark in a braille chart's row of shades: a heavy
-// rule for an interval, a slope for a climb.
+// rule for an interval, a slope up for a climb and down for a descent.
 func (k ShadeKind) glyph() rune {
-	if k == ShadeClimb {
+	switch k {
+	case ShadeClimb:
 		return '╱'
+	case ShadeDescent:
+		return '╲'
 	}
 	return '━'
 }
@@ -46,7 +57,7 @@ type Shade struct {
 // of a braille chart's shades, and the entries of a legend.
 func shadeKinds(shades []Shade) []ShadeKind {
 	var kinds []ShadeKind
-	for _, k := range []ShadeKind{ShadeInterval, ShadeClimb} {
+	for _, k := range ShadeKinds {
 		for _, s := range shades {
 			if s.Kind == k {
 				kinds = append(kinds, k)

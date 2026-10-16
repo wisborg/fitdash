@@ -109,7 +109,7 @@ func TestImageStacksStrips(t *testing.T) {
 func TestImageShades(t *testing.T) {
 	plain := ramp(1000, 1000)
 	shaded := ramp(1000, 1000)
-	shaded.Shades = []Shade{{From: 20, To: 30, Kind: ShadeInterval}, {From: 60, To: 70, Kind: ShadeClimb}}
+	shaded.Shades = []Shade{{From: 20, To: 30, Kind: ShadeInterval}, {From: 60, To: 70, Kind: ShadeClimb}, {From: 80, To: 90, Kind: ShadeDescent}}
 	a, b := chartImage(t, plain, 800, 300), chartImage(t, shaded, 800, 300)
 	bg := panel.LightTheme().Background
 	// Near the top of the plot, where the ramp has not yet risen, at 25 s
@@ -126,7 +126,7 @@ func TestImageShades(t *testing.T) {
 		t.Fatal("no y axis")
 		return 0
 	}
-	for _, sec := range []float64{25, 65} {
+	for _, sec := range []float64{25, 65, 85} {
 		if !near(a.At(x(sec), 60), bg, 0) {
 			t.Fatalf("the unshaded chart is not background at %.0f s; the test is measuring the wrong place", sec)
 		}
@@ -137,8 +137,10 @@ func TestImageShades(t *testing.T) {
 			t.Errorf("the shade at %.0f s does not reach the bottom of the plot", sec)
 		}
 	}
-	if near(b.At(x(25), 60), b.At(x(65), 60), 2) {
-		t.Error("an interval and a climb are shaded alike")
+	for _, pair := range [][2]float64{{25, 65}, {25, 85}, {65, 85}} {
+		if near(b.At(x(pair[0]), 60), b.At(x(pair[1]), 60), 2) {
+			t.Errorf("the shades at %.0f s and %.0f s are alike", pair[0], pair[1])
+		}
 	}
 	if !near(b.At(x(45), 60), bg, 0) {
 		t.Error("shaded outside the shades")

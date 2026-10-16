@@ -28,11 +28,11 @@ var describeOpts struct {
 
 var describeCmd = &cobra.Command{
 	Use:   "describe ACTIVITY [ACTIVITY ...]",
-	Short: "Say what a workout was: its intervals, its warm-up and cool-down, its climbs",
+	Short: "Say what a workout was: its intervals, its warm-up and cool-down, its climbs and descents",
 	Long: `describe reads an activity and says what the workout was, from the recording
 alone: the warm-up, the sets of intervals -- how many, how long or how far,
 at what effort, with what recoveries -- the cool-down, the stops, and the
-climbs along the way. A steady run is said to be steady.
+climbs and descents along the way. A steady run is said to be steady.
 
 Effort is measured by the best the activity records: power (from
 --power-source, as the render reads it), grade-adjusted pace for a run or a
@@ -42,8 +42,8 @@ effort it follows by the better part of a minute.
 A set is three or more hard stretches of much the same effort, each with a
 recovery after it of at least a tenth of its length, jogged, walked or
 stood: a steady run stopped at the lights is not a set. A climb gains five
-metres or more at three per cent or more; the same hill met lap after lap is
-said once, with how often.
+metres or more at three per cent or more, and a descent loses as much as
+steeply; the same hill met lap after lap is said once, with how often.
 
 In text, the description and then each set's intervals; in CSV, the
 intervals; in JSON and YAML, all of it, in metres, seconds and the effort's
@@ -241,7 +241,7 @@ func (d describer) writeText(w io.Writer, sources []activitySource) {
 		d.writeSets(tw, start, end)
 	}
 	d.writeStops(tw)
-	d.writeClimbs(tw)
+	d.writeHills(tw)
 	tw.flush()
 }
 
@@ -458,33 +458,40 @@ func (d describer) writeStops(tw *lines) {
 	tw.add("stops", text)
 }
 
-// writeClimbs says the climbs: the same hill met again and again once,
-// with how often, and the others each, biggest first.
-func (d describer) writeClimbs(tw *lines) {
-	if len(d.a.Climbs) == 0 {
+// writeHills says the climbs and then the descents: the same hill met
+// again and again once, with how often, and the others each, biggest
+// first.
+func (d describer) writeHills(tw *lines) {
+	d.writeRises(tw, "climb", "climbs", "+", climbRises(d.a.Climbs))
+	d.writeRises(tw, "descent", "descents", "−", descentRises(d.a.Descents))
+}
+
+// writeRises says rises under label, or plural where there are several,
+// each height signed with sign.
+func (d describer) writeRises(tw *lines, label, plural, sign string, rs []rise) {
+	if len(rs) == 0 {
 		return
 	}
-	groups := sameHill(d.a.Climbs)
+	groups := sameHill(rs)
 	sort.SliceStable(groups, func(i, j int) bool {
-		return groups[i].gain()*float64(len(groups[i])) > groups[j].gain()*float64(len(groups[j]))
+		return groups[i].height()*float64(len(groups[i])) > groups[j].height()*float64(len(groups[j]))
 	})
 	var texts []string
 	for _, g := range groups {
-		c := g[0]
-		text := fmt.Sprintf("%s at %.1f%%", d.elevation(g.gain()), 100*g.grade())
+		r := g[0]
+		text := fmt.Sprintf("%s%s at %.1f%%", sign, d.elevation(g.height()), 100*g.grade())
 		if l, ok := g.length(); ok {
 			text += " over " + d.climbLength(l)
 		}
 		if len(g) > 1 {
 			text = fmt.Sprintf("%d × %s, the same hill", len(g), text)
 		} else {
-			text += " from " + d.distance(c.StartDistance)
+			text += " from " + d.distance(r.StartDistance)
 		}
 		texts = append(texts, text)
 	}
-	label := "climbs"
-	if len(d.a.Climbs) == 1 {
-		label = "climb"
+	if len(rs) > 1 {
+		label = plural
 	}
 	tw.add(label, texts[0])
 	for _, t := range texts[1:] {
@@ -502,35 +509,62 @@ func (d describer) climbLength(m float64) string {
 	return d.distance(m)
 }
 
+// elevation is a height, unsigned: "12 m".
 func (d describer) elevation(m float64) string {
-	return fmt.Sprintf("+%.0f %s", d.u.Elevation.FromSI(m), d.u.Elevation.Name)
+	return fmt.Sprintf("%.0f %s", d.u.Elevation.FromSI(m), d.u.Elevation.Name)
 }
 
-// hill is climbs of the same hill.
-type hill []workout.Climb
+// rise is a climb or a descent as describe says it: where it is, how high
+// it rose or fell, and how steeply. The two are said alike, so they are
+// grouped and worded by one code.
+type rise struct {
+	workout.Span
+	height, grade float64
+	lat, lon      float64
+	hasGPS        bool
+}
 
-func (h hill) gain() float64 {
+func climbRises(cs []workout.Climb) []rise {
+	rs := make([]rise, len(cs))
+	for i, c := range cs {
+		rs[i] = rise{Span: c.Span, height: c.Gain, grade: c.Grade, lat: c.Lat, lon: c.Lon, hasGPS: c.HasGPS}
+	}
+	return rs
+}
+
+func descentRises(ds []workout.Descent) []rise {
+	rs := make([]rise, len(ds))
+	for i, c := range ds {
+		rs[i] = rise{Span: c.Span, height: c.Loss, grade: c.Grade, lat: c.Lat, lon: c.Lon, hasGPS: c.HasGPS}
+	}
+	return rs
+}
+
+// hill is rises of the same hill.
+type hill []rise
+
+func (h hill) height() float64 {
 	var g float64
-	for _, c := range h {
-		g += c.Gain
+	for _, r := range h {
+		g += r.height
 	}
 	return g / float64(len(h))
 }
 
 func (h hill) grade() float64 {
 	var g float64
-	for _, c := range h {
-		g += c.Grade
+	for _, r := range h {
+		g += r.grade
 	}
 	return g / float64(len(h))
 }
 
-// length is how far the hill's climbs go on, on average; ok is false
-// when one of them has no distance to measure by.
+// length is how far the hill's rises go on, on average; ok is false when
+// one of them has no distance to measure by.
 func (h hill) length() (float64, bool) {
 	var l float64
-	for _, c := range h {
-		d, ok := c.Distance()
+	for _, r := range h {
+		d, ok := r.Distance()
 		if !ok {
 			return 0, false
 		}
@@ -539,24 +573,24 @@ func (h hill) length() (float64, bool) {
 	return l / float64(len(h)), true
 }
 
-// sameHill groups climbs that start within 60 m of one another and gain
-// within a third of one another: a loop's hill, met lap after lap. A
-// climb without a fix is a hill of its own.
-func sameHill(cs []workout.Climb) []hill {
+// sameHill groups rises that start within 60 m of one another and rise or
+// fall within a third of one another: a loop's hill, met lap after lap. A
+// rise without a fix is a hill of its own.
+func sameHill(rs []rise) []hill {
 	var hills []hill
-	for _, c := range cs {
+	for _, r := range rs {
 		placed := false
 		for i, h := range hills {
 			first := h[0]
-			if c.HasGPS && first.HasGPS && greatCircleMetres(c.Lat, c.Lon, first.Lat, first.Lon) <= 60 &&
-				math.Abs(c.Gain-first.Gain) <= first.Gain/3 {
-				hills[i] = append(h, c)
+			if r.hasGPS && first.hasGPS && greatCircleMetres(r.lat, r.lon, first.lat, first.lon) <= 60 &&
+				math.Abs(r.height-first.height) <= first.height/3 {
+				hills[i] = append(h, r)
 				placed = true
 				break
 			}
 		}
 		if !placed {
-			hills = append(hills, hill{c})
+			hills = append(hills, hill{r})
 		}
 	}
 	return hills

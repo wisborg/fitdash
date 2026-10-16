@@ -140,11 +140,15 @@ func (c Chart) legend(cv *panel.Canvas, left, right, baseline, px, thin float64,
 // shadeColour is the colour a kind of shade is drawn in: an interval in
 // the line's own colour, as the hard part of the trace it is; a climb in
 // the chrome's, which keeps it apart from an interval where the two
-// overlap. Both are faint, behind the grid and the line, so a shaded
-// stretch is still read as easily as any other.
+// overlap; a descent in the theme's highlight, apart from both. All are
+// faint, behind the grid and the line, so a shaded stretch is still read
+// as easily as any other.
 func shadeColour(k ShadeKind, theme panel.Theme) color.NRGBA {
-	if k == ShadeClimb {
+	switch k {
+	case ShadeClimb:
 		return faded(theme.Dim, 0.2)
+	case ShadeDescent:
+		return faded(theme.Highlight, 0.14)
 	}
 	return faded(theme.Accent, 0.14)
 }

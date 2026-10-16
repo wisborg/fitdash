@@ -82,8 +82,8 @@ from where most of the readings lie -- the highest and lowest hundredth are
 left out -- so a power meter's dropouts to zero and its sprints do not
 flatten the rest of the ride; a reading beyond the axis is drawn at its edge.
 
---shade intervals,climbs shades the intervals of a workout's sets and its
-climbs behind the line, as describe finds them: faint bands in a picture,
+--shade intervals,climbs,descents shades the intervals of a workout's sets,
+its climbs and its descents behind the line, as describe finds them: faint bands in a picture,
 a row of marks for each beneath the axis in braille. Nothing is shaded
 unless asked.
 
@@ -131,7 +131,8 @@ func init() {
 	f.StringArrayVar(&plotOpts.unitEach, "unit", nil, "one quantity's unit, over --units (repeatable) -- distance=km|mi|nm, "+
 		"elevation=m|ft, speed=km/h|mph|kn|m/s, pace=min/km|min/mi")
 	f.StringSliceVar(&plotOpts.shade, "shade", nil, "shade what describe finds behind the line -- \""+shadeIntervals+
-		"\" (each interval of a set), \""+shadeClimbs+"\" (each climb), or both, comma-separated; nothing is shaded by default")
+		"\" (each interval of a set), \""+shadeClimbs+"\" (each climb), \""+shadeDescents+"\" (each descent), or several, "+
+		"comma-separated; nothing is shaded by default")
 	root.AddCommand(plotCmd)
 }
 

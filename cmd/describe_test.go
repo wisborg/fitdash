@@ -128,35 +128,49 @@ func TestRoundDistance(t *testing.T) {
 // Climbs starting at the same place and gaining alike are one hill, met
 // again; a climb elsewhere, or of a different size, is its own.
 func TestSameHill(t *testing.T) {
-	at := func(lat, gain float64) workout.Climb {
-		return workout.Climb{Lat: lat, Lon: 151, HasGPS: true, Gain: gain}
+	at := func(lat, gain float64) rise {
+		return rise{lat: lat, lon: 151, hasGPS: true, height: gain}
 	}
-	hills := sameHill([]workout.Climb{at(-33.7, 13), at(-33.70003, 12), at(-33.7, 14), at(-33.71, 13), at(-33.7, 30)})
+	hills := sameHill([]rise{at(-33.7, 13), at(-33.70003, 12), at(-33.7, 14), at(-33.71, 13), at(-33.7, 30)})
 	if len(hills) != 3 || len(hills[0]) != 3 {
 		t.Errorf("hills %v, want the three alike as one and two of their own", hills)
 	}
 }
 
 // A climb says how far it goes on, beside its gain, grade and start; the
-// same hill met again, how far it goes on each time.
+// same hill met again, how far it goes on each time. Descents are said
+// beneath, as climbs are, their height lost.
 func TestDescribeClimbLength(t *testing.T) {
 	metric, _ := units.Of(units.Metric)
-	climb := func(lat, from, to, gain float64) workout.Climb {
-		return workout.Climb{Span: workout.Span{StartDistance: from, EndDistance: to, HasDistance: true},
-			Gain: gain, Grade: gain / (to - from), Lat: lat, Lon: 151, HasGPS: true}
+	span := func(from, to float64) workout.Span {
+		return workout.Span{StartDistance: from, EndDistance: to, HasDistance: true}
 	}
-	a := workout.Analysis{Climbs: []workout.Climb{
-		climb(-33.7, 1000, 1342, 12), climb(-33.7, 4000, 4338, 12), climb(-33.7, 7000, 7346, 12),
-		climb(-33.8, 9000, 10400, 40),
-	}}
+	climb := func(lat, from, to, gain float64) workout.Climb {
+		return workout.Climb{Span: span(from, to), Gain: gain, Grade: gain / (to - from), Lat: lat, Lon: 151, HasGPS: true}
+	}
+	a := workout.Analysis{
+		Climbs: []workout.Climb{
+			climb(-33.7, 1000, 1342, 12), climb(-33.7, 4000, 4338, 12), climb(-33.7, 7000, 7346, 12),
+			climb(-33.8, 9000, 10400, 40),
+		},
+		Descents: []workout.Descent{{Span: span(10600, 11050), Loss: 21, Grade: 21.0 / 450, Lat: -33.81, Lon: 151, HasGPS: true}},
+	}
 	var b bytes.Buffer
 	tw := &lines{w: &b}
-	(describer{a: a, u: metric}).writeClimbs(tw)
+	(describer{a: a, u: metric}).writeHills(tw)
 	tw.flush()
-	for _, want := range []string{"+40 m at 2.9% over 1.40 km from 9.00 km", "3 × +12 m at 3.5% over 340 m, the same hill"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("no %q in:\n%s", want, b.String())
+	text := b.String()
+	for _, want := range []string{
+		"climbs   +40 m at 2.9% over 1.40 km from 9.00 km",
+		"         3 × +12 m at 3.5% over 340 m, the same hill",
+		"descent  −21 m at 4.7% over 450 m from 10.60 km",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("no %q in:\n%s", want, text)
 		}
+	}
+	if strings.Index(text, "descent") < strings.Index(text, "the same hill") {
+		t.Errorf("descents before climbs:\n%s", text)
 	}
 }
 

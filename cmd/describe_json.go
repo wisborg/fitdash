@@ -10,13 +10,14 @@ import (
 // effort_unit names. What a format reader computes with is the numbers,
 // not the words the text view makes of them.
 type describeJSON struct {
-	Signal     string           `json:"signal,omitempty" yaml:"signal,omitempty"`
-	EffortUnit string           `json:"effort_unit,omitempty" yaml:"effort_unit,omitempty"`
-	Stops      []describeStopJ  `json:"stops" yaml:"stops"`
-	Segments   []describeSegJ   `json:"segments" yaml:"segments"`
-	Levels     []describeLevelJ `json:"levels" yaml:"levels"`
-	Sets       []describeSetJ   `json:"sets" yaml:"sets"`
-	Climbs     []describeClimbJ `json:"climbs" yaml:"climbs"`
+	Signal     string             `json:"signal,omitempty" yaml:"signal,omitempty"`
+	EffortUnit string             `json:"effort_unit,omitempty" yaml:"effort_unit,omitempty"`
+	Stops      []describeStopJ    `json:"stops" yaml:"stops"`
+	Segments   []describeSegJ     `json:"segments" yaml:"segments"`
+	Levels     []describeLevelJ   `json:"levels" yaml:"levels"`
+	Sets       []describeSetJ     `json:"sets" yaml:"sets"`
+	Climbs     []describeClimbJ   `json:"climbs" yaml:"climbs"`
+	Descents   []describeDescentJ `json:"descents" yaml:"descents"`
 }
 
 type describeSpanJ struct {
@@ -51,6 +52,14 @@ type describeSetJ struct {
 	Recoveries []describeSpanJ `json:"recoveries" yaml:"recoveries"`
 }
 
+// describeDescentJ is a descent; its grade is downhill, and positive.
+type describeDescentJ struct {
+	describeSpanJ  `yaml:",inline"`
+	StartDistanceM float64 `json:"start_distance_m" yaml:"start_distance_m"`
+	LossM          float64 `json:"loss_m" yaml:"loss_m"`
+	Grade          float64 `json:"grade" yaml:"grade"`
+}
+
 type describeClimbJ struct {
 	describeSpanJ  `yaml:",inline"`
 	StartDistanceM float64 `json:"start_distance_m" yaml:"start_distance_m"`
@@ -74,7 +83,8 @@ func (d describer) json() describeJSON {
 		return &v
 	}
 	j := describeJSON{Signal: string(d.a.Signal), EffortUnit: effortUnit(d.a.Signal),
-		Stops: []describeStopJ{}, Segments: []describeSegJ{}, Levels: []describeLevelJ{}, Sets: []describeSetJ{}, Climbs: []describeClimbJ{}}
+		Stops: []describeStopJ{}, Segments: []describeSegJ{}, Levels: []describeLevelJ{}, Sets: []describeSetJ{}, Climbs: []describeClimbJ{},
+		Descents: []describeDescentJ{}}
 	for _, s := range d.a.Stops {
 		j.Stops = append(j.Stops, describeStopJ{describeSpanJ: span(s.Span), Paused: s.Paused})
 	}
@@ -99,6 +109,9 @@ func (d describer) json() describeJSON {
 	}
 	for _, c := range d.a.Climbs {
 		j.Climbs = append(j.Climbs, describeClimbJ{describeSpanJ: span(c.Span), StartDistanceM: c.StartDistance, GainM: c.Gain, Grade: c.Grade})
+	}
+	for _, c := range d.a.Descents {
+		j.Descents = append(j.Descents, describeDescentJ{describeSpanJ: span(c.Span), StartDistanceM: c.StartDistance, LossM: c.Loss, Grade: c.Grade})
 	}
 	return j
 }

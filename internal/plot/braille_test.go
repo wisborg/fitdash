@@ -196,10 +196,11 @@ func TestBrailleShades(t *testing.T) {
 	c.Shades = []Shade{
 		{From: 10, To: 20, Kind: ShadeInterval}, {From: 23, To: 33, Kind: ShadeInterval},
 		{From: 60.5, To: 60.9, Kind: ShadeInterval}, {From: 80, To: 90, Kind: ShadeClimb},
+		{From: 40, To: 50, Kind: ShadeDescent},
 	}
-	lines := c.Braille(44, 14)
-	if len(lines) != 14 {
-		t.Fatalf("%d lines, want 14", len(lines))
+	lines := c.Braille(44, 15)
+	if len(lines) != 15 {
+		t.Fatalf("%d lines, want 15", len(lines))
 	}
 	// The gutter is "100" and the axis: the plot's 40 characters, 2.5 s
 	// each, start at the fifth.
@@ -220,11 +221,14 @@ func TestBrailleShades(t *testing.T) {
 			t.Errorf("an interval marked at %.1f s: %q", sec, string(intervals))
 		}
 	}
-	if at(climbs, 85) != '╱' || at(climbs, 50) != ' ' {
+	if at(climbs, 85) != '╱' || at(climbs, 45) != ' ' {
 		t.Errorf("climbs %q, want one at 80 to 90 s", string(climbs))
 	}
-	if lines[13] != "    ━ intervals   ╱ climbs" {
-		t.Errorf("legend %q", lines[13])
+	if descents := []rune(lines[13]); at(descents, 45) != '╲' || at(descents, 85) != ' ' {
+		t.Errorf("descents %q, want one at 40 to 50 s", string(descents))
+	}
+	if lines[14] != "    ━ intervals   ╱ climbs   ╲ descents" {
+		t.Errorf("legend %q", lines[14])
 	}
 	plain := ramp(1000, 1000).Braille(44, 14)
 	if strings.Contains(strings.Join(plain, "\n"), "intervals") || len(plain) != 14 {
