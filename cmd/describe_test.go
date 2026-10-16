@@ -137,6 +137,29 @@ func TestSameHill(t *testing.T) {
 	}
 }
 
+// A climb says how far it goes on, beside its gain, grade and start; the
+// same hill met again, how far it goes on each time.
+func TestDescribeClimbLength(t *testing.T) {
+	metric, _ := units.Of(units.Metric)
+	climb := func(lat, from, to, gain float64) workout.Climb {
+		return workout.Climb{Span: workout.Span{StartDistance: from, EndDistance: to, HasDistance: true},
+			Gain: gain, Grade: gain / (to - from), Lat: lat, Lon: 151, HasGPS: true}
+	}
+	a := workout.Analysis{Climbs: []workout.Climb{
+		climb(-33.7, 1000, 1342, 12), climb(-33.7, 4000, 4338, 12), climb(-33.7, 7000, 7346, 12),
+		climb(-33.8, 9000, 10400, 40),
+	}}
+	var b bytes.Buffer
+	tw := &lines{w: &b}
+	(describer{a: a, u: metric}).writeClimbs(tw)
+	tw.flush()
+	for _, want := range []string{"+40 m at 2.9% over 1.40 km from 9.00 km", "3 × +12 m at 3.5% over 340 m, the same hill"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("no %q in:\n%s", want, b.String())
+		}
+	}
+}
+
 // JSON gives the analysis in metres, seconds and the effort's own unit.
 func TestDescribeJSON(t *testing.T) {
 	opts := fittest.DefaultOptions()

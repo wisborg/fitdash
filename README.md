@@ -599,7 +599,7 @@ warm-up    15:02, 2.48 km, at ~240 W
 6 × 1 km   ~4:30 each, at ~305 W, ~2:00 recoveries
 cool-down  10:15, 1.70 km, at ~230 W
 stops      4, 3:10 in all, the longest 1:05
-climbs     3 × +12 m at 3.5%, the same hill
+climbs     3 × +12 m at 3.5% over 340 m, the same hill
 ```
 
 (an invented workout, not anybody's recording),

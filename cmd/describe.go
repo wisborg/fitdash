@@ -472,6 +472,9 @@ func (d describer) writeClimbs(tw *lines) {
 	for _, g := range groups {
 		c := g[0]
 		text := fmt.Sprintf("%s at %.1f%%", d.elevation(g.gain()), 100*g.grade())
+		if l, ok := g.length(); ok {
+			text += " over " + d.climbLength(l)
+		}
 		if len(g) > 1 {
 			text = fmt.Sprintf("%d × %s, the same hill", len(g), text)
 		} else {
@@ -487,6 +490,16 @@ func (d describer) writeClimbs(tw *lines) {
 	for _, t := range texts[1:] {
 		tw.add("", t)
 	}
+}
+
+// climbLength is how far a climb goes on, to the nearest ten metres
+// under a kilometre: where a climb begins and ends is the profile's
+// judgement, not a measurement to the metre.
+func (d describer) climbLength(m float64) string {
+	if d.u.Distance.Name == units.Kilometre.Name && m < 1000 {
+		return fmt.Sprintf("%.0f m", math.Max(10, 10*math.Round(m/10)))
+	}
+	return d.distance(m)
 }
 
 func (d describer) elevation(m float64) string {
@@ -510,6 +523,20 @@ func (h hill) grade() float64 {
 		g += c.Grade
 	}
 	return g / float64(len(h))
+}
+
+// length is how far the hill's climbs go on, on average; ok is false
+// when one of them has no distance to measure by.
+func (h hill) length() (float64, bool) {
+	var l float64
+	for _, c := range h {
+		d, ok := c.Distance()
+		if !ok {
+			return 0, false
+		}
+		l += d
+	}
+	return l / float64(len(h)), true
 }
 
 // sameHill groups climbs that start within 60 m of one another and gain
