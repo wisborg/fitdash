@@ -42,6 +42,9 @@ repository.
                              where that obligation is recorded.
   output (github.com/wisborg/output)
                              Copyright 2026 Jesper Wisborg Krogh
+  cobrakit (github.com/wisborg/cobrakit)
+                             Copyright 2026 Jesper Wisborg Krogh.  Its
+                             completion package: `completion install`.
   Cobra (github.com/spf13/cobra)
                              Copyright (c) 2013-2023 Steve Francia and the
                              Cobra contributors
