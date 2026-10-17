@@ -374,17 +374,10 @@ func plotPicture(track *fitactivity.Track, ms []plotMetric, shades []chart.Band,
 		return nil, err
 	}
 	c.Bands, c.BandKinds = shades, shadeBandKinds(theme)
-	img, err := picture.Draw(c, width, height, picture.Options{
+	return picture.Draw(c, width, height, picture.Options{
 		Palette: picture.Palette{Background: theme.Background, Foreground: theme.Foreground, Dim: theme.Dim, Line: theme.Accent},
 		Fonts:   fallbacks,
 	})
-	if err != nil {
-		return nil, err
-	}
-	if img == nil {
-		return nil, fmt.Errorf("%d by %d pixels is too small for a chart", width, height)
-	}
-	return img, nil
 }
 
 // chartSize is the size in characters of a chart of strips strips:

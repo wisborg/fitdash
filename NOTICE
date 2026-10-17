@@ -92,6 +92,13 @@ MIT components
                              pulls in github.com/golang/freetype, whose own
                              license is not MIT -- see the FreeType section
                              above.
+  github.com/mattn/go-runewidth
+                             Copyright (c) 2016 Yasuhiro Matsumoto.  Reached
+                             through output, which measures text in a
+                             terminal's columns with it.
+  github.com/clipperhouse/uax29/v2
+                             Copyright (c) 2020 Matt Sherman.  Grapheme
+                             clusters, beneath go-runewidth and in output.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
