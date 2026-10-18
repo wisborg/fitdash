@@ -9,7 +9,7 @@ require (
 	github.com/wisborg/cobrakit v0.1.0
 	github.com/wisborg/fitactivity v0.19.1
 	github.com/wisborg/osmbase v0.47.1
-	github.com/wisborg/output v0.8.0
+	github.com/wisborg/output v0.9.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/image v0.44.0
 )
