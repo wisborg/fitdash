@@ -203,7 +203,7 @@ func runPlot(cmd *cobra.Command, args []string) error {
 // charted by, in the units and with the power source the flags ask for:
 // what a chart is drawn from, and what completing --y offers.
 func plotActivity(cmd *cobra.Command, args []string) (*fitactivity.Track, units.Set, fitactivity.PowerSource, []plotMetric, error) {
-	track, sources, err := decodeActivities(args)
+	track, sources, err := decodeActivitiesWith(readActivity(cmd), args)
 	if err != nil {
 		return nil, units.Set{}, 0, nil, err
 	}

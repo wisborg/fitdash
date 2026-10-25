@@ -620,6 +620,34 @@ metres and seconds; `csv`, the intervals.
 interval of a set, each climb and each descent shaded behind the line, a faint band in a picture and a row of marks
 beneath the axis in braille. Nothing is shaded unless asked.
 
+## Strava
+
+fitdash reads your own activities on Strava as it reads a file, through your own Strava API
+application: register one at <https://www.strava.com/settings/api> with `localhost` as its
+Authorization Callback Domain, put its client id and secret in `~/.config/strava.yaml` under
+`strava:` as `client_id` and `client_secret` (or in `$STRAVA_CLIENT_ID` and
+`$STRAVA_CLIENT_SECRET`), and log in once with `fitdash strava login`. The same file and login
+serve course, which reads Strava the same way.
+
+```
+fitdash strava list --week                    # this week's activities, with their ids
+fitdash strava:1234567890 --layout flyover    # an activity on Strava, rendered
+fitdash --strava run.fit --layout flyover     # the watch's file, titled as on Strava
+```
+
+`strava:ID`, or the activity's page, is an activity wherever a file is. What Strava keeps of a
+recording is less than the watch's file -- no developer fields, running dynamics or timer
+events, and no speed, which is worked out from the distance as for a GPX -- so where you have
+the file, `--strava` gives it what only Strava has instead: the full-frame card is titled with
+the activity's name there unless `--title` gives one, and `inspect` and `describe` name it and
+its page. A video of a `strava:` source is written as `strava-ID.mp4`.
+
+Nothing contacts Strava without a `strava:` activity or `--strava`. What is fetched is kept for
+a day and then deleted, as Strava's [API Policy](https://www.strava.com/legal/api_policy) asks;
+`--strava-refresh` asks again for an activity edited on Strava since. The Policy also limits
+showing Strava data to the athlete it belongs to: a video drawn from it is yours to watch, and
+worth checking against the Policy before it is published.
+
 ## Privacy
 
 A rendered dashboard is a video of where you were, minute by minute, and what your

@@ -57,11 +57,17 @@ type activitySource struct {
 // sort written at this call site would be free to disagree with the order the
 // samples are actually in.
 func decodeActivities(paths []string) (*fitactivity.Track, []activitySource, error) {
+	return decodeActivitiesWith(fitactivity.Read, paths)
+}
+
+// decodeActivitiesWith is decodeActivities with each path read by read:
+// readActivity's, which also takes strava:ID for an activity on Strava.
+func decodeActivitiesWith(read func(string) (*fitactivity.Track, error), paths []string) (*fitactivity.Track, []activitySource, error) {
 	tracks := make([]*fitactivity.Track, len(paths))
 	summed := make(map[string]bool, len(paths))
 	derived := make(map[string]bool, len(paths))
 	for i, p := range paths {
-		t, err := fitactivity.Read(p)
+		t, err := read(p)
 		if errors.Is(err, fitactivity.ErrNoTimes) {
 			// A planned route, or a line drawn on a map. Every frame is an
 			// instant of the activity, so a course with no instants has no

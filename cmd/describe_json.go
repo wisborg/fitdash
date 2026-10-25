@@ -10,6 +10,8 @@ import (
 // effort_unit names. What a format reader computes with is the numbers,
 // not the words the text view makes of them.
 type describeJSON struct {
+	Title      string             `json:"title,omitempty" yaml:"title,omitempty"`
+	StravaURL  string             `json:"strava_url,omitempty" yaml:"strava_url,omitempty"`
 	Signal     string             `json:"signal,omitempty" yaml:"signal,omitempty"`
 	EffortUnit string             `json:"effort_unit,omitempty" yaml:"effort_unit,omitempty"`
 	Stops      []describeStopJ    `json:"stops" yaml:"stops"`
@@ -84,7 +86,10 @@ func (d describer) json() describeJSON {
 	}
 	j := describeJSON{Signal: string(d.a.Signal), EffortUnit: effortUnit(d.a.Signal),
 		Stops: []describeStopJ{}, Segments: []describeSegJ{}, Levels: []describeLevelJ{}, Sets: []describeSetJ{}, Climbs: []describeClimbJ{},
-		Descents: []describeDescentJ{}}
+		Descents: []describeDescentJ{}, Title: d.track.Title}
+	if d.track.Strava != nil {
+		j.StravaURL = d.track.Strava.URL
+	}
 	for _, s := range d.a.Stops {
 		j.Stops = append(j.Stops, describeStopJ{describeSpanJ: span(s.Span), Paused: s.Paused})
 	}

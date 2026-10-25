@@ -65,7 +65,7 @@ func init() {
 }
 
 func runDescribe(cmd *cobra.Command, args []string) error {
-	track, sources, err := decodeActivities(args)
+	track, sources, err := decodeActivitiesWith(readActivity(cmd), args)
 	if err != nil {
 		return fmt.Errorf("describe: %w", err)
 	}
@@ -213,6 +213,9 @@ func (d describer) writeText(w io.Writer, sources []activitySource) {
 		path = fmt.Sprintf("%s and %d more", filepath.Base(path), len(sources)-1)
 	}
 	fmt.Fprintln(w, path)
+	if d.track.Title != "" {
+		fmt.Fprintln(w, d.track.Title)
+	}
 
 	start, end := fitactivity.BuildTimerModel(d.track).Window()
 	var head []string

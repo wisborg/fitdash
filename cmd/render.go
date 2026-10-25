@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wisborg/cobrakit/strava"
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/units"
 	"github.com/wisborg/output/progress"
@@ -550,7 +551,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 	// instead of a flag threaded through the render path. sources is the one
 	// thing that does not survive the merge and is wanted anyway: where each
 	// file begins, for the summary. See decodeActivities.
-	track, sources, err := decodeActivities(args)
+	track, sources, err := decodeActivitiesWith(readActivity(cmd), args)
 	if err != nil {
 		return fmt.Errorf("render: %w", err)
 	}
@@ -895,7 +896,7 @@ func plannedOutputPath(activity, explicit, dir, ext string) string {
 	if explicit != "" {
 		return explicit
 	}
-	stem := strings.TrimSuffix(filepath.Base(activity), filepath.Ext(activity))
+	stem := strava.Stem(activity)
 	return filepath.Join(dir, stem+ext)
 }
 

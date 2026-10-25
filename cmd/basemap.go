@@ -231,7 +231,7 @@ func runBasemapFetch(cmd *cobra.Command, args []string) error {
 	// The same decode-and-merge a render performs. A workout recorded in
 	// pieces is ONE activity, so the box has to cover all of it -- fetching
 	// for the first file would leave the map stopping where the second began.
-	track, sources, err := decodeActivities(args)
+	track, sources, err := decodeActivitiesWith(readActivity(cmd), args)
 	if err != nil {
 		return fmt.Errorf("basemap fetch: %w", err)
 	}

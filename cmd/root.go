@@ -32,7 +32,8 @@ var root = &cobra.Command{
 	Short: "Render a recorded exercise as a dashboard video",
 	Long: `fitdash reads a recorded activity and renders it as a dashboard video: the
 metrics animate as the activity progresses. An activity is a FIT, GPX, TCX,
-KML or KMZ file, told apart by what it holds rather than by its name; each
+KML or KMZ file, told apart by what it holds rather than by its name, or one
+of your own activities on Strava, strava:ID (see "fitdash strava"); each
 carries what its format can -- a GPX has no distance, only a FIT has pauses --
 and what a file does not carry is shown as absent. A planned route, with no
 times to play it by, is refused.
@@ -85,6 +86,7 @@ resolved as the subcommand. Write ./inspect to render it.`,
 func Execute() {
 	// `fitdash completion install` puts the script where the shell reads
 	// it; see cobrakit's completion package.
+	addStrava(root)
 	completion.AddInstall(root)
 
 	root.PersistentFlags().Var(&format, "format", "output format: text, csv, json or yaml")

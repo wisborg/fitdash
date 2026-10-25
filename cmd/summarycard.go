@@ -31,7 +31,12 @@ var sportTitles = map[string]string{
 // where the file does not have it.
 func summaryCard(track *fitactivity.Track, timer *fitactivity.TimerModel, elev *fitactivity.ElevationModel, u units.Set, speedReadout string, flight bool, pushback time.Time) panel.SummaryCard {
 	var card panel.SummaryCard
-	card.Title = panel.FlightTitle(track.Flights)
+	// What the activity is called where it has a name -- on Strava -- and
+	// otherwise what it is.
+	card.Title = track.Title
+	if card.Title == "" {
+		card.Title = panel.FlightTitle(track.Flights)
+	}
 	if card.Title == "" {
 		card.Title = sportTitles[track.Sport]
 		if card.Title == "" && track.Sport != "" {

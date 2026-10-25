@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/output"
 	"github.com/wisborg/output/table"
 
@@ -44,7 +45,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	// activity carries a metric, so it has to be built from the same Track
 	// the render builds its panels from. Reporting on one file of a merge
 	// would answer a question nobody asked.
-	track, sources, err := decodeActivities(args)
+	track, sources, err := decodeActivitiesWith(readActivity(cmd), args)
 	if err != nil {
 		return fmt.Errorf("inspect: %w", err)
 	}
@@ -61,7 +62,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	// carry them too.
 	out := cmd.OutOrStdout()
 	if format.Format == output.Text {
-		writeSummary(out, rep, sources)
+		writeSummary(out, rep, sources, track)
 	}
 
 	// Two representations, built independently: the object carries the whole
@@ -84,7 +85,10 @@ func runInspect(cmd *cobra.Command, args []string) error {
 // the file carried no timer events there is nothing to derive active time
 // from, and that is said outright rather than printing a number equal to
 // elapsed and letting it pass for a measurement.
-func writeSummary(w io.Writer, rep inspect.Report, sources []activitySource) {
+//
+// An activity from Strava, or given Strava's details, is also named by its
+// title there and its page.
+func writeSummary(w io.Writer, rep inspect.Report, sources []activitySource, track *fitactivity.Track) {
 	sport := rep.Sport
 	if sport == "" {
 		sport = "(not recorded)"
@@ -108,6 +112,12 @@ func writeSummary(w io.Writer, rep inspect.Report, sources []activitySource) {
 		}
 	} else {
 		fmt.Fprintf(w, "%s\n", rep.Path)
+	}
+	if track.Title != "" {
+		fmt.Fprintf(w, "title    %s\n", track.Title)
+	}
+	if track.Strava != nil {
+		fmt.Fprintf(w, "strava   %s\n", track.Strava.URL)
 	}
 	fmt.Fprintf(w, "sport    %s\n", sport)
 	fmt.Fprintf(w, "samples  %d\n", rep.Samples)

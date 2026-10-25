@@ -44,7 +44,9 @@ repository.
                              Copyright 2026 Jesper Wisborg Krogh
   cobrakit (github.com/wisborg/cobrakit)
                              Copyright 2026 Jesper Wisborg Krogh.  Its
-                             completion package: `completion install`.
+                             completion package: `completion install`; and its
+                             strava package: `fitdash strava`, and reading
+                             strava:ID and --strava.
   Cobra (github.com/spf13/cobra)
                              Copyright (c) 2013-2023 Steve Francia and the
                              Cobra contributors
@@ -58,7 +60,9 @@ repository.
                              parserc.go, readerc.go, scannerc.go, writerc.go,
                              yamlh.go, yamlprivateh.go) are MIT and the rest is
                              Apache 2.0.  Used to read a map service API key
-                             from a YAML key file; also reached through output.
+                             from a YAML key file; also reached through output,
+                             and through fitactivity, which reads a Strava API
+                             application's credentials with it.
 
 
 -------------------------------------------------------------------------------
