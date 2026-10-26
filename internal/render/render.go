@@ -237,6 +237,11 @@ func New(ctx *panel.Context, layout panel.Layout, theme panel.Theme) (*Renderer,
 		if !panel.FlightKeeps(ctx, p) {
 			return false
 		}
+		// The weather panel without --weather: not missing from the
+		// activity, not asked for, so removed unreported like the rest.
+		if ctx.Weather == nil && panel.IsWeatherPanel(p) {
+			return false
+		}
 		if p.Accepts(ctx) {
 			return true
 		}

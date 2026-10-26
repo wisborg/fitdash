@@ -47,6 +47,7 @@ type renderOptions struct {
 	basemapKeyFile      string
 	basemapDim          float64
 	basemapCache        string
+	weather             bool
 	basemapStore        string
 	terrain             bool
 	contours            bool
@@ -358,6 +359,12 @@ func bindRenderFlags(c *cobra.Command) {
 			"Tuning a --highlight means rendering the same activity repeatedly, and without a cache every run re-fetches "+
 			"identical imagery -- slower, and spending your own quota to be told the same thing. A cached activity also "+
 			"renders offline. Pass \"off\" to keep nothing")
+	f.BoolVar(&renderOpts.weather, "weather", false,
+		"show the weather the activity was done in -- temperature, dew point, and the wind turned to your direction of "+
+			"travel -- in a panel beside the climb and gradient and on the start and end cards. It is Open-Meteo's model "+
+			"weather, at a place every 10 km along the route, and NOTE that fetching it sends the area and hours of your "+
+			"activity to open-meteo.com; it is kept under your user cache directory, so a second render sends nothing. "+
+			"A weather that cannot be fetched is never fatal: the render goes on without it and the summary says why")
 	f.BoolVar(&renderOpts.dryRun, "dry-run", false,
 		"resolve everything and print the summary, but write no video and no frames -- the fast way to check "+
 			"a --label or --highlight lands where you meant before paying for an encode, and to read off where "+
@@ -735,6 +742,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		})
 	}
 	basemapDim := resolveBasemapDim(cmd)
+	wx := resolveWeather(cmd, track, flight)
 
 	var summary panel.SummaryCard
 	if fullFrame {
@@ -743,11 +751,15 @@ func runRender(cmd *cobra.Command, args []string) error {
 			summary.Title = t
 		}
 		summary.Subtitle = strings.TrimSpace(renderOpts.subtitle)
+		if line, ok := weatherCardLine(wx.w, track, unitSet); ok {
+			summary.Lines = append(summary.Lines, line)
+		}
 	}
 	rctx := &panel.Context{
 		Summary:             summary,
 		Track:               track,
 		Basemap:             basemap,
+		Weather:             wx.w,
 		BasemapDim:          basemapDim,
 		Route3D:             route3D,
 		RouteInks:           routeInks,
@@ -809,7 +821,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 		elevation: rctx.Elevation, elevationSource: elevSource,
 		units: rctx.Units, speedReadout: rctx.SpeedReadout,
 		airports: airports, wantAirports: wantAirports, gaps: gaps,
-		fonts: fonts,
+		fonts: fonts, weather: wx,
 	}
 	if renderOpts.dryRun {
 		return runDryRun(cmd, r, activity, rctx, in)
@@ -884,6 +896,10 @@ type renderInputs struct {
 	// for writeUnitsSummary for elevation's reason above.
 	units        units.Set
 	speedReadout string
+
+	// weather is what --weather fetched, or why it did not, for
+	// writeWeatherSummary.
+	weather weatherPlan
 }
 
 // plannedOutputPath is where a render WOULD write, with no side effect: it
@@ -1651,6 +1667,7 @@ func writeRenderSummary(cmd *cobra.Command, r *render.Renderer, ctx *panel.Conte
 	writeMergeSummary(cmd, in.track, in.sources)
 	writeDistanceSummary(cmd, in.sources)
 	writeBasemapSummary(cmd, r, in)
+	writeWeatherSummary(cmd.ErrOrStderr(), in.weather, in.track, in.units)
 	if !renderOpts.quiet {
 		writeMissingLetters(cmd.ErrOrStderr(), in.fonts)
 	}
@@ -2582,6 +2599,7 @@ func runFrames(cmd *cobra.Command, r *render.Renderer, ctx *panel.Context, in re
 	writeMergeSummary(cmd, in.track, in.sources)
 	writeDistanceSummary(cmd, in.sources)
 	writeBasemapSummary(cmd, r, in)
+	writeWeatherSummary(cmd.ErrOrStderr(), in.weather, in.track, in.units)
 	if !renderOpts.quiet {
 		writeMissingLetters(cmd.ErrOrStderr(), in.fonts)
 	}

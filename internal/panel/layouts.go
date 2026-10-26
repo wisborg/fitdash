@@ -242,6 +242,9 @@ func LandscapeLayout() Layout {
 			{Dir: Row, Weight: 1, Children: []Slot{
 				climbOrAltitude(),
 				gradientOrVerticalSpeed(),
+				// Only with --weather: see WeatherPanel, and New's keep
+				// filter in internal/render, which leaves it out unasked.
+				{Panel: WeatherPanel{}, Weight: 1, Pad: 0.01},
 			}},
 			// Weight 2, not the 1 this slot carried when the profile and the
 			// standalone marker strip below were still two separate rows.
@@ -388,6 +391,9 @@ func PortraitLayout() Layout {
 			{Dir: Row, Weight: 2, Children: []Slot{
 				climbOrAltitude(),
 				gradientOrVerticalSpeed(),
+				// Only with --weather: see WeatherPanel, and New's keep
+				// filter in internal/render, which leaves it out unasked.
+				{Panel: WeatherPanel{}, Weight: 1, Pad: 0.01},
 			}},
 			// Weight 3, not the 2 this slot carried before MarkerPanel's row
 			// below was folded into it -- one more than LandscapeLayout's own

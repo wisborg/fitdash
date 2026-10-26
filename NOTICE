@@ -255,6 +255,34 @@ and therefore what has to satisfy them.
                              No endorsement by Copernicus, ESA or Airbus is
                              implied.
 
+-------------------------------------------------------------------------------
+Weather data (--weather)
+-------------------------------------------------------------------------------
+
+  Open-Meteo (open-meteo.com)
+                             --weather fetches the weather an activity was
+                             done in from Open-Meteo's archive API, only when
+                             asked, and Open-Meteo then learns the area and
+                             hours of the activity.  The data are licensed
+                             under CC BY 4.0, which asks for a credit beside
+                             wherever they are shown; fitdash draws
+
+                                 Weather data by Open-Meteo.com
+
+                             into every frame that shows the weather panel
+                             and onto the card that gives the weather, and
+                             the summary prints it with the licence and the
+                             address for whoever publishes the video.
+                             Open-Meteo's free API is for non-commercial use.
+
+  ECMWF and Copernicus       Open-Meteo's archive is built from ECMWF's IFS
+                             analysis (CC BY 4.0) and the ERA5 reanalysis of
+                             the Copernicus Climate Change Service, under the
+                             Copernicus licence.  Contains modified Copernicus
+                             Climate Change Service information; neither the
+                             European Commission nor ECMWF is responsible for
+                             any use of it.
+
 The tile servers operated by the OpenStreetMap Foundation are NOT used and
 must not be: their usage policy forbids fetching tiles other than those a
 user is actively viewing, which is what rendering a video does.

@@ -338,6 +338,12 @@ type Context struct {
 	// false.
 	Gauges string
 
+	// Weather, when non-nil, is the weather the activity was done in, as
+	// --weather fetched it; nil -- the default -- leaves the weather panel
+	// out and the cards without a weather line. Fetched once, before
+	// anything is drawn, never per frame.
+	Weather *Weather
+
 	// Units are what every panel writes its numbers in: distance on the
 	// distance readout and the profile's axis, elevation on the profile, the
 	// climb panel and short distances, speed and pace in their readouts.

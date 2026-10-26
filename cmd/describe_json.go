@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/weather"
 	"github.com/wisborg/fitactivity/workout"
 )
 
@@ -20,6 +21,21 @@ type describeJSON struct {
 	Sets       []describeSetJ     `json:"sets" yaml:"sets"`
 	Climbs     []describeClimbJ   `json:"climbs" yaml:"climbs"`
 	Descents   []describeDescentJ `json:"descents" yaml:"descents"`
+	Weather    *describeWeatherJ  `json:"weather,omitempty" yaml:"weather,omitempty"`
+}
+
+// describeWeatherJ is the weather over the activity, with --weather: the
+// wind at 10 m, from the direction it blew from.
+type describeWeatherJ struct {
+	TemperatureMinC float64 `json:"temperature_min_c" yaml:"temperature_min_c"`
+	TemperatureMaxC float64 `json:"temperature_max_c" yaml:"temperature_max_c"`
+	DewPointC       float64 `json:"dew_point_c" yaml:"dew_point_c"`
+	HumidityPct     float64 `json:"humidity_pct" yaml:"humidity_pct"`
+	WindSpeedMS     float64 `json:"wind_speed_ms" yaml:"wind_speed_ms"`
+	WindFromDeg     float64 `json:"wind_from_deg" yaml:"wind_from_deg"`
+	GustsMS         float64 `json:"gusts_ms" yaml:"gusts_ms"`
+	RadiationWM2    float64 `json:"radiation_w_m2" yaml:"radiation_w_m2"`
+	Source          string  `json:"source" yaml:"source"`
 }
 
 type describeSpanJ struct {
@@ -89,6 +105,11 @@ func (d describer) json() describeJSON {
 		Descents: []describeDescentJ{}, Title: d.track.Title}
 	if d.track.Strava != nil {
 		j.StravaURL = d.track.Strava.URL
+	}
+	if w := d.weather; w != nil {
+		j.Weather = &describeWeatherJ{TemperatureMinC: w.TemperatureMin, TemperatureMaxC: w.TemperatureMax,
+			DewPointC: w.DewPoint, HumidityPct: w.Humidity, WindSpeedMS: w.WindSpeed, WindFromDeg: w.WindFrom,
+			GustsMS: w.Gusts, RadiationWM2: w.Radiation, Source: weather.Credit + " (CC BY 4.0, " + weather.CreditURL + ")"}
 	}
 	for _, s := range d.a.Stops {
 		j.Stops = append(j.Stops, describeStopJ{describeSpanJ: span(s.Span), Paused: s.Paused})
