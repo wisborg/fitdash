@@ -78,7 +78,8 @@ func TestReadActivity_FromStrava(t *testing.T) {
 
 	var b bytes.Buffer
 	writeSummary(&b, inspect.Build(track), sources, track)
-	for _, want := range []string{"title    Invented Run", "strava   https://www.strava.com/activities/1001"} {
+	for _, want := range []string{"title    Invented Run", "strava   https://www.strava.com/activities/1001",
+		"active   (Strava keeps no timer events)"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("inspect's header lacks %q:\n%s", want, b.String())
 		}

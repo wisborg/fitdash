@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wisborg/cobrakit/strava"
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/output"
 	"github.com/wisborg/output/table"
@@ -127,10 +128,22 @@ func writeSummary(w io.Writer, rep inspect.Report, sources []activitySource, tra
 		if rep.HasTimerEvents {
 			fmt.Fprintf(w, "active   %s\n", fmtDuration(rep.Active))
 		} else {
-			fmt.Fprintf(w, "active   (file has no timer events)\n")
+			fmt.Fprintf(w, "active   (%s)\n", noTimerEvents(sources))
 		}
 	}
 	fmt.Fprintln(w)
+}
+
+// noTimerEvents says why there is no active time: Strava's API keeps no
+// timer events of any activity, so for one read from there it is Strava
+// that has none, not a file.
+func noTimerEvents(sources []activitySource) string {
+	for _, s := range sources {
+		if _, ok := strava.ID(s.Path); !ok {
+			return "file has no timer events"
+		}
+	}
+	return "Strava keeps no timer events"
 }
 
 // inspectTable renders rep as the terminal view: one row per metric, coverage
