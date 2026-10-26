@@ -28,6 +28,7 @@ import (
 	"github.com/wisborg/osmbase/mvt"
 	"github.com/wisborg/osmbase/osmbasetest"
 	"github.com/wisborg/osmbase/slice"
+	"github.com/wisborg/secrets"
 
 	"github.com/wisborg/fitdash/internal/inspect"
 	"github.com/wisborg/fitdash/internal/panel"
@@ -1024,21 +1025,43 @@ func TestResolveBasemap_RefusesAnUnknownStyle(t *testing.T) {
 	}
 }
 
-// TestResolveBasemap_RequiresAKeyFile pins that fitdash never fetches
-// imagery under a key of its own: a style with no --basemap-key-file must
-// refuse rather than silently using some default.
-func TestResolveBasemap_RequiresAKeyFile(t *testing.T) {
+// TestResolveBasemap_RequiresAKey pins that fitdash never fetches imagery
+// under a key of its own: a style with no key anywhere must refuse rather
+// than silently using some default, and say where a key can be put.
+func TestResolveBasemap_RequiresAKey(t *testing.T) {
 	defer func(o renderOptions) { renderOpts = o }(renderOpts)
 	renderOpts = renderOptions{basemap: "outdoors"}
+	t.Setenv(tilemap.EnvKey, "")
 
 	c := &cobra.Command{}
 	c.SetErr(&bytes.Buffer{})
 	_, err := resolveBasemap(c, panel.DarkTheme(), nil, nil)
 	if err == nil {
-		t.Fatal("--basemap with no --basemap-key-file was accepted")
+		t.Fatal("--basemap with no key was accepted")
 	}
-	if !strings.Contains(err.Error(), "--basemap-key-file") {
-		t.Errorf("error does not name the missing flag: %v", err)
+	for _, want := range []string{"--basemap-key-file", "$" + tilemap.EnvKey, "secrets set " + tilemap.KeyName} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not say %q: %v", want, err)
+		}
+	}
+}
+
+// TestResolveBasemap_KeyFromTheKeychain pins that a key kept in the
+// system's keychain needs no file -- the keychain here is one in memory.
+func TestResolveBasemap_KeyFromTheKeychain(t *testing.T) {
+	defer func(o renderOptions) { renderOpts = o }(renderOpts)
+	renderOpts = renderOptions{basemap: "outdoors", basemapCache: "off"}
+	t.Setenv(tilemap.EnvKey, "")
+	t.Setenv(secrets.EnvStore, "")
+	if err := (secrets.Keychain{}).Set(tilemap.KeyName, "aabbccdd11223344aabbccdd11223344"); err != nil {
+		t.Fatal(err)
+	}
+	defer secrets.Keychain{}.Delete(tilemap.KeyName)
+
+	c := &cobra.Command{}
+	c.SetErr(&bytes.Buffer{})
+	if p, err := resolveBasemap(c, panel.DarkTheme(), nil, nil); err != nil || p == nil {
+		t.Errorf("provider %v, err %v", p, err)
 	}
 }
 

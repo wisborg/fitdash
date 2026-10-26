@@ -87,6 +87,7 @@ func Execute() {
 	// `fitdash completion install` puts the script where the shell reads
 	// it; see cobrakit's completion package.
 	addStrava(root)
+	addSecrets(root)
 	completion.AddInstall(root)
 
 	root.PersistentFlags().Var(&format, "format", "output format: text, csv, json or yaml")

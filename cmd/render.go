@@ -21,6 +21,7 @@ import (
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/units"
 	"github.com/wisborg/output/progress"
+	"github.com/wisborg/secrets"
 
 	"github.com/wisborg/fitdash/internal/encode"
 	"github.com/wisborg/fitdash/internal/inspect"
@@ -267,15 +268,16 @@ func bindRenderFlags(c *cobra.Command) {
 		"draw the route over a map instead of on clean background: \"none\" (default), \""+tilemap.LocalProvider+"\", or a "+
 			"Thunderforest style ("+strings.Join(tilemap.ThunderforestStyles, ", ")+"). \""+tilemap.LocalProvider+"\" draws "+
 			"the map here, from OpenStreetMap vector tiles already on your own disk -- see --basemap-store -- and sends "+
-			"nothing to anybody. A Thunderforest style requires --basemap-key-file and NOTE that it sends the area of your "+
+			"nothing to anybody. A Thunderforest style requires your own API key -- see --basemap-key-file -- and NOTE that it sends the area of your "+
 			"activity to a third party; \"outdoors\" and \"landscape\" draw contours, paths and trail furniture, which is "+
 			"what a run or a ride actually happened on, and the others are general-purpose. Either way a map that cannot be "+
 			"obtained is never fatal: the render continues with the plain outline and the summary says so")
 	f.StringVar(&renderOpts.basemapKeyFile, "basemap-key-file", "",
-		"path to a file holding your own Thunderforest API key, required by --basemap. fitdash ships no key and has no "+
-			"account of its own; get one at thunderforest.com. The file may be the bare key, or a JSON or YAML mapping "+
-			"of provider name to key (\"thunderforest: ...\", or \"key: ...\" for a file holding only one). The key is "+
-			"read once, never logged, never written into the video, and redacted out of every error")
+		"path to a file holding your own Thunderforest API key, for a Thunderforest --basemap; without it the key is "+
+			"read from $"+tilemap.EnvKey+", then the system's keychain (\"fitdash secrets set "+tilemap.KeyName+"\"). fitdash "+
+			"ships no key and has no account of its own; get one at thunderforest.com. The file may be the bare key, or a "+
+			"JSON or YAML mapping of provider name to key (\"thunderforest: ...\", or \"key: ...\" for a file holding only "+
+			"one). The key is read once, never logged, never written into the video, and redacted out of every error")
 	f.Float64Var(&renderOpts.basemapDim, "basemap-dim", 0.65,
 		"how far --basemap imagery is washed toward the background, 0 (full strength) to 1 (invisible). Third-party map "+
 			"imagery is busy and mid-toned, and the route line, the covered prefix and the position dot all have to read "+
@@ -1194,20 +1196,24 @@ func resolveBasemap(cmd *cobra.Command, theme panel.Theme, track *fitactivity.Tr
 		return nil, fmt.Errorf("render: --basemap %q is invalid; use %s, %s or %s",
 			style, basemapOff, tilemap.LocalProvider, strings.Join(tilemap.ThunderforestStyles, ", "))
 	}
-	if renderOpts.basemapKeyFile == "" {
-		return nil, fmt.Errorf("render: --basemap %s needs --basemap-key-file: fitdash ships no map service key, so you supply your own. --basemap %s needs no key and no account, and draws from map data on your own disk instead", style, tilemap.LocalProvider)
-	}
 	if cmd.Flags().Changed("basemap-store") {
 		fmt.Fprintf(cmd.ErrOrStderr(), "--basemap-store is only read by --basemap %s; %s imagery comes from the service and is kept in --basemap-cache\n",
 			tilemap.LocalProvider, tilemap.ThunderforestProvider)
 	}
 	warnTerrainUnused(cmd)
-	if err := tilemap.CheckKeyFilePermissions(renderOpts.basemapKeyFile); err != nil {
-		// A warning, not a refusal: the file is the user's and the
-		// permissions may be deliberate.
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+	if renderOpts.basemapKeyFile != "" {
+		if err := tilemap.CheckKeyFilePermissions(renderOpts.basemapKeyFile); err != nil {
+			// A warning, not a refusal: the file is the user's and the
+			// permissions may be deliberate.
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+		}
 	}
-	key, err := tilemap.LoadKey(renderOpts.basemapKeyFile, tilemap.ThunderforestProvider)
+	key, _, err := tilemap.FindKey(renderOpts.basemapKeyFile)
+	if errors.Is(err, secrets.ErrNotFound) {
+		return nil, fmt.Errorf("render: --basemap %s needs your own Thunderforest API key: fitdash ships none. Keep it in %s with \"%s secrets set %s\", "+
+			"in $%s, or in a file --basemap-key-file names (%v). --basemap %s needs no key and no account, and draws from map data on your own disk instead",
+			style, secrets.KeychainName(), cmd.Root().Name(), tilemap.KeyName, tilemap.EnvKey, err, tilemap.LocalProvider)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("render: %w", err)
 	}

@@ -8,7 +8,40 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wisborg/secrets"
 )
+
+// The keychain these tests reach is one in memory, never the user's own.
+func TestMain(m *testing.M) {
+	secrets.MockKeychain(nil)
+	os.Exit(m.Run())
+}
+
+// TestFindKey_InOrder pins where a key is looked for: a file asked for
+// first, then the environment, then the keychain.
+func TestFindKey_InOrder(t *testing.T) {
+	t.Setenv(secrets.EnvStore, "")
+	t.Setenv(EnvKey, "")
+	if _, _, err := FindKey(""); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatalf("no key anywhere: %v", err)
+	}
+	if err := (secrets.Keychain{}).Set(KeyName, "from-keychain"); err != nil {
+		t.Fatal(err)
+	}
+	defer secrets.Keychain{}.Delete(KeyName)
+	if k, where, _ := FindKey(""); k.reveal() != "from-keychain" || !strings.Contains(where, "wisborg/thunderforest") {
+		t.Errorf("%q from %q", k.reveal(), where)
+	}
+	t.Setenv(EnvKey, "from-env")
+	if k, _, _ := FindKey(""); k.reveal() != "from-env" {
+		t.Errorf("%q", k.reveal())
+	}
+	path := writeKeyFile(t, "k", fakeKey)
+	if k, where, _ := FindKey(path); k.reveal() != fakeKey || where != path {
+		t.Errorf("%q from %q", k.reveal(), where)
+	}
+}
 
 // fakeKey is what every test here pretends is a secret. It is deliberately
 // distinctive so a leak is unambiguous when one is searched for.
@@ -83,8 +116,8 @@ func TestLoadKey_Failures(t *testing.T) {
 	}{
 		{"empty", "", "is empty"},
 		{"only whitespace", "   \n\n", "is empty"},
-		{"a mapping without this provider", "mapbox: pk.notours\n", "no key for that provider"},
-		{"a mapping whose value is not a string", "thunderforest: 12345\n", "no key for that provider"},
+		{"a mapping without this provider", "mapbox: pk.notours\n", "has no thunderforest or key"},
+		{"a mapping whose value is not a key", "thunderforest:\n  nested: pk.notours\n", "has no thunderforest or key"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

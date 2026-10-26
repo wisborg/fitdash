@@ -46,7 +46,13 @@ repository.
                              Copyright 2026 Jesper Wisborg Krogh.  Its
                              completion package: `completion install`; and its
                              strava package: `fitdash strava`, and reading
-                             strava:ID and --strava.
+                             strava:ID and --strava; and its secrets package:
+                             `fitdash secrets`.
+  secrets (github.com/wisborg/secrets)
+                             Copyright 2026 Jesper Wisborg Krogh.  Finds the
+                             map service key and the Strava credentials, and
+                             keeps the Strava login, in the system's keychain
+                             or in files.
   Cobra (github.com/spf13/cobra)
                              Copyright (c) 2013-2023 Steve Francia and the
                              Cobra contributors
@@ -59,10 +65,10 @@ repository.
                              files ported from libyaml (apic.go, emitterc.go,
                              parserc.go, readerc.go, scannerc.go, writerc.go,
                              yamlh.go, yamlprivateh.go) are MIT and the rest is
-                             Apache 2.0.  Used to read a map service API key
-                             from a YAML key file; also reached through output,
-                             and through fitactivity, which reads a Strava API
-                             application's credentials with it.
+                             Apache 2.0.  Reached through secrets, which reads
+                             a map service key file and a Strava API
+                             application's credentials with it, and through
+                             output.
 
 
 -------------------------------------------------------------------------------
@@ -81,6 +87,15 @@ BSD 3-Clause components
                              Reached through fitactivity.
   github.com/spf13/pflag     Copyright (c) 2012 Alex Ogier;
                              Copyright (c) 2012 The Go Authors.
+  golang.org/x/term          Copyright 2009 The Go Authors.  Through cobrakit,
+                             to read a secret typed without showing it.
+  golang.org/x/sys           Copyright 2009 The Go Authors.  Through x/term
+                             and the keychain packages below.
+  github.com/godbus/dbus/v5  Copyright (c) 2013, Georg Reinke, Google.  BSD
+                             2-Clause, whose terms are those above less the
+                             clause on endorsement.  D-Bus, which a Secret
+                             Service is reached over on Linux, through
+                             go-keyring.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the conditions of the BSD 3-Clause
@@ -106,6 +121,14 @@ MIT components
   github.com/clipperhouse/uax29/v2
                              Copyright (c) 2020 Matt Sherman.  Grapheme
                              clusters, beneath go-runewidth and in output.
+  github.com/zalando/go-keyring
+                             Copyright (c) 2016 Zalando SE.  The system's
+                             keychain, through secrets.  It carries
+                             shellescape, Copyright (c) 2016 Alessio Treglia,
+                             also MIT.
+  github.com/danieljoos/wincred
+                             Copyright (c) 2014 Daniel Joos.  The Windows
+                             Credential Manager, through go-keyring.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

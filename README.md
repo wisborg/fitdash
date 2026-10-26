@@ -148,6 +148,10 @@ fitdash morning-0*.fit \
   --basemap-key-file ~/.config/thunderforest.key
 ```
 
+or, with the key kept in the system's keychain once by `fitdash secrets set thunderforest/key`
+(see [Secrets](#secrets)) or given in `$THUNDERFOREST_API_KEY`, without the file:
+`fitdash morning-0*.fit --basemap outdoors`.
+
 `outdoors` and `landscape` draw contours, paths and trail furniture — what a run
 or a ride actually happened on; a general-purpose city map renders a forest trail
 as blank green. `--basemap-dim` controls how far the imagery is washed back
@@ -626,8 +630,9 @@ fitdash reads your own activities on Strava as it reads a file, through your own
 application: register one at <https://www.strava.com/settings/api> with `localhost` as its
 Authorization Callback Domain, put its client id and secret in `~/.config/strava.yaml` under
 `strava:` as `client_id` and `client_secret` (or in `$STRAVA_CLIENT_ID` and
-`$STRAVA_CLIENT_SECRET`), and log in once with `fitdash strava login`. The same file and login
-serve course, which reads Strava the same way.
+`$STRAVA_CLIENT_SECRET`, or in the system's keychain -- see [Secrets](#secrets)), and log in once
+with `fitdash strava login`. The same file and login serve course, which reads Strava the same
+way.
 
 ```
 fitdash strava list --week                    # this week's activities, with their ids
@@ -647,6 +652,31 @@ a day and then deleted, as Strava's [API Policy](https://www.strava.com/legal/ap
 `--strava-refresh` asks again for an activity edited on Strava since. The Policy also limits
 showing Strava data to the athlete it belongs to: a video drawn from it is yours to watch, and
 worth checking against the Policy before it is published.
+
+## Secrets
+
+The secrets fitdash uses -- your map service key, your Strava application's client id and
+secret, your Strava login -- can be kept in the system's keychain: the macOS Keychain, the
+Windows Credential Manager, or a Secret Service such as GNOME Keyring on Linux, out of the files
+a backup or a sync copies.
+
+```
+fitdash secrets status                       # what is set, and where -- never what it is
+fitdash secrets set thunderforest/key        # typed unseen, or piped in from a password manager
+fitdash secrets set strava/client_secret
+fitdash secrets delete thunderforest/key
+```
+
+Each is looked for in the environment, then the keychain, then the file it has always been in;
+the map key in a file `--basemap-key-file` names first. The Strava login is kept in the keychain
+where there is one, and in `strava-token.json` beside `strava.yaml` where not -- a server with no
+desktop session -- and a login in that file from before is moved into the keychain at its first
+use. `SECRETS_STORE=file` keeps the keychain out of it.
+
+On macOS the keychain is reached through `/usr/bin/security`, which is handed a secret on its
+standard input, never its command line. Any program you run can then read the item through the
+same tool without asking -- as any program of yours can read a file of yours -- but it is kept
+encrypted and away from other users.
 
 ## Privacy
 
