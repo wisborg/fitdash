@@ -640,7 +640,7 @@ recording is less than the watch's file -- no developer fields, running dynamics
 events, and no speed, which is worked out from the distance as for a GPX -- so where you have
 the file, `--strava` gives it what only Strava has instead: the full-frame card is titled with
 the activity's name there unless `--title` gives one, and `inspect` and `describe` name it and
-its page. A video of a `strava:` source is written as `strava-ID.mp4`.
+its page, in their JSON and YAML as `title` and `strava_url`. A video of a `strava:` source is written as `strava-ID.mp4`.
 
 Nothing contacts Strava without a `strava:` activity or `--strava`. What is fetched is kept for
 a day and then deleted, as Strava's [API Policy](https://www.strava.com/legal/api_policy) asks;

@@ -70,7 +70,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	// report for JSON/YAML, the table carries the rows worth reading on a
 	// terminal. Deriving one from the other forces the richer shape through
 	// the poorer one and makes both worse -- see github.com/wisborg/output.
-	doc := output.Document{Data: jsonReport(rep), Table: inspectTable(rep, summedDistance(sources), derivedSpeed(sources))}
+	doc := output.Document{Data: jsonReport(rep, track), Table: inspectTable(rep, summedDistance(sources), derivedSpeed(sources))}
 	if err := doc.Write(out, format.Format); err != nil {
 		return fmt.Errorf("inspect: writing report: %w", err)
 	}
@@ -252,6 +252,8 @@ type inspectJSON struct {
 	ElapsedS       float64          `json:"elapsed_s" yaml:"elapsed_s"`
 	ActiveS        float64          `json:"active_s" yaml:"active_s"`
 	HasTimerEvents bool             `json:"has_timer_events" yaml:"has_timer_events"`
+	Title          string           `json:"title,omitempty" yaml:"title,omitempty"`
+	StravaURL      string           `json:"strava_url,omitempty" yaml:"strava_url,omitempty"`
 	Metrics        []inspectMetricJ `json:"metrics" yaml:"metrics"`
 	DevFields      []inspectMetricJ `json:"dev_fields" yaml:"dev_fields"`
 }
@@ -269,7 +271,9 @@ type inspectMetricJ struct {
 	Max      *float64 `json:"max,omitempty" yaml:"max,omitempty"`
 }
 
-func jsonReport(rep inspect.Report) inspectJSON {
+// jsonReport is rep for JSON and YAML, with the title and Strava page of
+// track, the activity it reports on, as describe's report has them.
+func jsonReport(rep inspect.Report, track *fitactivity.Track) inspectJSON {
 	metrics := func(ms []inspect.Metric) []inspectMetricJ {
 		out := []inspectMetricJ{}
 		for _, m := range ms {
@@ -285,7 +289,10 @@ func jsonReport(rep inspect.Report) inspectJSON {
 	j := inspectJSON{
 		Path: rep.Path, Paths: rep.Paths, Sport: rep.Sport, Samples: rep.Samples,
 		ElapsedS: rep.Elapsed.Seconds(), ActiveS: rep.Active.Seconds(), HasTimerEvents: rep.HasTimerEvents,
-		Metrics: metrics(rep.Metrics), DevFields: metrics(rep.DevFields),
+		Metrics: metrics(rep.Metrics), DevFields: metrics(rep.DevFields), Title: track.Title,
+	}
+	if track.Strava != nil {
+		j.StravaURL = track.Strava.URL
 	}
 	if !rep.Start.IsZero() {
 		start, end := rep.Start, rep.End

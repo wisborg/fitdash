@@ -57,7 +57,7 @@ func TestInspectJSON(t *testing.T) {
 	for i := range 61 {
 		tr.Samples = append(tr.Samples, fitactivity.Sample{Time: t0.Add(time.Duration(i) * time.Second), HasHeartRate: true, HeartRate: 120 + uint8(i%10)})
 	}
-	b, err := json.Marshal(jsonReport(inspect.Build(tr)))
+	b, err := json.Marshal(jsonReport(inspect.Build(tr), tr))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -84,6 +84,9 @@ func TestReadActivity_FromStrava(t *testing.T) {
 			t.Errorf("inspect's header lacks %q:\n%s", want, b.String())
 		}
 	}
+	if j := jsonReport(inspect.Build(track), track); j.Title != "Invented Run" || j.StravaURL != "https://www.strava.com/activities/1001" {
+		t.Errorf("inspect's JSON titled %q, page %q", j.Title, j.StravaURL)
+	}
 }
 
 // A file alone never asks Strava, so needs no application set up; asked
