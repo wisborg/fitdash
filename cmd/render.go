@@ -48,6 +48,7 @@ type renderOptions struct {
 	basemapDim          float64
 	basemapCache        string
 	weather             bool
+	windExposure        string
 	basemapStore        string
 	terrain             bool
 	contours            bool
@@ -364,7 +365,10 @@ func bindRenderFlags(c *cobra.Command) {
 			"travel -- in a panel beside the climb and gradient and on the start and end cards. It is Open-Meteo's model "+
 			"weather, at a place every 10 km along the route, and NOTE that fetching it sends the area and hours of your "+
 			"activity to open-meteo.com; it is kept under your user cache directory, so a second render sends nothing. "+
-			"A weather that cannot be fetched is never fatal: the render goes on without it and the summary says why")
+			"A weather that cannot be fetched is never fatal: the render goes on without it and the summary says why. "+
+			"On a run the panel also says what the wind is costing, as seconds on the pace the same effort would have "+
+			"run in still air, and the summary what it cost over the run")
+	f.StringVar(&renderOpts.windExposure, "wind-exposure", exposureSuburban, windExposureHelp)
 	f.BoolVar(&renderOpts.dryRun, "dry-run", false,
 		"resolve everything and print the summary, but write no video and no frames -- the fast way to check "+
 			"a --label or --highlight lands where you meant before paying for an encode, and to read off where "+
@@ -742,7 +746,10 @@ func runRender(cmd *cobra.Command, args []string) error {
 		})
 	}
 	basemapDim := resolveBasemapDim(cmd)
-	wx := resolveWeather(cmd, track, flight)
+	wx, err := resolveWeather(cmd, track, flight)
+	if err != nil {
+		return err
+	}
 
 	var summary panel.SummaryCard
 	if fullFrame {

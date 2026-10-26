@@ -26,6 +26,7 @@ var describeOpts struct {
 	units    string
 	unitEach []string
 	weather  bool
+	exposure string
 }
 
 var describeCmd = &cobra.Command{
@@ -65,7 +66,8 @@ func init() {
 		"distance=km|mi|nm, elevation=m|ft, speed=km/h|mph|kn|m/s, pace=min/km|min/mi")
 	f.BoolVar(&describeOpts.weather, "weather", false, "say the weather the activity was done in, from Open-Meteo, as "+
 		"the render's --weather: NOTE that it sends the area and hours of your activity to open-meteo.com, once, and "+
-		"keeps the answer under your user cache directory")
+		"keeps the answer under your user cache directory. A run's effort is then measured with the wind's cost in it")
+	f.StringVar(&describeOpts.exposure, "wind-exposure", string(exposureSuburban), windExposureHelp)
 	root.AddCommand(describeCmd)
 }
 
@@ -87,15 +89,26 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("describe: %w", err)
 	}
+	exposure, err := parseExposure(describeOpts.exposure)
+	if err != nil {
+		return fmt.Errorf("describe: %w", err)
+	}
 	// The elevation model the render's profile is drawn on, so a climb
 	// said here is the climb a render of the same activity shows.
-	a := workout.Analyse(track, workout.Options{Power: power, Elevation: panel.DefaultElevationTuning(track)})
-	d := describer{track: track, a: a, u: u, powerFrom: powerFrom(track, power), speedDerived: derivedSpeed(sources)}
+	opts := workout.Options{Power: power, Elevation: panel.DefaultElevationTuning(track)}
 	flight := track.Sport == "flying" || len(track.Flights) > 0
-	if wx := fetchWeather(cmd, track, flight, describeOpts.weather); wx.asked {
+	wx := fetchWeather(cmd, track, flight, describeOpts.weather)
+	if wx.w != nil {
+		wx.w.Exposure = exposure
+		opts.Air = weather.Air(wx.w.Report, track, exposure)
+	}
+	a := workout.Analyse(track, opts)
+	d := describer{track: track, a: a, u: u, powerFrom: powerFrom(track, power), speedDerived: derivedSpeed(sources)}
+	if wx.asked {
 		// What was sent, and the credit, on stderr: stdout is the
 		// description, which a script may be reading.
 		writeWeatherNote(cmd.ErrOrStderr(), wx, track, u)
+		writeWindNote(cmd.ErrOrStderr(), wx, track, exposure)
 		if wx.w != nil {
 			if s, ok := weather.Summarise(wx.w.Report, track); ok {
 				d.weather = &s
@@ -136,7 +149,7 @@ func (d describer) effort(v float64) string {
 	switch d.a.Signal {
 	case workout.SignalPower:
 		return fmt.Sprintf("%.0f W", v)
-	case workout.SignalGradeAdjustedSpeed:
+	case workout.SignalGradeAdjustedSpeed, workout.SignalWindAdjustedSpeed:
 		return units.FormatPace(v, d.u.Pace)
 	case workout.SignalSpeed:
 		return units.FormatSpeed(v, d.u.Speed)
@@ -156,6 +169,8 @@ func (d describer) signalName() string {
 		}
 	case workout.SignalGradeAdjustedSpeed:
 		return "grade-adjusted pace"
+	case workout.SignalWindAdjustedSpeed:
+		return "grade- and wind-adjusted pace"
 	case workout.SignalSpeed:
 		if d.speedDerived {
 			return "speed (from distance)"

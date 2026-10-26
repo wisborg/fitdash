@@ -170,6 +170,16 @@ direction of travel -- up is straight ahead, so a headwind's arrow points down a
 on the start and end cards with the range of temperatures, the dew point and the wind. `describe
 --weather` gives the same in text and JSON.
 
+On a run the panel also says what the wind is costing -- "headwind +6 s/km", the pace the same
+effort would have run in still air less the pace run -- and the summary what it cost over the run;
+`describe --weather` then measures effort by grade- and wind-adjusted pace. The cost is Pugh's
+measure of what pushing through the air takes, beside Minetti's for the hills. How much of the
+wind forecast at 10 m reached you is the model's largest uncertainty, and `--wind-exposure` says it
+by the ground you ran over: `open` (0.60 of it), `suburban` (the default, 0.38) or `urban` (0.25).
+Where a Stryd pod recorded its air power, the summary says which way that puts the wind beside
+the forecast's: a check on the direction, since the pod senses the air at the shoe and its watts
+are its own reckoning.
+
 ```
 fitdash morning.fit --weather
 ```

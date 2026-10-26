@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/effort"
 	"github.com/wisborg/fitactivity/units"
 	"github.com/wisborg/fitactivity/weather"
 
@@ -39,11 +40,19 @@ func TestWeatherCardLine(t *testing.T) {
 		{Time: t0, Temperature: 10, DewPoint: 5, WindSpeed: 3, WindFrom: 180},
 		{Time: t0.Add(time.Hour), Temperature: 10, DewPoint: 5, WindSpeed: 3, WindFrom: 180},
 	}
-	w := panel.NewWeather(tr, &weather.Report{Places: []weather.Place{{Lat: 10, Lon: 20, Hours: hours}}})
+	w := panel.NewWeather(tr, &weather.Report{Places: []weather.Place{{Lat: 10, Lon: 20, Hours: hours}}}, effort.Suburban)
 	if got, ok := weatherCardLine(w, tr, m); !ok || got != "10°C, dew point 5°C, wind 11 km/h from S · Open-Meteo.com" {
 		t.Errorf("%q, %v", got, ok)
 	}
 	if _, ok := weatherCardLine(nil, tr, m); ok {
 		t.Error("a line without weather")
+	}
+}
+
+func TestFormatCost(t *testing.T) {
+	for d, want := range map[time.Duration]string{5 * time.Second: "5 s", 72 * time.Second: "1 min 12 s", 14*time.Minute + 20*time.Second: "14 min"} {
+		if got := formatCost(d); got != want {
+			t.Errorf("%v: %q, want %q", d, got, want)
+		}
 	}
 }

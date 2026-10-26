@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wisborg/fitactivity/effort"
 	"github.com/wisborg/fitactivity/weather"
 
 	"github.com/wisborg/fitdash/internal/panel"
@@ -32,7 +33,7 @@ func TestNew_WeatherPanelOnlyWithWeather(t *testing.T) {
 				Temperature: 12, DewPoint: 6, WindSpeed: 5, WindFrom: 270})
 		}
 		report := &weather.Report{Places: []weather.Place{{Lat: start.Lat, Lon: start.Lon, Hours: hours}}}
-		ctx.Weather = panel.NewWeather(ctx.Track, report)
+		ctx.Weather = panel.NewWeather(ctx.Track, report, effort.Suburban)
 		if r, err = New(ctx, l, panel.DefaultTheme()); err != nil {
 			t.Fatal(err)
 		}

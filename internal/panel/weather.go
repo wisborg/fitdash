@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/wisborg/fitactivity"
+	"github.com/wisborg/fitactivity/effort"
 	"github.com/wisborg/fitactivity/units"
 	"github.com/wisborg/fitactivity/weather"
 )
@@ -19,15 +21,19 @@ import (
 // out over the whole track, which no frame could afford.
 type Weather struct {
 	Report *weather.Report
+	// Exposure is the share of the 10 m wind that reached the athlete,
+	// for the wind's cost: --wind-exposure.
+	Exposure effort.Exposure
 
 	times      []time.Time
 	heading    []float64
 	hasHeading []bool
 }
 
-// NewWeather is the weather of r for track t.
-func NewWeather(t *fitactivity.Track, r *weather.Report) *Weather {
-	w := &Weather{Report: r}
+// NewWeather is the weather of r for track t, with exposure x of the wind
+// reaching the athlete.
+func NewWeather(t *fitactivity.Track, r *weather.Report, x effort.Exposure) *Weather {
+	w := &Weather{Report: r, Exposure: x}
 	w.heading, w.hasHeading = weather.Headings(t)
 	w.times = make([]time.Time, len(t.Samples))
 	for i, s := range t.Samples {
@@ -75,7 +81,9 @@ func IsWeatherPanel(p Panel) bool {
 // the wind's speed, and an arrow for the wind turned to the athlete's own
 // direction of travel -- up the dial is straight ahead, so a headwind's
 // arrow points down at them and a tailwind's up and away. Which it mostly
-// is, head, tail or cross, is said under the speed.
+// is, head, tail or cross, is said under the speed, and on a run what it
+// is costing or giving: the pace the same effort would have run in still
+// air, by effort's model, less the pace run -- "headwind +6 s/km".
 //
 // The data are Open-Meteo's, and their licence asks for a credit beside
 // them, which the panel draws in its corner.
@@ -98,11 +106,15 @@ const (
 	weatherCalm            = 0.3  // m/s; less is calm, with no arrow
 	weatherTemperatureText = "-88°C"
 	weatherWindText        = "188 km/h"
-	weatherKindText        = "crosswind"
+	weatherKindText        = "crosswind +88 s/km"
 )
 
 func (WeatherPanel) Prepare(ctx *Context, box Box) Painter {
 	p := &weatherPainter{box: box, w: ctx.Weather, units: ctx.units()}
+	if ctx.Track != nil && onFoot(ctx.Track.Sport) {
+		p.elev = ctx.Elevation
+		p.costs = true
+	}
 	unit := math.Min(box.W, box.H)
 	textW := box.W * weatherTextWidth
 	dialW := box.W - textW
@@ -135,6 +147,10 @@ type weatherPainter struct {
 	box   Box
 	w     *Weather
 	units units.Set
+	// costs is whether the wind's cost is said: on foot, which is what
+	// effort is a model of; elev is where the grade comes from.
+	costs bool
+	elev  *fitactivity.ElevationModel
 
 	cx, cy, radius          float64
 	textX                   float64
@@ -178,6 +194,8 @@ func (p *weatherPainter) Dynamic(c *Canvas, f Frame) {
 	kind := "calm"
 	if cond.WindSpeed >= weatherCalm {
 		head, cross := weather.Relative(cond, heading)
+		head *= float64(p.w.Exposure)
+		cross *= float64(p.w.Exposure)
 		switch {
 		case !hasHeading:
 			kind = "from " + weather.Compass(cond.WindFrom)
@@ -189,6 +207,11 @@ func (p *weatherPainter) Dynamic(c *Canvas, f Frame) {
 			kind = "tailwind"
 		}
 		p.arrow(c, cond.WindFrom-heading)
+		if p.costs && hasHeading && f.Sample.HasSpeed && f.Sample.Speed >= 1.5 {
+			if cost := p.cost(f.Sample, cond, head); cost != "" {
+				kind += " " + cost
+			}
+		}
 	}
 	temp := fmt.Sprintf("%.0f%s", unsignedZero(p.units.Temperature.FromSI(cond.Temperature), 0), p.units.Temperature.Name)
 	wind := fmt.Sprintf("%.0f %s", p.units.Speed.FromSI(cond.WindSpeed), p.units.Speed.Name)
@@ -197,6 +220,35 @@ func (p *weatherPainter) Dynamic(c *Canvas, f Frame) {
 	_ = c.Text(temp, p.textX, top+p.valuePx, 0, 0, p.valuePx, c.Theme.Foreground)
 	_ = c.Text(wind, p.textX, top+p.valuePx+gap+p.windPx, 0, 0, p.windPx, c.Theme.Foreground)
 	_ = c.Text(kind, p.textX, top+p.valuePx+gap+p.windPx+gap+p.kindPx, 0, 0, p.kindPx, c.Theme.Dim)
+}
+
+// cost is what the wind at the athlete, head (m/s, at their height), is
+// costing at s: the still air pace for the same effort less the pace run,
+// in seconds a kilometre or a mile, signed -- "+6 s/km" into it, "-3 s/km"
+// with it behind -- and nothing for a cost under half a second, which a
+// calm or a crosswind is and a "+0" would only clutter.
+func (p *weatherPainter) cost(s fitactivity.Sample, c weather.Conditions, head float64) string {
+	grade := 0.0
+	if p.elev != nil && !p.elev.Empty() && s.HasDistance {
+		grade = p.elev.GradeAtDistance(s.Distance, 25)
+	}
+	still := effort.StillAir(s.Speed, grade, head, effort.AirDensity(c.Pressure, c.Temperature))
+	per, unit := 1000.0, "km" // the distance the pace is given over
+	if strings.HasSuffix(p.units.Pace.Name, "/mi") {
+		per, unit = 1609.344, "mi"
+	}
+	secs := per/s.Speed - per/still
+	if math.Abs(secs) < 0.5 {
+		return ""
+	}
+	return fmt.Sprintf("%+.0f s/%s", secs, unit)
+}
+
+// onFoot says the sport is one effort is a model of: running, walking,
+// hiking.
+func onFoot(sport string) bool {
+	s := strings.ToLower(sport)
+	return strings.Contains(s, "run") || s == "walking" || s == "hiking"
 }
 
 // arrow draws the wind blowing from rel degrees off straight ahead: from

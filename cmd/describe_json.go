@@ -147,7 +147,7 @@ func effortUnit(sig workout.Signal) string {
 	switch sig {
 	case workout.SignalPower:
 		return "W"
-	case workout.SignalGradeAdjustedSpeed, workout.SignalSpeed:
+	case workout.SignalGradeAdjustedSpeed, workout.SignalWindAdjustedSpeed, workout.SignalSpeed:
 		return "m/s"
 	case workout.SignalHeartRate:
 		return "bpm"
