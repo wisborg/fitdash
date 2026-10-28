@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"sort"
+	"time"
+
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/weather"
 	"github.com/wisborg/fitactivity/workout"
@@ -36,6 +39,16 @@ type describeWeatherJ struct {
 	GustsMS         float64 `json:"gusts_ms" yaml:"gusts_ms"`
 	RadiationWM2    float64 `json:"radiation_w_m2" yaml:"radiation_w_m2"`
 	Source          string  `json:"source" yaml:"source"`
+	// The costs, on a run: in seconds over it, nil where there was
+	// nothing to work one out from or the athlete was acclimatised.
+	WindCostS     *float64 `json:"wind_cost_s,omitempty" yaml:"wind_cost_s,omitempty"`
+	WindExposure  string   `json:"wind_exposure,omitempty" yaml:"wind_exposure,omitempty"`
+	WBGTMinC      *float64 `json:"wbgt_min_c,omitempty" yaml:"wbgt_min_c,omitempty"`
+	WBGTMaxC      *float64 `json:"wbgt_max_c,omitempty" yaml:"wbgt_max_c,omitempty"`
+	HeatCostS     *float64 `json:"heat_cost_s,omitempty" yaml:"heat_cost_s,omitempty"`
+	HighestM      *float64 `json:"highest_m,omitempty" yaml:"highest_m,omitempty"`
+	AltitudeCostS *float64 `json:"altitude_cost_s,omitempty" yaml:"altitude_cost_s,omitempty"`
+	Acclimatised  []string `json:"acclimatised,omitempty" yaml:"acclimatised,omitempty"`
 }
 
 type describeSpanJ struct {
@@ -110,6 +123,31 @@ func (d describer) json() describeJSON {
 		j.Weather = &describeWeatherJ{TemperatureMinC: w.TemperatureMin, TemperatureMaxC: w.TemperatureMax,
 			DewPointC: w.DewPoint, HumidityPct: w.Humidity, WindSpeedMS: w.WindSpeed, WindFromDeg: w.WindFrom,
 			GustsMS: w.Gusts, RadiationWM2: w.Radiation, Source: weather.Credit + " (CC BY 4.0, " + weather.CreditURL + ")"}
+		if c := d.costs; c != nil {
+			secs := func(d time.Duration) *float64 { v := d.Seconds(); return &v }
+			val := func(v float64) *float64 { return &v }
+			if c.hasWind {
+				j.Weather.WindCostS, j.Weather.WindExposure = secs(c.wind), exposureName(c.exposure)
+			}
+			if c.hasHeat {
+				j.Weather.WBGTMinC, j.Weather.WBGTMaxC = val(c.wbgtLo), val(c.wbgtHi)
+				if !c.acclim.heat {
+					j.Weather.HeatCostS = secs(c.heat)
+				}
+			}
+			if c.hasAltitude {
+				j.Weather.HighestM = val(c.highest)
+				if !c.acclim.altitude {
+					j.Weather.AltitudeCostS = secs(c.altitude)
+				}
+			}
+			for name, on := range map[string]bool{"altitude": c.acclim.altitude, "heat": c.acclim.heat} {
+				if on {
+					j.Weather.Acclimatised = append(j.Weather.Acclimatised, name)
+				}
+			}
+			sort.Strings(j.Weather.Acclimatised)
+		}
 	}
 	for _, s := range d.a.Stops {
 		j.Stops = append(j.Stops, describeStopJ{describeSpanJ: span(s.Span), Paused: s.Paused})

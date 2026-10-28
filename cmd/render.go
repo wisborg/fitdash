@@ -49,6 +49,7 @@ type renderOptions struct {
 	basemapCache        string
 	weather             bool
 	windExposure        string
+	acclimatised        []string
 	basemapStore        string
 	terrain             bool
 	contours            bool
@@ -367,8 +368,9 @@ func bindRenderFlags(c *cobra.Command) {
 			"activity to open-meteo.com; it is kept under your user cache directory, so a second render sends nothing. "+
 			"A weather that cannot be fetched is never fatal: the render goes on without it and the summary says why. "+
 			"On a run the panel also says what the wind is costing, as seconds on the pace the same effort would have "+
-			"run in still air, and the summary what it cost over the run")
+			"run in still air, and the summary what it, the heat and the altitude cost over the run")
 	f.StringVar(&renderOpts.windExposure, "wind-exposure", exposureSuburban, windExposureHelp)
+	f.StringSliceVar(&renderOpts.acclimatised, "acclimatised", nil, acclimatisedHelp)
 	f.BoolVar(&renderOpts.dryRun, "dry-run", false,
 		"resolve everything and print the summary, but write no video and no frames -- the fast way to check "+
 			"a --label or --highlight lands where you meant before paying for an encode, and to read off where "+

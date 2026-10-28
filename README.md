@@ -180,6 +180,14 @@ Where a Stryd pod recorded its air power, the summary says which way that puts t
 the forecast's: a check on the direction, since the pod senses the air at the shoe and its watts
 are its own reckoning.
 
+The summary also says what the heat and the altitude cost. The heat by the wet-bulb globe
+temperature in the shade -- the sun's own heat is not in it, so a run in full sun was hotter than it
+says -- against Mantzios and others' 2022 analysis of elite races: best between 7.5 and 15 °C,
+0.4% slower each degree warmer and 0.3% each degree cooler. The altitude, above 300 m, by the 6.3%
+of oxygen uptake lost a thousand metres up (Wehrlin and Hallén, 2006), with the thinner air's help
+kept in the wind's sums. Both are for a runner not acclimatised, and nothing published says by how
+much acclimatisation reduces them; `--acclimatised heat`, `altitude` or both leaves that cost out.
+
 ```
 fitdash morning.fit --weather
 ```

@@ -56,3 +56,34 @@ func TestFormatCost(t *testing.T) {
 		}
 	}
 }
+
+// Each cost is said with what it rests on; one the athlete was
+// acclimatised to is left out and said to be; an altitude below where
+// oxygen uptake falls is not mentioned.
+func TestWriteCostsNote(t *testing.T) {
+	c := conditionCosts{exposure: effort.Suburban, wind: 72 * time.Second, hasWind: true,
+		heat: 3*time.Minute + 20*time.Second, wbgtLo: 21.2, wbgtHi: 23.6, hasHeat: true,
+		altitude: 0, highest: 120, hasAltitude: true}
+	var b strings.Builder
+	writeCostsNote(&b, c, true)
+	for _, want := range []string{"the wind cost about 1 min 12 s", "suburban exposure (0.38", "the heat cost about 3 min 20 s, at WBGT 21–24 °C in the shade"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("lacks %q:\n%s", want, b.String())
+		}
+	}
+	if strings.Contains(b.String(), "altitude") {
+		t.Errorf("an altitude of 120 m mentioned:\n%s", b.String())
+	}
+
+	c.acclim, c.highest, c.altitude = acclimatisation{heat: true}, 1800, 4*time.Minute
+	b.Reset()
+	writeCostsNote(&b, c, true)
+	for _, want := range []string{"the heat (WBGT 21–24 °C in the shade) is left out: you were acclimatised", "the altitude cost about 4 min, up to 1800 m, where 9.4% of oxygen uptake"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("lacks %q:\n%s", want, b.String())
+		}
+	}
+	if _, err := parseAcclimatised([]string{"heat", "humidity"}); err == nil {
+		t.Error("humidity accepted")
+	}
+}

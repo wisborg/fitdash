@@ -24,6 +24,7 @@ type weatherPlan struct {
 	w        *panel.Weather
 	reason   string
 	exposure effort.Exposure
+	acclim   acclimatisation
 }
 
 // resolveWeather fetches the weather the activity was done in, when
@@ -35,11 +36,17 @@ func resolveWeather(cmd *cobra.Command, track *fitactivity.Track, flight bool) (
 	if err != nil {
 		return weatherPlan{}, fmt.Errorf("render: %w", err)
 	}
-	if !renderOpts.weather && cmd.Flags().Changed("wind-exposure") {
-		fmt.Fprintln(cmd.ErrOrStderr(), "--wind-exposure is only read with --weather")
+	a, err := parseAcclimatised(renderOpts.acclimatised)
+	if err != nil {
+		return weatherPlan{}, fmt.Errorf("render: %w", err)
+	}
+	for _, f := range []string{"wind-exposure", "acclimatised"} {
+		if !renderOpts.weather && cmd.Flags().Changed(f) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "--%s is only read with --weather\n", f)
+		}
 	}
 	plan := fetchWeather(cmd, track, flight, renderOpts.weather)
-	plan.exposure = x
+	plan.exposure, plan.acclim = x, a
 	if plan.w != nil {
 		plan.w.Exposure = x
 	}
@@ -85,7 +92,8 @@ func writeWeatherSummary(out io.Writer, plan weatherPlan, track *fitactivity.Tra
 		return
 	}
 	writeWeatherNote(out, plan, track, u)
-	writeWindNote(out, plan, track, plan.exposure)
+	c, ok := costsOf(plan, track, plan.exposure, plan.acclim)
+	writeCostsNote(out, c, ok)
 }
 
 // writeWeatherNote is writeWeatherSummary for any command: what the
@@ -182,15 +190,63 @@ func exposureName(x effort.Exposure) string {
 	return fmt.Sprintf("%.2f", float64(x))
 }
 
-// writeWindNote says, for a run, what the wind cost over it by the model --
-// at the exposure assumed, which is the model's largest uncertainty, so it
-// is said with it -- and where a Stryd pod recorded its air power, which
-// way that says the wind blew beside the forecast's: a check on the model's
-// direction, its watts being the pod's own reckoning from the shoe.
-func writeWindNote(out io.Writer, plan weatherPlan, track *fitactivity.Track, x effort.Exposure) {
-	if plan.w == nil || !onFoot(track.Sport) {
-		return
+// acclimatisation is what --acclimatised says the athlete is adapted to:
+// the heat, the altitude. Nothing published says how much acclimatisation
+// takes off either loss, so an adjustment the athlete is adapted to is
+// left out, and said to be, rather than guessed at.
+type acclimatisation struct{ heat, altitude bool }
+
+const acclimatisedHelp = "with --weather, what you were acclimatised to -- \"heat\", \"altitude\", or both, " +
+	"comma-separated -- whose cost is then left out: the figures for both are for a runner not acclimatised, and " +
+	"nothing published says by how much acclimatisation reduces them"
+
+// parseAcclimatised validates --acclimatised.
+func parseAcclimatised(names []string) (acclimatisation, error) {
+	var a acclimatisation
+	for _, n := range names {
+		switch strings.TrimSpace(n) {
+		case "heat":
+			a.heat = true
+		case "altitude":
+			a.altitude = true
+		case "":
+		default:
+			return a, fmt.Errorf("--acclimatised %q is invalid; use heat, altitude or both", n)
+		}
 	}
+	return a, nil
+}
+
+// conditionCosts are what the conditions cost over a run, by the effort
+// model: the wind at the exposure assumed, and the heat and the altitude
+// unless the athlete was acclimatised to them.
+type conditionCosts struct {
+	exposure effort.Exposure
+	acclim   acclimatisation
+
+	wind    time.Duration
+	hasWind bool
+
+	heat           time.Duration
+	wbgtLo, wbgtHi float64
+	hasHeat        bool
+
+	altitude    time.Duration
+	highest     float64
+	hasAltitude bool
+
+	footpodFrom  float64
+	hasFootpod   bool
+	forecastFrom float64
+}
+
+// costsOf is what the conditions plan fetched cost over track, on foot --
+// what the effort model is of -- and nothing otherwise.
+func costsOf(plan weatherPlan, track *fitactivity.Track, x effort.Exposure, a acclimatisation) (conditionCosts, bool) {
+	if plan.w == nil || !onFoot(track.Sport) {
+		return conditionCosts{}, false
+	}
+	c := conditionCosts{exposure: x, acclim: a}
 	elev := panel.BuildElevation(track, panel.DefaultElevationTuning(track))
 	grade := func(i int) float64 {
 		s := track.Samples[i]
@@ -199,20 +255,74 @@ func writeWindNote(out io.Writer, plan weatherPlan, track *fitactivity.Track, x 
 		}
 		return elev.GradeAtDistance(s.Distance, 25)
 	}
-	if cost, ok := weather.WindCost(plan.w.Report, track, x, grade); ok {
-		verb := "cost"
+	r := plan.w.Report
+	c.wind, c.hasWind = weather.WindCost(r, track, x, grade)
+	c.heat, c.wbgtLo, c.wbgtHi, c.hasHeat = weather.HeatCost(r, track)
+	c.altitude, c.highest, c.hasAltitude = weather.AltitudeCost(r, track, x, grade)
+	if from, _, ok := weather.FootpodWind(track); ok {
+		c.footpodFrom, c.hasFootpod = from, true
+		if s, ok := weather.Summarise(r, track); ok {
+			c.forecastFrom = s.WindFrom
+		}
+	}
+	return c, true
+}
+
+// writeCostsNote says what the conditions cost over the run, each with
+// what it rests on: the wind at the exposure assumed, which is its largest
+// uncertainty; the heat by the WBGT met and the race data it is from; the
+// altitude by the highest point and the oxygen uptake lost there -- and
+// where a Stryd pod recorded its air power, which way that says the wind
+// blew beside the forecast's: a check on the model's direction, its watts
+// being the pod's own reckoning from the shoe.
+func writeCostsNote(out io.Writer, c conditionCosts, ok bool) {
+	if !ok {
+		return
+	}
+	if c.hasWind {
+		cost, verb := c.wind, "cost"
 		if cost < 0 {
 			verb, cost = "gave", -cost
 		}
 		fmt.Fprintf(out, "  the wind %s about %s over the run, by Pugh's measure of the air's cost, at %s exposure (%.2f of the 10 m wind)\n",
-			verb, formatCost(cost), exposureName(x), float64(x))
+			verb, formatCost(cost), exposureName(c.exposure), float64(c.exposure))
 	}
-	if from, _, ok := weather.FootpodWind(track); ok {
-		line := fmt.Sprintf("  Stryd's air power was highest running %s, so a wind from there", weather.Compass(from))
-		if s, ok := weather.Summarise(plan.w.Report, track); ok {
-			line += fmt.Sprintf("; the forecast's was from %s, %.0f° apart", weather.Compass(s.WindFrom), weather.Apart(from, s.WindFrom))
+	if c.hasHeat {
+		wbgt := fmt.Sprintf("WBGT %.0f °C", c.wbgtLo)
+		if fmt.Sprintf("%.0f", c.wbgtLo) != fmt.Sprintf("%.0f", c.wbgtHi) {
+			wbgt = fmt.Sprintf("WBGT %.0f–%.0f °C", c.wbgtLo, c.wbgtHi)
 		}
-		fmt.Fprintln(out, line)
+		// In the shade: the sun's own heat is not in it (effort.WBGT).
+		wbgt += " in the shade"
+		switch {
+		case c.acclim.heat:
+			fmt.Fprintf(out, "  the heat (%s) is left out: you were acclimatised to it\n", wbgt)
+		case c.heat < time.Second:
+			fmt.Fprintf(out, "  the heat cost nothing: %s, within the %.1f–%.0f °C races go best in\n", wbgt, effort.CoolestBest, effort.WarmestBest)
+		default:
+			what := "heat"
+			if c.wbgtHi < effort.CoolestBest {
+				what = "cold"
+			}
+			fmt.Fprintf(out, "  the %s cost about %s, at %s, by Mantzios and others' race data, for a runner not acclimatised to it\n",
+				what, formatCost(c.heat), wbgt)
+		}
+	}
+	if c.hasAltitude {
+		switch {
+		case c.highest <= effort.AltitudeThreshold:
+			// Nothing to say: most runs are here, and a line saying the
+			// altitude cost nothing on every one of them is noise.
+		case c.acclim.altitude:
+			fmt.Fprintf(out, "  the altitude (up to %.0f m) is left out: you were acclimatised to it\n", c.highest)
+		default:
+			fmt.Fprintf(out, "  the altitude cost about %s, up to %.0f m, where %.1f%% of oxygen uptake is lost on arrival (Wehrlin and Hallén)\n",
+				formatCost(c.altitude), c.highest, 100*effort.AltitudeLoss(c.highest))
+		}
+	}
+	if c.hasFootpod {
+		fmt.Fprintf(out, "  Stryd's air power was highest running %s, so a wind from there; the forecast's was from %s, %.0f° apart\n",
+			weather.Compass(c.footpodFrom), weather.Compass(c.forecastFrom), weather.Apart(c.footpodFrom, c.forecastFrom))
 	}
 }
 
@@ -221,6 +331,8 @@ func formatCost(d time.Duration) string {
 	switch s := int(d.Round(time.Second).Seconds()); {
 	case d >= 10*time.Minute:
 		return fmt.Sprintf("%d min", int(d.Round(time.Minute).Minutes()))
+	case s >= 60 && s%60 == 0:
+		return fmt.Sprintf("%d min", s/60)
 	case s >= 60:
 		return fmt.Sprintf("%d min %d s", s/60, s%60)
 	default:

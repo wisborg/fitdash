@@ -27,6 +27,7 @@ var describeOpts struct {
 	unitEach []string
 	weather  bool
 	exposure string
+	acclim   []string
 }
 
 var describeCmd = &cobra.Command{
@@ -68,6 +69,7 @@ func init() {
 		"the render's --weather: NOTE that it sends the area and hours of your activity to open-meteo.com, once, and "+
 		"keeps the answer under your user cache directory. A run's effort is then measured with the wind's cost in it")
 	f.StringVar(&describeOpts.exposure, "wind-exposure", string(exposureSuburban), windExposureHelp)
+	f.StringSliceVar(&describeOpts.acclim, "acclimatised", nil, acclimatisedHelp)
 	root.AddCommand(describeCmd)
 }
 
@@ -93,6 +95,10 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("describe: %w", err)
 	}
+	acclim, err := parseAcclimatised(describeOpts.acclim)
+	if err != nil {
+		return fmt.Errorf("describe: %w", err)
+	}
 	// The elevation model the render's profile is drawn on, so a climb
 	// said here is the climb a render of the same activity shows.
 	opts := workout.Options{Power: power, Elevation: panel.DefaultElevationTuning(track)}
@@ -108,11 +114,15 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		// What was sent, and the credit, on stderr: stdout is the
 		// description, which a script may be reading.
 		writeWeatherNote(cmd.ErrOrStderr(), wx, track, u)
-		writeWindNote(cmd.ErrOrStderr(), wx, track, exposure)
+		costs, hasCosts := costsOf(wx, track, exposure, acclim)
+		writeCostsNote(cmd.ErrOrStderr(), costs, hasCosts)
 		if wx.w != nil {
 			if s, ok := weather.Summarise(wx.w.Report, track); ok {
 				d.weather = &s
 			}
+		}
+		if hasCosts {
+			d.costs = &costs
 		}
 	}
 
@@ -138,8 +148,10 @@ type describer struct {
 	u            units.Set
 	powerFrom    string
 	speedDerived bool
-	// weather is the weather over the activity, with --weather.
+	// weather is the weather over the activity, with --weather, and costs
+	// what it cost on a run.
 	weather *weather.Summary
+	costs   *conditionCosts
 }
 
 // effort writes an effort in its signal's own terms: power in watts,
