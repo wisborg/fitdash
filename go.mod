@@ -6,7 +6,7 @@ require (
 	github.com/fogleman/gg v1.3.0
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
-	github.com/wisborg/cobrakit v0.4.0
+	github.com/wisborg/cobrakit v0.5.0
 	github.com/wisborg/fitactivity v0.22.1
 	github.com/wisborg/osmbase v0.47.1
 	github.com/wisborg/output v0.9.0
