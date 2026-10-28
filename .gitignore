@@ -15,9 +15,12 @@
 *.fit
 
 # Rendered dashboards. These are a video of the user's location history, so
-# they are private for the same reason the FIT files are.
+# they are private for the same reason the FIT files are. --frames writes its
+# single frames as frame-NNNNNN.png into the current directory unless
+# --output-dir says otherwise, and they are the same pictures.
 /.scratch/
 *.mp4
+frame-[0-9]*.png
 
 # Local agent definitions.
 /.claude/agents/
