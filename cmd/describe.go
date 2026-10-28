@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	cw "github.com/wisborg/cobrakit/weather"
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/units"
 	"github.com/wisborg/fitactivity/weather"
@@ -25,9 +26,7 @@ var describeOpts struct {
 	power    string
 	units    string
 	unitEach []string
-	weather  bool
-	exposure string
-	acclim   []string
+	weather  cw.Options
 }
 
 var describeCmd = &cobra.Command{
@@ -65,11 +64,9 @@ func init() {
 		"-- \"metric\" or \"imperial\"; a flight's default is nautical miles, feet and knots")
 	f.StringArrayVar(&describeOpts.unitEach, "unit", nil, "one quantity's unit, over --units (repeatable) -- "+
 		"distance=km|mi|nm, elevation=m|ft, speed=km/h|mph|kn|m/s, pace=min/km|min/mi")
-	f.BoolVar(&describeOpts.weather, "weather", false, "say the weather the activity was done in, from Open-Meteo, as "+
-		"the render's --weather: NOTE that it sends the area and hours of your activity to open-meteo.com, once, and "+
-		"keeps the answer under your user cache directory. A run's effort is then measured with the wind's cost in it")
-	f.StringVar(&describeOpts.exposure, "wind-exposure", string(exposureSuburban), windExposureHelp)
-	f.StringSliceVar(&describeOpts.acclim, "acclimatised", nil, acclimatisedHelp)
+	cw.AddFlags(f, &describeOpts.weather, "say the weather the activity was done in, from Open-Meteo, as the "+
+		"render's --weather: NOTE that it sends the area and hours of your activity to open-meteo.com, once, and keeps "+
+		"the answer under your user cache directory. A run's effort is then measured with the wind's cost in it")
 	root.AddCommand(describeCmd)
 }
 
@@ -91,38 +88,30 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("describe: %w", err)
 	}
-	exposure, err := parseExposure(describeOpts.exposure)
-	if err != nil {
-		return fmt.Errorf("describe: %w", err)
-	}
-	acclim, err := parseAcclimatised(describeOpts.acclim)
-	if err != nil {
-		return fmt.Errorf("describe: %w", err)
-	}
 	// The elevation model the render's profile is drawn on, so a climb
 	// said here is the climb a render of the same activity shows.
 	opts := workout.Options{Power: power, Elevation: panel.DefaultElevationTuning(track)}
 	flight := track.Sport == "flying" || len(track.Flights) > 0
-	wx := fetchWeather(cmd, track, flight, describeOpts.weather)
-	if wx.w != nil {
-		wx.w.Exposure = exposure
-		opts.Air = weather.Air(wx.w.Report, track, exposure)
+	wx, err := cw.Resolve(cmd, describeOpts.weather, track, flight)
+	if err != nil {
+		return fmt.Errorf("describe: %w", err)
+	}
+	if wx.Report != nil {
+		opts.Air = weather.Air(wx.Report, track, wx.Exposure)
 	}
 	a := workout.Analyse(track, opts)
 	d := describer{track: track, a: a, u: u, powerFrom: powerFrom(track, power), speedDerived: derivedSpeed(sources)}
-	if wx.asked {
+	if wx.Asked {
 		// What was sent, and the credit, on stderr: stdout is the
 		// description, which a script may be reading.
-		writeWeatherNote(cmd.ErrOrStderr(), wx, track, u)
-		costs, hasCosts := costsOf(wx, track, exposure, acclim, u)
-		writeCostsNote(cmd.ErrOrStderr(), costs, hasCosts)
-		if wx.w != nil {
-			if s, ok := weather.Summarise(wx.w.Report, track); ok {
+		cw.WriteNote(cmd.ErrOrStderr(), wx, track, u, "the description")
+		costs, hasCosts := cw.CostsOf(wx, track, u, grade(track))
+		cw.WriteCosts(cmd.ErrOrStderr(), costs, hasCosts)
+		d.weatherJSON = cw.JSONOf(wx, track, costs, hasCosts)
+		if wx.Report != nil {
+			if s, ok := weather.Summarise(wx.Report, track); ok {
 				d.weather = &s
 			}
-		}
-		if hasCosts {
-			d.costs = &costs
 		}
 	}
 
@@ -148,10 +137,10 @@ type describer struct {
 	u            units.Set
 	powerFrom    string
 	speedDerived bool
-	// weather is the weather over the activity, with --weather, and costs
-	// what it cost on a run.
-	weather *weather.Summary
-	costs   *conditionCosts
+	// weather is the weather over the activity, with --weather, and
+	// weatherJSON it and what it cost a run, for JSON and YAML.
+	weather     *weather.Summary
+	weatherJSON *cw.JSON
 }
 
 // effort writes an effort in its signal's own terms: power in watts,
@@ -262,7 +251,7 @@ func (d describer) writeText(w io.Writer, sources []activitySource) {
 		fmt.Fprintln(w, d.track.Title)
 	}
 	if d.weather != nil {
-		fmt.Fprintf(w, "%s (%s)\n", weatherLine(*d.weather, d.u), weather.Credit)
+		fmt.Fprintf(w, "%s (%s)\n", cw.Line(*d.weather, d.u), weather.Credit)
 	}
 
 	start, end := fitactivity.BuildTimerModel(d.track).Window()

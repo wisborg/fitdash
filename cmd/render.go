@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wisborg/cobrakit/strava"
+	cw "github.com/wisborg/cobrakit/weather"
 	"github.com/wisborg/fitactivity"
 	"github.com/wisborg/fitactivity/units"
 	"github.com/wisborg/output/progress"
@@ -47,9 +48,7 @@ type renderOptions struct {
 	basemapKeyFile      string
 	basemapDim          float64
 	basemapCache        string
-	weather             bool
-	windExposure        string
-	acclimatised        []string
+	weather             cw.Options
 	basemapStore        string
 	terrain             bool
 	contours            bool
@@ -361,16 +360,7 @@ func bindRenderFlags(c *cobra.Command) {
 			"Tuning a --highlight means rendering the same activity repeatedly, and without a cache every run re-fetches "+
 			"identical imagery -- slower, and spending your own quota to be told the same thing. A cached activity also "+
 			"renders offline. Pass \"off\" to keep nothing")
-	f.BoolVar(&renderOpts.weather, "weather", false,
-		"show the weather the activity was done in -- temperature, dew point, and the wind turned to your direction of "+
-			"travel -- in a panel beside the climb and gradient and on the start and end cards. It is Open-Meteo's model "+
-			"weather, at a place every 10 km along the route, and NOTE that fetching it sends the area and hours of your "+
-			"activity to open-meteo.com; it is kept under your user cache directory, so a second render sends nothing. "+
-			"A weather that cannot be fetched is never fatal: the render goes on without it and the summary says why. "+
-			"On a run the panel also says what the wind is costing, as seconds on the pace the same effort would have "+
-			"run in still air, and the summary what it, the heat and the altitude cost over the run")
-	f.StringVar(&renderOpts.windExposure, "wind-exposure", exposureSuburban, windExposureHelp)
-	f.StringSliceVar(&renderOpts.acclimatised, "acclimatised", nil, acclimatisedHelp)
+	cw.AddFlags(f, &renderOpts.weather, renderWeatherHelp)
 	f.BoolVar(&renderOpts.dryRun, "dry-run", false,
 		"resolve everything and print the summary, but write no video and no frames -- the fast way to check "+
 			"a --label or --highlight lands where you meant before paying for an encode, and to read off where "+
@@ -748,9 +738,9 @@ func runRender(cmd *cobra.Command, args []string) error {
 		})
 	}
 	basemapDim := resolveBasemapDim(cmd)
-	wx, err := resolveWeather(cmd, track, flight)
+	wx, err := resolveWeather(cmd, renderOpts.weather, track, flight)
 	if err != nil {
-		return err
+		return fmt.Errorf("render: %w", err)
 	}
 
 	var summary panel.SummaryCard

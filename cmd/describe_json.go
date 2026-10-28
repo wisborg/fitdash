@@ -1,11 +1,8 @@
 package cmd
 
 import (
-	"sort"
-	"time"
-
+	cw "github.com/wisborg/cobrakit/weather"
 	"github.com/wisborg/fitactivity"
-	"github.com/wisborg/fitactivity/weather"
 	"github.com/wisborg/fitactivity/workout"
 )
 
@@ -24,35 +21,7 @@ type describeJSON struct {
 	Sets       []describeSetJ     `json:"sets" yaml:"sets"`
 	Climbs     []describeClimbJ   `json:"climbs" yaml:"climbs"`
 	Descents   []describeDescentJ `json:"descents" yaml:"descents"`
-	Weather    *describeWeatherJ  `json:"weather,omitempty" yaml:"weather,omitempty"`
-}
-
-// describeWeatherJ is the weather over the activity, with --weather: the
-// wind at 10 m, from the direction it blew from.
-type describeWeatherJ struct {
-	TemperatureMinC float64 `json:"temperature_min_c" yaml:"temperature_min_c"`
-	TemperatureMaxC float64 `json:"temperature_max_c" yaml:"temperature_max_c"`
-	DewPointC       float64 `json:"dew_point_c" yaml:"dew_point_c"`
-	HumidityPct     float64 `json:"humidity_pct" yaml:"humidity_pct"`
-	WindSpeedMS     float64 `json:"wind_speed_ms" yaml:"wind_speed_ms"`
-	WindFromDeg     float64 `json:"wind_from_deg" yaml:"wind_from_deg"`
-	GustsMS         float64 `json:"gusts_ms" yaml:"gusts_ms"`
-	RadiationWM2    float64 `json:"radiation_w_m2" yaml:"radiation_w_m2"`
-	Source          string  `json:"source" yaml:"source"`
-	// The costs, on a run: in seconds over it, nil where there was
-	// nothing to work one out from or the athlete was acclimatised.
-	WindCostS    *float64 `json:"wind_cost_s,omitempty" yaml:"wind_cost_s,omitempty"`
-	WindExposure string   `json:"wind_exposure,omitempty" yaml:"wind_exposure,omitempty"`
-	// The wind's cost on the pace at its worst and best, in seconds a
-	// kilometre: positive into it, negative with it behind.
-	WindWorstSPerKm *float64 `json:"wind_worst_s_per_km,omitempty" yaml:"wind_worst_s_per_km,omitempty"`
-	WindBestSPerKm  *float64 `json:"wind_best_s_per_km,omitempty" yaml:"wind_best_s_per_km,omitempty"`
-	WBGTMinC        *float64 `json:"wbgt_min_c,omitempty" yaml:"wbgt_min_c,omitempty"`
-	WBGTMaxC        *float64 `json:"wbgt_max_c,omitempty" yaml:"wbgt_max_c,omitempty"`
-	HeatCostS       *float64 `json:"heat_cost_s,omitempty" yaml:"heat_cost_s,omitempty"`
-	HighestM        *float64 `json:"highest_m,omitempty" yaml:"highest_m,omitempty"`
-	AltitudeCostS   *float64 `json:"altitude_cost_s,omitempty" yaml:"altitude_cost_s,omitempty"`
-	Acclimatised    []string `json:"acclimatised,omitempty" yaml:"acclimatised,omitempty"`
+	Weather    *cw.JSON           `json:"weather,omitempty" yaml:"weather,omitempty"`
 }
 
 type describeSpanJ struct {
@@ -123,39 +92,7 @@ func (d describer) json() describeJSON {
 	if d.track.Strava != nil {
 		j.StravaURL = d.track.Strava.URL
 	}
-	if w := d.weather; w != nil {
-		j.Weather = &describeWeatherJ{TemperatureMinC: w.TemperatureMin, TemperatureMaxC: w.TemperatureMax,
-			DewPointC: w.DewPoint, HumidityPct: w.Humidity, WindSpeedMS: w.WindSpeed, WindFromDeg: w.WindFrom,
-			GustsMS: w.Gusts, RadiationWM2: w.Radiation, Source: weather.Credit + " (CC BY 4.0, " + weather.CreditURL + ")"}
-		if c := d.costs; c != nil {
-			secs := func(d time.Duration) *float64 { v := d.Seconds(); return &v }
-			val := func(v float64) *float64 { return &v }
-			if c.hasWind {
-				j.Weather.WindCostS, j.Weather.WindExposure = secs(c.wind), exposureName(c.exposure)
-			}
-			if c.hasWindPace {
-				j.Weather.WindWorstSPerKm, j.Weather.WindBestSPerKm = val(c.windWorst*1000), val(c.windBest*1000)
-			}
-			if c.hasHeat {
-				j.Weather.WBGTMinC, j.Weather.WBGTMaxC = val(c.wbgtLo), val(c.wbgtHi)
-				if !c.acclim.heat {
-					j.Weather.HeatCostS = secs(c.heat)
-				}
-			}
-			if c.hasAltitude {
-				j.Weather.HighestM = val(c.highest)
-				if !c.acclim.altitude {
-					j.Weather.AltitudeCostS = secs(c.altitude)
-				}
-			}
-			for name, on := range map[string]bool{"altitude": c.acclim.altitude, "heat": c.acclim.heat} {
-				if on {
-					j.Weather.Acclimatised = append(j.Weather.Acclimatised, name)
-				}
-			}
-			sort.Strings(j.Weather.Acclimatised)
-		}
-	}
+	j.Weather = d.weatherJSON
 	for _, s := range d.a.Stops {
 		j.Stops = append(j.Stops, describeStopJ{describeSpanJ: span(s.Span), Paused: s.Paused})
 	}
