@@ -114,7 +114,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		// What was sent, and the credit, on stderr: stdout is the
 		// description, which a script may be reading.
 		writeWeatherNote(cmd.ErrOrStderr(), wx, track, u)
-		costs, hasCosts := costsOf(wx, track, exposure, acclim)
+		costs, hasCosts := costsOf(wx, track, exposure, acclim, u)
 		writeCostsNote(cmd.ErrOrStderr(), costs, hasCosts)
 		if wx.w != nil {
 			if s, ok := weather.Summarise(wx.w.Report, track); ok {

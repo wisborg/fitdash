@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -92,7 +93,7 @@ func writeWeatherSummary(out io.Writer, plan weatherPlan, track *fitactivity.Tra
 		return
 	}
 	writeWeatherNote(out, plan, track, u)
-	c, ok := costsOf(plan, track, plan.exposure, plan.acclim)
+	c, ok := costsOf(plan, track, plan.exposure, plan.acclim, u)
 	writeCostsNote(out, c, ok)
 }
 
@@ -226,6 +227,14 @@ type conditionCosts struct {
 
 	wind    time.Duration
 	hasWind bool
+	// windWorst and windBest are the wind's cost on the pace at its worst
+	// and best, in seconds a metre (weather.WindPace); paceOver and
+	// paceUnit the distance and name the pace is said over: 1000 m and
+	// "km", or a mile.
+	windWorst, windBest float64
+	hasWindPace         bool
+	paceOver            float64
+	paceUnit            string
 
 	heat           time.Duration
 	wbgtLo, wbgtHi float64
@@ -242,11 +251,14 @@ type conditionCosts struct {
 
 // costsOf is what the conditions plan fetched cost over track, on foot --
 // what the effort model is of -- and nothing otherwise.
-func costsOf(plan weatherPlan, track *fitactivity.Track, x effort.Exposure, a acclimatisation) (conditionCosts, bool) {
+func costsOf(plan weatherPlan, track *fitactivity.Track, x effort.Exposure, a acclimatisation, u units.Set) (conditionCosts, bool) {
 	if plan.w == nil || !onFoot(track.Sport) {
 		return conditionCosts{}, false
 	}
-	c := conditionCosts{exposure: x, acclim: a}
+	c := conditionCosts{exposure: x, acclim: a, paceOver: 1000, paceUnit: "km"}
+	if strings.HasSuffix(u.Pace.Name, "/mi") {
+		c.paceOver, c.paceUnit = 1609.344, "mi"
+	}
 	elev := panel.BuildElevation(track, panel.DefaultElevationTuning(track))
 	grade := func(i int) float64 {
 		s := track.Samples[i]
@@ -257,6 +269,7 @@ func costsOf(plan weatherPlan, track *fitactivity.Track, x effort.Exposure, a ac
 	}
 	r := plan.w.Report
 	c.wind, c.hasWind = weather.WindCost(r, track, x, grade)
+	c.windWorst, c.windBest, c.hasWindPace = weather.WindPace(r, track, x, grade)
 	c.heat, c.wbgtLo, c.wbgtHi, c.hasHeat = weather.HeatCost(r, track)
 	c.altitude, c.highest, c.hasAltitude = weather.AltitudeCost(r, track, x, grade)
 	if from, _, ok := weather.FootpodWind(track); ok {
@@ -284,8 +297,15 @@ func writeCostsNote(out io.Writer, c conditionCosts, ok bool) {
 		if cost < 0 {
 			verb, cost = "gave", -cost
 		}
-		fmt.Fprintf(out, "  the wind %s about %s over the run, by Pugh's measure of the air's cost, at %s exposure (%.2f of the 10 m wind)\n",
-			verb, formatCost(cost), exposureName(c.exposure), float64(c.exposure))
+		// The total nets the headwind against the tailwind, which on a
+		// loop nearly cancel; the pace at its worst and best is what the
+		// wind did along the way.
+		along := ""
+		if c.hasWindPace {
+			along = ": " + windAlong(c)
+		}
+		fmt.Fprintf(out, "  the wind %s about %s over the run%s; by Pugh's measure of the air's cost, at %s exposure (%.2f of the 10 m wind)\n",
+			verb, formatCost(cost), along, exposureName(c.exposure), float64(c.exposure))
 	}
 	if c.hasHeat {
 		wbgt := fmt.Sprintf("WBGT %.0f °C", c.wbgtLo)
@@ -324,6 +344,24 @@ func writeCostsNote(out io.Writer, c conditionCosts, ok bool) {
 		fmt.Fprintf(out, "  Stryd's air power was highest running %s, so a wind from there; the forecast's was from %s, %.0f° apart\n",
 			weather.Compass(c.footpodFrom), weather.Compass(c.forecastFrom), weather.Apart(c.footpodFrom, c.forecastFrom))
 	}
+}
+
+// windAlong is what the wind did on the pace along the run: "up to +6 s/km
+// into it and -5 s/km with it behind", or, where it was never behind, how
+// much it cost at least.
+func windAlong(c conditionCosts) string {
+	s := func(v float64) float64 { return math.Round(v * c.paceOver) }
+	worst, best := s(c.windWorst), s(c.windBest)
+	switch {
+	case worst <= 0 && best >= 0:
+		word := map[string]string{"km": "kilometre", "mi": "mile"}[c.paceUnit]
+		return "under a second a " + word + " either way"
+	case best >= 0:
+		return fmt.Sprintf("up to %+.0f s/%s into it, never behind", worst, c.paceUnit)
+	case worst <= 0:
+		return fmt.Sprintf("up to %+.0f s/%s with it behind, never into it", best, c.paceUnit)
+	}
+	return fmt.Sprintf("up to %+.0f s/%s into it and %+.0f s/%s with it behind", worst, c.paceUnit, best, c.paceUnit)
 }
 
 // formatCost is a time the wind cost: "25 s", "1 min 12 s", "14 min".

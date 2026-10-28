@@ -62,11 +62,12 @@ func TestFormatCost(t *testing.T) {
 // oxygen uptake falls is not mentioned.
 func TestWriteCostsNote(t *testing.T) {
 	c := conditionCosts{exposure: effort.Suburban, wind: 72 * time.Second, hasWind: true,
+		windWorst: 0.0062, windBest: -0.0049, hasWindPace: true, paceOver: 1000, paceUnit: "km",
 		heat: 3*time.Minute + 20*time.Second, wbgtLo: 21.2, wbgtHi: 23.6, hasHeat: true,
 		altitude: 0, highest: 120, hasAltitude: true}
 	var b strings.Builder
 	writeCostsNote(&b, c, true)
-	for _, want := range []string{"the wind cost about 1 min 12 s", "suburban exposure (0.38", "the heat cost about 3 min 20 s, at WBGT 21–24 °C in the shade"} {
+	for _, want := range []string{"the wind cost about 1 min 12 s over the run: up to +6 s/km into it and -5 s/km with it behind;", "suburban exposure (0.38", "the heat cost about 3 min 20 s, at WBGT 21–24 °C in the shade"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("lacks %q:\n%s", want, b.String())
 		}
@@ -85,5 +86,24 @@ func TestWriteCostsNote(t *testing.T) {
 	}
 	if _, err := parseAcclimatised([]string{"heat", "humidity"}); err == nil {
 		t.Error("humidity accepted")
+	}
+}
+
+// Where the wind was never behind, or never against, or nothing either
+// way, the line says so rather than a "+0".
+func TestWindAlong(t *testing.T) {
+	c := conditionCosts{paceOver: 1609.344, paceUnit: "mi"}
+	for _, tc := range []struct {
+		worst, best float64
+		want        string
+	}{
+		{0.004, 0.001, "up to +6 s/mi into it, never behind"},
+		{-0.0002, -0.003, "up to -5 s/mi with it behind, never into it"},
+		{0.0002, -0.0002, "under a second a mile either way"},
+	} {
+		c.windWorst, c.windBest = tc.worst, tc.best
+		if got := windAlong(c); got != tc.want {
+			t.Errorf("%v, %v: %q, want %q", tc.worst, tc.best, got, tc.want)
+		}
 	}
 }

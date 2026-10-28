@@ -41,14 +41,18 @@ type describeWeatherJ struct {
 	Source          string  `json:"source" yaml:"source"`
 	// The costs, on a run: in seconds over it, nil where there was
 	// nothing to work one out from or the athlete was acclimatised.
-	WindCostS     *float64 `json:"wind_cost_s,omitempty" yaml:"wind_cost_s,omitempty"`
-	WindExposure  string   `json:"wind_exposure,omitempty" yaml:"wind_exposure,omitempty"`
-	WBGTMinC      *float64 `json:"wbgt_min_c,omitempty" yaml:"wbgt_min_c,omitempty"`
-	WBGTMaxC      *float64 `json:"wbgt_max_c,omitempty" yaml:"wbgt_max_c,omitempty"`
-	HeatCostS     *float64 `json:"heat_cost_s,omitempty" yaml:"heat_cost_s,omitempty"`
-	HighestM      *float64 `json:"highest_m,omitempty" yaml:"highest_m,omitempty"`
-	AltitudeCostS *float64 `json:"altitude_cost_s,omitempty" yaml:"altitude_cost_s,omitempty"`
-	Acclimatised  []string `json:"acclimatised,omitempty" yaml:"acclimatised,omitempty"`
+	WindCostS    *float64 `json:"wind_cost_s,omitempty" yaml:"wind_cost_s,omitempty"`
+	WindExposure string   `json:"wind_exposure,omitempty" yaml:"wind_exposure,omitempty"`
+	// The wind's cost on the pace at its worst and best, in seconds a
+	// kilometre: positive into it, negative with it behind.
+	WindWorstSPerKm *float64 `json:"wind_worst_s_per_km,omitempty" yaml:"wind_worst_s_per_km,omitempty"`
+	WindBestSPerKm  *float64 `json:"wind_best_s_per_km,omitempty" yaml:"wind_best_s_per_km,omitempty"`
+	WBGTMinC        *float64 `json:"wbgt_min_c,omitempty" yaml:"wbgt_min_c,omitempty"`
+	WBGTMaxC        *float64 `json:"wbgt_max_c,omitempty" yaml:"wbgt_max_c,omitempty"`
+	HeatCostS       *float64 `json:"heat_cost_s,omitempty" yaml:"heat_cost_s,omitempty"`
+	HighestM        *float64 `json:"highest_m,omitempty" yaml:"highest_m,omitempty"`
+	AltitudeCostS   *float64 `json:"altitude_cost_s,omitempty" yaml:"altitude_cost_s,omitempty"`
+	Acclimatised    []string `json:"acclimatised,omitempty" yaml:"acclimatised,omitempty"`
 }
 
 type describeSpanJ struct {
@@ -128,6 +132,9 @@ func (d describer) json() describeJSON {
 			val := func(v float64) *float64 { return &v }
 			if c.hasWind {
 				j.Weather.WindCostS, j.Weather.WindExposure = secs(c.wind), exposureName(c.exposure)
+			}
+			if c.hasWindPace {
+				j.Weather.WindWorstSPerKm, j.Weather.WindBestSPerKm = val(c.windWorst*1000), val(c.windBest*1000)
 			}
 			if c.hasHeat {
 				j.Weather.WBGTMinC, j.Weather.WBGTMaxC = val(c.wbgtLo), val(c.wbgtHi)

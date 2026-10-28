@@ -171,7 +171,9 @@ on the start and end cards with the range of temperatures, the dew point and the
 --weather` gives the same in text and JSON.
 
 On a run the panel also says what the wind is costing -- "headwind +6 s/km", the pace the same
-effort would have run in still air less the pace run -- and the summary what it cost over the run;
+effort would have run in still air less the pace run -- and the summary what it cost over the run,
+with how much it cost on the pace into it and gave with it behind, since on a loop the two nearly
+cancel in the total;
 `describe --weather` then measures effort by grade- and wind-adjusted pace. The cost is Pugh's
 measure of what pushing through the air takes, beside Minetti's for the hills. How much of the
 wind forecast at 10 m reached you is the model's largest uncertainty, and `--wind-exposure` says it
