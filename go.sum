@@ -32,8 +32,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/wisborg/cobrakit v0.4.0 h1:czcvjeedVBSAsShnr1iyND1BRzo/+BlVog0Sopwi+gg=
 github.com/wisborg/cobrakit v0.4.0/go.mod h1:6VOE7TjLVzufPaMfKGzCgyTPzymz6dRCfsDaUPVpeBg=
-github.com/wisborg/fitactivity v0.22.0 h1:5SsOfoax3VfPrg+drE87UplsNinLaa1+jY2hN6KTyoA=
-github.com/wisborg/fitactivity v0.22.0/go.mod h1:Hhz4/ujXk+1kknYkVqIn4Q1c99qV9Rs+/Tj6tBineq0=
+github.com/wisborg/fitactivity v0.22.1 h1:TU3uZ7evFaL7AGYEeZmPts2M+cvlLFdxlArWKMCpZ8I=
+github.com/wisborg/fitactivity v0.22.1/go.mod h1:Hhz4/ujXk+1kknYkVqIn4Q1c99qV9Rs+/Tj6tBineq0=
 github.com/wisborg/osmbase v0.47.1 h1:ErNZ5qKejEOra+cj4SMO6aLYKLHDc/XXx65S4Uul8p4=
 github.com/wisborg/osmbase v0.47.1/go.mod h1:64kDKLeAZfoqXNagRQBneZiIdpjVJ08qKyWpfL0kHBY=
 github.com/wisborg/output v0.9.0 h1:RnMQoqPoymRWG87NXJx8woQwyyQuyB7kbE/cnOc/C54=
