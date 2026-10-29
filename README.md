@@ -196,12 +196,12 @@ fitdash morning.fit --weather
 
 It is [Open-Meteo](https://open-meteo.com/)'s model weather -- ECMWF's analysis at about 9 km for
 recent days, the ERA5 reanalysis at about 25 km once it catches up five days on -- at a place every
-10 km along the route, so a street between tall buildings or a valley out of the wind had weather
-of its own the model does not see, and the wind is the wind at 10 m in the open. **Turning it on
-sends the area and hours of your activity to Open-Meteo**, once: the answer is kept under your
-user cache directory, and the summary says when this run sent anything. The data are CC BY 4.0;
-the panel and the card carry the credit, and the summary prints it for wherever you publish the
-video. Open-Meteo's free API is for non-commercial use.
+10 km along the route (twenty spread evenly along one over 190 km), so a street between tall
+buildings or a valley out of the wind had weather of its own the model does not see, and the wind
+is the wind at 10 m in the open. **Turning it on sends the area and hours of your activity to
+Open-Meteo**, once: the answer is kept under your user cache directory, and the summary says when
+this run sent anything. The data are CC BY 4.0; the panel and the card carry the credit, and the
+summary prints it for wherever you publish the video. Open-Meteo's free API is for non-commercial use.
 
 Imagery is cached on disk, which is a second place — after the rendered video itself —
 where roughly where you were persists. It lives under your user cache directory unless

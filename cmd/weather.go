@@ -23,7 +23,7 @@ type weatherPlan struct {
 // renderWeatherHelp is the render's --weather help.
 const renderWeatherHelp = "show the weather the activity was done in -- temperature, dew point, and the wind turned " +
 	"to your direction of travel -- in a panel beside the climb and gradient and on the start and end cards. It is " +
-	"Open-Meteo's model weather, at a place every 10 km along the route, and NOTE that fetching it sends the area and " +
+	"Open-Meteo's model weather, at a place every 10 km along the route (twenty spread along a longer one), and NOTE that fetching it sends the area and " +
 	"hours of your activity to open-meteo.com; it is kept under your user cache directory, so a second render sends " +
 	"nothing. A weather that cannot be fetched is never fatal: the render goes on without it and the summary says " +
 	"why. On a run the panel also says what the wind is costing, as seconds on the pace the same effort would have " +
